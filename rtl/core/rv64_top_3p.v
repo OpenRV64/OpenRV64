@@ -1123,7 +1123,8 @@ module openrv64_rv64_top_3p #(
     // replaced on the same edge that its complete prefix enters the backend.
     // Partial backend admission shifts the retained prefix; because admission
     // stops at the oldest control, a retained control's predictor metadata is
-    // never discarded by such a shift.
+    // never discarded by such a shift.  A translation/store barrier stalls
+    // admission but does not invalidate this already accepted prefix.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             bp_dispatch_valid_q <= 3'b000;
@@ -1140,7 +1141,7 @@ module openrv64_rv64_top_3p #(
             bp_dispatch_lookup_indirect_q <= 1'b0;
         end else if (BP_REGISTERED_LOOKUP != 0) begin
             if (control_flush || control_redirect || bp_predict_redirect ||
-                halted_q || wfi_sleep_q || translation_barrier_busy) begin
+                halted_q || wfi_sleep_q) begin
                 bp_dispatch_valid_q <= 3'b000;
                 bp_dispatch_control_select_q <= 3'b000;
             end else if (bp_stage_can_accept) begin

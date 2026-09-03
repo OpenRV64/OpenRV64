@@ -36,6 +36,10 @@ module tb_retire_queue_3p #(
     logic [ID_WIDTH-1:0] extension_complete_id;
     logic [INDEX_WIDTH-1:0] extension_complete_slot;
     wire extension_complete_accept;
+    logic posted_store_complete_valid;
+    logic [ID_WIDTH-1:0] posted_store_complete_id;
+    logic [INDEX_WIDTH-1:0] posted_store_complete_slot;
+    wire posted_store_complete_accept;
     wire [2:0] retire_valid;
     logic [2:0] retire_accept;
     wire [3*ID_WIDTH-1:0] retire_id;
@@ -56,7 +60,8 @@ module tb_retire_queue_3p #(
     openrv64_retire_queue_3p #(
         .DEPTH(DEPTH),
         .ID_WIDTH(ID_WIDTH),
-        .ENABLE_EXTENSION_COMPLETION(1)
+        .ENABLE_EXTENSION_COMPLETION(1),
+        .ENABLE_POSTED_STORE_COMPLETION(1)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -80,6 +85,10 @@ module tb_retire_queue_3p #(
         .extension_complete_id_i(extension_complete_id),
         .extension_complete_slot_i(extension_complete_slot),
         .extension_complete_accept_o(extension_complete_accept),
+        .posted_store_complete_valid_i(posted_store_complete_valid),
+        .posted_store_complete_id_i(posted_store_complete_id),
+        .posted_store_complete_slot_i(posted_store_complete_slot),
+        .posted_store_complete_accept_o(posted_store_complete_accept),
         .retire_valid_o(retire_valid),
         .retire_accept_i(retire_accept),
         .retire_id_o(retire_id),
@@ -130,6 +139,9 @@ module tb_retire_queue_3p #(
             extension_complete_valid = 1'b0;
             extension_complete_id = {ID_WIDTH{1'b0}};
             extension_complete_slot = {INDEX_WIDTH{1'b0}};
+            posted_store_complete_valid = 1'b0;
+            posted_store_complete_id = {ID_WIDTH{1'b0}};
+            posted_store_complete_slot = {INDEX_WIDTH{1'b0}};
             retire_accept = 3'b000;
         end
     endtask
@@ -286,6 +298,72 @@ module tb_retire_queue_3p #(
         retire_accept = 3'b000;
         if (occupancy != 0)
             $fatal(1, "extension-completed entry did not drain");
+
+        // Posted stores use a separate identity-only input so a simultaneous
+        // extension completion cannot consume or block their acknowledgment.
+        @(negedge clk);
+        alloc_valid = 3'b001;
+        alloc_meta[0 +: META_WIDTH] = 8'h9a;
+        #1;
+        saved_id[0] = alloc_id[0 +: ID_WIDTH];
+        saved_slot[0] = alloc_slot[0 +: INDEX_WIDTH];
+        @(posedge clk);
+        #1;
+        alloc_valid = 3'b000;
+        @(negedge clk);
+        posted_store_complete_valid = 1'b1;
+        posted_store_complete_id = saved_id[0];
+        posted_store_complete_slot = saved_slot[0];
+        #1;
+        if (!posted_store_complete_accept)
+            $fatal(1, "live posted-store completion identity was rejected");
+        @(posedge clk);
+        #1;
+        posted_store_complete_valid = 1'b0;
+        if (retire_valid !== 3'b001)
+            $fatal(1, "posted-store completion did not make head retireable");
+        @(negedge clk);
+        retire_accept = 3'b001;
+        @(posedge clk);
+        #1;
+        retire_accept = 3'b000;
+        if (occupancy != 0)
+            $fatal(1, "posted-store-completed entry did not drain");
+
+        @(negedge clk);
+        alloc_valid = 3'b011;
+        #1;
+        saved_id[0] = alloc_id[0 +: ID_WIDTH];
+        saved_id[1] = alloc_id[ID_WIDTH +: ID_WIDTH];
+        saved_slot[0] = alloc_slot[0 +: INDEX_WIDTH];
+        saved_slot[1] = alloc_slot[INDEX_WIDTH +: INDEX_WIDTH];
+        @(posedge clk);
+        #1;
+        alloc_valid = 3'b000;
+        @(negedge clk);
+        extension_complete_valid = 1'b1;
+        extension_complete_id = saved_id[0];
+        extension_complete_slot = saved_slot[0];
+        posted_store_complete_valid = 1'b1;
+        posted_store_complete_id = saved_id[1];
+        posted_store_complete_slot = saved_slot[1];
+        #1;
+        if (!extension_complete_accept || !posted_store_complete_accept)
+            $fatal(1,
+                "simultaneous extension/store sidebands were not independent");
+        @(posedge clk);
+        #1;
+        extension_complete_valid = 1'b0;
+        posted_store_complete_valid = 1'b0;
+        if (retire_valid !== 3'b011)
+            $fatal(1, "simultaneous sidebands did not complete both entries");
+        @(negedge clk);
+        retire_accept = 3'b011;
+        @(posedge clk);
+        #1;
+        retire_accept = 3'b000;
+        if (occupancy != 0)
+            $fatal(1, "simultaneous sideband entries did not drain");
 
         allocate_three(8'ha0, 8'ha1, 8'ha2);
         if (occupancy !== 4'd3 || next_retire_id !== saved_id[0]) begin

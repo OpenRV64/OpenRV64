@@ -538,6 +538,15 @@ module openrv64_l1d_icx #(
     reg [`OPENRV64_ICX_LINE_DATA_WIDTH-1:0]
         l1_mem_merged_data_r;
     reg [63:0] normal_response_merged_data_r;
+    // One fall-through response slot decouples arbitration from northbound
+    // backpressure.  When empty, the selected source remains combinationally
+    // visible with no added latency.  If ready is low, consume that source
+    // into this slot so a newly eligible higher-priority source cannot change
+    // the already-presented response tuple.
+    reg response_skid_valid_q;
+    reg [REQ_TAG_WIDTH-1:0] response_skid_tag_q;
+    reg [63:0] response_skid_data_q;
+    reg response_skid_error_q;
     integer demand_store_age;
     integer demand_store_index;
     integer demand_store_byte;
@@ -913,8 +922,10 @@ module openrv64_l1d_icx #(
         l1_miss_overlay_data[`OPENRV64_ICX_LINE_STRB_WIDTH-1:0];
     wire normal_response_valid =
         normal_response_candidate && normal_overlay_ready;
+    wire response_candidate_ready =
+        !response_skid_valid_q || resp_ready_i;
     wire freeloader_response_ready =
-        resp_ready_i && !demand_response_valid &&
+        response_candidate_ready && !demand_response_valid &&
         !normal_response_valid;
     wire freeloader_pipe_advance =
         !freeloader_response_valid || freeloader_response_ready;
@@ -1045,7 +1056,8 @@ module openrv64_l1d_icx #(
         (|demand_store_strb_r);
     wire tag_overlay_write =
         l1_request_fire && request_overlay_needed;
-    wire l1_resp_ready = resp_ready_i && !demand_response_valid &&
+    wire l1_resp_ready = response_candidate_ready &&
+        !demand_response_valid &&
         response_tag_available && normal_overlay_ready;
     wire l1_response_fire = l1_resp_valid && l1_resp_ready;
     wire demand_request_fire =
@@ -1338,25 +1350,57 @@ module openrv64_l1d_icx #(
                           lock_request_ready &&
                           posted_store_request_ready &&
                           !demand_load_store_block);
-    assign resp_valid_o = demand_response_valid ||
-                          normal_response_valid ||
-                          freeloader_response_valid;
-    assign resp_tag_o = demand_response_valid ?
+    wire response_candidate_valid = demand_response_valid ||
+                                    normal_response_valid ||
+                                    freeloader_response_valid;
+    wire [REQ_TAG_WIDTH-1:0] response_candidate_tag =
+        demand_response_valid ?
         demand_waiter_response_tag_r : normal_response_valid ?
         normal_response_tag :
         freeloader_tag_q[FREELOADER_STAGES-1];
-    assign req_rdata_o = demand_response_valid ?
+    wire [63:0] response_candidate_data = demand_response_valid ?
         demand_response_data_r[
             tag_overlay_word_q[demand_waiter_response_tag_r]*64 +: 64] :
         normal_response_valid ?
         normal_response_merged_data_r :
         freeloader_data_q[FREELOADER_STAGES-1];
-    assign req_error_o = demand_response_valid ?
+    wire response_candidate_error = demand_response_valid ?
         (demand_mshr_error_q[demand_waiter_response_mshr_r] ||
          tag_reservation_error_q[demand_waiter_response_tag_r]) :
         normal_response_valid ?
         (l1_req_error || tag_reservation_error_q[normal_response_tag]) :
         1'b0;
+    assign resp_valid_o = response_skid_valid_q ||
+                          response_candidate_valid;
+    assign resp_tag_o = response_skid_valid_q ?
+        response_skid_tag_q : response_candidate_tag;
+    assign req_rdata_o = response_skid_valid_q ?
+        response_skid_data_q : response_candidate_data;
+    assign req_error_o = response_skid_valid_q ?
+        response_skid_error_q : response_candidate_error;
+
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            response_skid_valid_q <= 1'b0;
+            response_skid_tag_q <= {REQ_TAG_WIDTH{1'b0}};
+            response_skid_data_q <= 64'd0;
+            response_skid_error_q <= 1'b0;
+        end else if (response_skid_valid_q) begin
+            if (resp_ready_i) begin
+                response_skid_valid_q <= response_candidate_valid;
+                if (response_candidate_valid) begin
+                    response_skid_tag_q <= response_candidate_tag;
+                    response_skid_data_q <= response_candidate_data;
+                    response_skid_error_q <= response_candidate_error;
+                end
+            end
+        end else if (response_candidate_valid && !resp_ready_i) begin
+            response_skid_valid_q <= 1'b1;
+            response_skid_tag_q <= response_candidate_tag;
+            response_skid_data_q <= response_candidate_data;
+            response_skid_error_q <= response_candidate_error;
+        end
+    end
     assign posted_resp_valid_o = fast_posted_resp_valid_q ||
                                  l1_posted_resp_valid;
     assign posted_resp_tag_o = fast_posted_resp_valid_q ?
@@ -1792,7 +1836,8 @@ module openrv64_l1d_icx #(
     assign demand_response_valid =
         demand_waiter_response_found_r && demand_overlay_ready &&
         !speculation_barrier_event;
-    assign demand_response_fire = demand_response_valid && resp_ready_i;
+    assign demand_response_fire = demand_response_valid &&
+                                  response_candidate_ready;
     assign l1_fill_valid = demand_mshr_fill_hold_valid_q;
     assign l1_fill_addr =
         demand_mshr_addr_q[demand_mshr_fill_selected_index];
@@ -4604,9 +4649,25 @@ module openrv64_l1d_icx #(
                 (!resp_valid_o ||
                  (resp_tag_o != response_hold_tag_q) ||
                  (req_rdata_o !== response_hold_data_q) ||
-                 (req_error_o != response_hold_error_q)))
+                 (req_error_o != response_hold_error_q))) begin
+                $display(
+                    "L1D_RESPONSE_HOLD_FAIL time=%0t ready=%b held_valid=%b held_tag=%0d held_data=%016x held_error=%b live_valid=%b live_tag=%0d live_data=%016x live_error=%b demand_valid=%b demand_found=%b demand_tag=%0d demand_mshr=%0d demand_overlay_ready=%b normal_valid=%b normal_candidate=%b normal_tag=%0d normal_overlay_ready=%b l1_valid=%b l1_ready=%b l1_identity=%0d l1_data=%016x l1_error=%b freeloader_valid=%b barrier=%b",
+                    $time, resp_ready_i, response_hold_valid_q,
+                    response_hold_tag_q, response_hold_data_q,
+                    response_hold_error_q, resp_valid_o, resp_tag_o,
+                    req_rdata_o, req_error_o, demand_response_valid,
+                    demand_waiter_response_found_r,
+                    demand_waiter_response_tag_r,
+                    demand_waiter_response_mshr_r,
+                    demand_overlay_ready, normal_response_valid,
+                    normal_response_candidate, normal_response_tag,
+                    normal_overlay_ready, l1_resp_valid, l1_resp_ready,
+                    l1_resp_identity, l1_req_rdata, l1_req_error,
+                    freeloader_response_valid,
+                    speculation_barrier_event);
                 $fatal(1,
                     "L1D response changed while held by backpressure");
+            end
             response_hold_valid_q <= resp_valid_o && !resp_ready_i;
             if (resp_valid_o && !resp_ready_i) begin
                 response_hold_tag_q <= resp_tag_o;

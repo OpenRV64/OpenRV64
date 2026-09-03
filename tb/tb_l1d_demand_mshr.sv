@@ -655,6 +655,55 @@ module tb_l1d_demand_mshr #(
         if (command_count != 5)
             $fatal(1, "resident line reissued a demand ICX read");
 
+        // A demand-miss completion must not preempt a resident-hit response
+        // which has already been presented under backpressure.  The response
+        // arbiter may accept the resident response into an output skid slot,
+        // but the northbound tag/data tuple must remain stable until ready.
+        resp_ready = 1'b0;
+        issue_load(TAG_WIDTH'(0), MEMORY_BASE + 64'h5048);
+        while (!resp_valid)
+            @(negedge clk);
+        if (!dut.normal_response_valid || dut.demand_response_valid)
+            $fatal(1, "resident response was not the initial held source");
+        held_resp_tag = resp_tag;
+        held_resp_data = req_rdata;
+        @(posedge clk);
+        @(negedge clk);
+        dut.demand_mshr_valid_q[0] = 1'b1;
+        dut.demand_mshr_issued_q[0] = 1'b1;
+        dut.demand_mshr_complete_q[0] = 1'b1;
+        dut.demand_mshr_fill_done_q[0] = 1'b1;
+        dut.demand_mshr_wait_prefetch_q[0] = 1'b0;
+        dut.demand_mshr_error_q[0] = 1'b0;
+        dut.demand_mshr_epoch_q[0] = dut.speculation_epoch_q;
+        dut.demand_mshr_addr_q[0] = MEMORY_BASE + 64'h9080;
+        dut.demand_mshr_data_q[0] =
+            memory_line(MEMORY_BASE + 64'h9080);
+        dut.demand_mshr_store_data_q[0] =
+            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+        dut.demand_mshr_store_strb_q[0] =
+            {`OPENRV64_ICX_LINE_STRB_WIDTH{1'b0}};
+        dut.demand_waiter_valid_q[1] = 1'b1;
+        dut.demand_waiter_mshr_q[1] = 0;
+        dut.demand_waiter_epoch_q[1] = dut.speculation_epoch_q;
+        dut.tag_overlay_needed_q[1] = 1'b0;
+        dut.tag_overlay_word_q[1] = 3'd0;
+        expected_valid[1] = 1'b1;
+        expected_data[1] = memory_word(MEMORY_BASE + 64'h9080);
+        #1;
+        if (!resp_valid || (resp_tag != held_resp_tag) ||
+            (req_rdata !== held_resp_data))
+            $fatal(1,
+                "demand completion preempted held resident response");
+        @(posedge clk);
+        @(negedge clk);
+        if (!resp_valid || (resp_tag != held_resp_tag) ||
+            (req_rdata !== held_resp_data))
+            $fatal(1,
+                "held resident response changed before acceptance");
+        resp_ready = 1'b1;
+        wait_for_completions(10);
+
         // A synchronous fill probe must reserve its MSHR selection. Reproduce
         // the Linux failure: entry 1 starts the probe, then lower-index entry
         // 0 completes before ready. Address and data must remain from entry 1

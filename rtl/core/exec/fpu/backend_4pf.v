@@ -205,6 +205,7 @@ module openrv64_backend_4pf #(
     wire [3*RETIRE_META_WIDTH-1:0] allocation_meta;
     wire [3*RETIRE_RECORD_WIDTH-1:0] allocation_record;
     wire [2:0] allocation_complete;
+    wire [2:0] allocation_store;
     wire [2:0] allocation_mispredict;
     wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
         allocation_result;
@@ -234,6 +235,10 @@ module openrv64_backend_4pf #(
     wire [3*SLOT_WIDTH-1:0] complete_slot;
     wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
         complete_payload;
+    wire posted_store_complete_valid;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] posted_store_complete_id;
+    wire [SLOT_WIDTH-1:0] posted_store_complete_slot;
+    wire posted_store_complete_accept;
     wire [3*RETIRE_RESULT_WIDTH-1:0] complete_retire_result;
     wire exec_redirect_valid;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] exec_redirect_id;
@@ -366,6 +371,9 @@ module openrv64_backend_4pf #(
                     `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
                     `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH];
 
+            assign allocation_store[retire_record_lane] =
+                allocation_valid[retire_record_lane] && issue_record[15];
+
             assign allocation_record[
                 retire_record_lane*RETIRE_RECORD_WIDTH +:
                 RETIRE_RECORD_WIDTH] = {
@@ -403,12 +411,17 @@ module openrv64_backend_4pf #(
                 (ENABLE_TRACE != 0) ? issue_record[338 +: 64] : 64'd0;
             assign allocation_retire_result[
                 retire_record_lane*RETIRE_RESULT_WIDTH +:
-                RETIRE_RESULT_WIDTH] = {
-                alloc_complete_record[265 +: `RV64_XLEN],
-                alloc_complete_record[
-                    `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN],
-                alloc_complete_record[0 +: 153]
-            };
+                RETIRE_RESULT_WIDTH] = allocation_store[retire_record_lane] &&
+                    !allocation_complete[retire_record_lane] ? {
+                        issue_record[274 +: `RV64_XLEN] + 64'd4,
+                        64'd0,
+                        153'd0
+                    } : {
+                        alloc_complete_record[265 +: `RV64_XLEN],
+                        alloc_complete_record[
+                            `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN],
+                        alloc_complete_record[0 +: 153]
+                    };
             assign complete_retire_result[
                 retire_record_lane*RETIRE_RESULT_WIDTH +:
                 RETIRE_RESULT_WIDTH] = {
@@ -1569,6 +1582,10 @@ module openrv64_backend_4pf #(
         .complete_id_3p_o(complete_id),
         .complete_slot_3p_o(complete_slot),
         .complete_payload_3p_o(complete_payload),
+        .posted_store_complete_valid_3p_o(
+            posted_store_complete_valid),
+        .posted_store_complete_id_3p_o(posted_store_complete_id),
+        .posted_store_complete_slot_3p_o(posted_store_complete_slot),
         .async_store_fault_3p_o(async_store_fault),
         .async_store_page_fault_3p_o(async_store_page_fault),
         .async_store_fault_pc_3p_o(async_store_fault_pc),
@@ -1637,7 +1654,8 @@ module openrv64_backend_4pf #(
         .DEPTH(RETIRE_DEPTH),
         .ID_WIDTH(`OPENRV64_INSTR_ID_WIDTH),
         .INDEX_WIDTH(SLOT_WIDTH),
-        .ENABLE_EXTENSION_COMPLETION(1)
+        .ENABLE_EXTENSION_COMPLETION(1),
+        .ENABLE_POSTED_STORE_COMPLETION(1)
     ) u_retire_queue (
         .clk(clk), .rst_n(rst_n),
         .flush_i(flush_i ||
@@ -1662,6 +1680,10 @@ module openrv64_backend_4pf #(
         .extension_complete_id_i(extension_completion_id),
         .extension_complete_slot_i(extension_completion_slot),
         .extension_complete_accept_o(extension_completion_accept),
+        .posted_store_complete_valid_i(posted_store_complete_valid),
+        .posted_store_complete_id_i(posted_store_complete_id),
+        .posted_store_complete_slot_i(posted_store_complete_slot),
+        .posted_store_complete_accept_o(posted_store_complete_accept),
         .retire_valid_o(queue_retire_valid),
         .retire_accept_i(queue_retire_accept),
         .retire_id_o(queue_retire_id),
@@ -1674,6 +1696,16 @@ module openrv64_backend_4pf #(
         .post_retire_id_o(queue_post_retire_id),
         .post_retire_slot_o(queue_post_retire_slot)
     );
+
+`ifndef SYNTHESIS
+    always @(posedge clk) begin
+        if (rst_n && posted_store_complete_valid &&
+            !posted_store_complete_accept)
+            $fatal(1,
+                "posted store completion missed FPU ROB id=%0d slot=%0d",
+                posted_store_complete_id, posted_store_complete_slot);
+    end
+`endif
 
     openrv64_retire_records_3p #(
         .DEPTH(RETIRE_DEPTH),
@@ -1688,7 +1720,8 @@ module openrv64_backend_4pf #(
         .alloc_record_i(allocation_record),
         .alloc_complete_i(allocation_complete),
         .alloc_result_valid_i(allocation_complete |
-                              allocation_extension_valid),
+                              allocation_extension_valid |
+                              allocation_store),
         .alloc_result_i(allocation_retire_result),
         .alloc_trace_i(allocation_trace),
         .complete_valid_i(queue_complete_accept),

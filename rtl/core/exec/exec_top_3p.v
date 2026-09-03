@@ -98,6 +98,11 @@ module openrv64_exec_top_3p #(
     output wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] complete_id_o,
     output wire [3*RETIRE_SLOT_WIDTH-1:0] complete_slot_o,
     output wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0] complete_payload_o,
+    output wire                         posted_store_complete_valid_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        posted_store_complete_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0]
+                                        posted_store_complete_slot_o,
 
     output wire                         async_store_fault_o,
     output wire                         async_store_page_fault_o,
@@ -653,6 +658,10 @@ module openrv64_exec_top_3p #(
         .complete_id_o(lsu_complete_id),
         .complete_slot_o(lsu_complete_slot),
         .complete_payload_o(lsu_complete_payload),
+        .posted_store_complete_valid_o(
+            posted_store_complete_valid_o),
+        .posted_store_complete_id_o(posted_store_complete_id_o),
+        .posted_store_complete_slot_o(posted_store_complete_slot_o),
         .mem_valid_o(mem_valid_o),
         .mem_ready_i(mem_ready_i),
         .mem_tag_o(mem_tag_o),

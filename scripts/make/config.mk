@@ -560,6 +560,13 @@ CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_START ?= 0
 # Zero records every cycle from START through the end of simulation.
 CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_CYCLES ?= 0
 CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_FLUSH ?= 1024
+CORE_3P_ICX_L2_STORE_WAVE_TRACE ?= 0
+ifeq ($(filter $(CORE_3P_ICX_L2_STORE_WAVE_TRACE),0 1),)
+$(error CORE_3P_ICX_L2_STORE_WAVE_TRACE must be 0 or 1)
+endif
+CORE_3P_ICX_L2_STORE_WAVE_PATH ?=
+CORE_3P_ICX_L2_STORE_WAVE_START ?= 0
+CORE_3P_ICX_L2_STORE_WAVE_CYCLES ?= 512
 CORE_3P_ICX_L2_VERILATOR_DIR := \
 	build/verilator/core-3p-icx-l2-bg$(CORE_3P_ICX_L2_BANKED_GPR)b$(CORE_3P_ICX_L2_BANKED_GPR_NUM_BANKS)r$(CORE_3P_ICX_L2_BANKED_GPR_READ_PORTS_PER_BANK)-lut$(CORE_3P_ICX_L2_FPGA_GPR_LUTRAM)-bp$(CORE_3P_ICX_L2_BP_TYPE)-mode$(CORE_3P_ICX_L2_MODE)-carousel$(CORE_3P_ICX_L2_FETCH_CAROUSEL)-cg$(CORE_3P_ICX_L2_CONFIDENCE_GATE)-ps$(CORE_3P_ICX_L2_PAIR_STACK_DEPTH)-cf$(CORE_3P_ICX_L2_COMPLETION_FORWARD_MASK)-bf$(CORE_3P_ICX_L2_BRANCH_FORWARD_MASK)-ff$(CORE_3P_ICX_L2_FULL_FORWARDING)-rw$(CORE_3P_ICX_L2_RELAX_WAW)-rh$(CORE_3P_ICX_L2_RELAX_HAZARDS)-iw$(CORE_3P_ICX_L2_ISSUE_WINDOW)-sw$(CORE_3P_ICX_L2_SPECULATION_WINDOW)-crr$(CORE_3P_ICX_L2_RESULT_READY_CONTROL_RELEASE)-r$(CORE_3P_ICX_L2_RETIRE_DEPTH)s$(CORE_3P_ICX_L2_ISSUE_WINDOW_DEPTH)-prf$(CORE_3P_ICX_L2_PHYS_REG_COUNT)-rn$(CORE_3P_ICX_L2_RENAME_MODE)-posted$(CORE_3P_ICX_L2_POSTED_STORES)-fack$(CORE_3P_ICX_L2_FENCE_L2_ACK_ENABLE)-mpf$(CORE_3P_ICX_L2_M_MODE_PREFETCH_ENABLE)-ram$(CORE_3P_ICX_L2_RAM_BYTES)-l1i$(CORE_3P_ICX_L2_L1I_BYTES)-l1d$(CORE_3P_ICX_L2_L1D_BYTES)xst$(CORE_3P_ICX_L2_L1D_SYNC_TAG_LOOKUP)xse$(CORE_3P_ICX_L2_L1D_SYNC_STORE_EXTENSION)xps$(CORE_3P_ICX_L2_LSU_PAGE_SCREEN)-tlb$(CORE_3P_ICX_L2_TLB_ENTRIES)x$(CORE_3P_ICX_L2_TLB_WAYS)-l2$(CORE_3P_ICX_L2_L2_BYTES)x$(CORE_3P_ICX_L2_L2_WAYS)x$(CORE_3P_ICX_L2_MSHR_ENTRIES)-gb$(CORE_3P_ICX_L2_GENBUS_READ_DEPTH)x$(CORE_3P_ICX_L2_GENBUS_WRITE_DEPTH)-pf$(CORE_3P_ICX_L2_L1D_PREFETCH_ENABLE)x$(CORE_3P_ICX_L2_L1D_PREFETCH_STREAMS)x$(CORE_3P_ICX_L2_L1D_PREFETCH_DISTANCE)x$(CORE_3P_ICX_L2_L1D_PREFETCH_ADAPTIVE_ENABLE)x$(CORE_3P_ICX_L2_L1D_PREFETCH_MAX_DISTANCE)x$(CORE_3P_ICX_L2_L1D_PREFETCH_QUEUE_LINES)x$(CORE_3P_ICX_L2_L1D_PREFETCH_OUTSTANDING)x$(CORE_3P_ICX_L2_L1D_PREFETCH_DEMAND_RESERVE)xppg$(CORE_3P_ICX_L2_L1D_PREFETCH_PAGE_GATING)-ddr3$(CORE_3P_ICX_L2_DDR3)x$(CORE_3P_ICX_L2_DDR3_READ_QUEUE_DEPTH)x$(CORE_3P_ICX_L2_DDR3_WRITE_QUEUE_DEPTH)x$(CORE_3P_ICX_L2_DDR3_COMMAND_QUEUE_DEPTH)xbt$(CORE_3P_ICX_L2_DDR3_MAX_BURST_TRAIN_BURSTS)xsw$(CORE_3P_ICX_L2_DDR3_BANK_ROW_SWIZZLE)-timing$(CORE_3P_ICX_L2_MEMORY_TIMING_MODEL)
 ifeq ($(CORE_3P_ICX_L2_ENABLE_PIPELINE_STATE_TRACE),1)
@@ -568,6 +575,9 @@ CORE_3P_ICX_L2_VERILATOR_DIR := \
 else
 CORE_3P_ICX_L2_VERILATOR_DIR := \
 	$(CORE_3P_ICX_L2_VERILATOR_DIR)-ifw$(CORE_3P_ICX_L2_L1I_FETCH_WIDTH)
+endif
+ifeq ($(CORE_3P_ICX_L2_STORE_WAVE_TRACE),1)
+CORE_3P_ICX_L2_VERILATOR_DIR := $(CORE_3P_ICX_L2_VERILATOR_DIR)/store-wave-fst
 endif
 ifeq ($(CORE_3P_ICX_L2_ORACLE_BRANCHES),1)
 CORE_3P_ICX_L2_VERILATOR_DIR := \
@@ -596,6 +606,11 @@ MEMCPY_64K_ELF := sw/memcpy/memcpy-64k.elf
 MEMCPY_64K_BIN := sw/memcpy/memcpy-64k.bin
 MEMCPY_64K_MAP := sw/memcpy/memcpy-64k.map
 MEMCPY_64K_DISASM := sw/memcpy/memcpy-64k.disasm
+MEMCPY_64K_VM_ELF := sw/memcpy/memcpy-64k-vm.elf
+MEMCPY_64K_VM_BIN := sw/memcpy/memcpy-64k-vm.bin
+MEMCPY_64K_VM_MAP := sw/memcpy/memcpy-64k-vm.map
+MEMCPY_64K_VM_DISASM := sw/memcpy/memcpy-64k-vm.disasm
+MEMCPY_64K_VM_MEMH := sim/memcpy-64k-vm.memh
 MEMCPY_SWEEP_ELF := sw/memcpy/memcpy-sweep.elf
 MEMCPY_SWEEP_BIN := sw/memcpy/memcpy-sweep.bin
 MEMCPY_SWEEP_MAP := sw/memcpy/memcpy-sweep.map
@@ -603,6 +618,8 @@ MEMCPY_SWEEP_DISASM := sw/memcpy/memcpy-sweep.disasm
 MEMCPY_PASS := 4d454d4350594f4b
 MEMCPY_MEMH_BYTES := 0x20000
 MEMCPY_MEMH_WORDS := 4096
+MEMCPY_VM_MEMH_BYTES := 0x44000
+MEMCPY_VM_MEMH_WORDS := 8704
 MEMCPY_SWEEP_MEMH_BYTES := 0x80000
 MEMCPY_SWEEP_MEMH_WORDS := 16384
 MEMCPY_SWEEP_REPORTS := 162
@@ -890,6 +907,10 @@ MEMCPY_4K_MEASURE_END = $(shell $(RISCV_NM) -n $(MEMCPY_4K_ELF) | \
 	awk '$$3 == "memcpy_measure_end" { print $$1 }')
 MEMCPY_64K_MEASURE_END = $(shell $(RISCV_NM) -n $(MEMCPY_64K_ELF) | \
 	awk '$$3 == "memcpy_measure_end" { print $$1 }')
+MEMCPY_64K_VM_MEASURE_END = $(shell $(RISCV_NM) -n $(MEMCPY_64K_VM_ELF) | \
+	awk '$$3 == "memcpy_measure_end" { print $$1 }')
+MEMCPY_64K_VM_DONE = $(shell $(RISCV_NM) -n $(MEMCPY_64K_VM_ELF) | \
+	awk '$$3 == "openrv64_runtime_done" { print $$1 }')
 MEMCPY_SWEEP_REPORT_PC = $(shell $(RISCV_NM) -n $(MEMCPY_SWEEP_ELF) | \
 	awk '$$3 == "memcpy_span_report" { print $$1 }')
 AARCH64_CC ?= aarch64-linux-gnu-gcc
@@ -903,11 +924,13 @@ UART_FIRMWARE_CFLAGS := -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany \
 	-mno-relax -msmall-data-limit=0 -O2 -g -Wall -Wextra -Werror \
 	-ffreestanding -fno-builtin -fno-common -fno-pic \
 	-fno-stack-protector -fno-asynchronous-unwind-tables
+COREMARK_LOOP_OUTER_ITERATIONS ?= 1
 COREMARK_LOOP_CFLAGS := -march=rv64i -mabi=lp64 -mcmodel=medany \
 	-mno-relax -msmall-data-limit=0 -O2 -g -Wall -Wextra -Werror \
 	-ffreestanding -fno-builtin -fno-common -fno-pic \
 	-fno-stack-protector -fno-asynchronous-unwind-tables \
-	-ffunction-sections -fdata-sections
+	-ffunction-sections -fdata-sections \
+	-DCOREMARK_LOOP_OUTER_ITERATIONS=$(COREMARK_LOOP_OUTER_ITERATIONS)
 COREMARK_BARE_CFLAGS := -march=rv64im_zicsr -mabi=lp64 -mcmodel=medany \
 	-mno-relax -msmall-data-limit=0 -O2 -g -Wall -Wextra -Werror \
 	-Wno-unused-parameter -Wno-implicit-fallthrough \
@@ -919,7 +942,8 @@ COREMARK_VM_CFLAGS := -march=rv64i_zicsr_zifencei -mabi=lp64 \
 	-mcmodel=medany -mno-relax -msmall-data-limit=0 -O2 -g \
 	-Wall -Wextra -Werror -ffreestanding -fno-builtin -fno-common \
 	-fno-pic -fno-stack-protector -fno-asynchronous-unwind-tables \
-	-ffunction-sections -fdata-sections
+	-ffunction-sections -fdata-sections \
+	-DCOREMARK_LOOP_OUTER_ITERATIONS=$(COREMARK_LOOP_OUTER_ITERATIONS)
 MEMCPY_ASFLAGS := -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany \
 	-mno-relax -nostdlib -nostartfiles
 FP_DAXPY_ASFLAGS := -march=rv64imafd_zicsr -mabi=lp64d \

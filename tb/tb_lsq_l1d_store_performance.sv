@@ -91,8 +91,11 @@ module lsq_l1d_store_performance_runner #(
     wire lsq_result_access_fault;
     wire lsq_result_page_fault;
     wire lsq_result_store;
+    wire lsq_posted_complete_valid;
+    wire [ID_WIDTH-1:0] lsq_posted_complete_id;
+    wire [RETIRE_SLOT_WIDTH-1:0] lsq_posted_complete_slot;
     wire lsq_empty;
-    wire result_fire = lsq_result_valid;
+    wire result_fire = lsq_posted_complete_valid;
     wire xlate_req_valid;
     wire [TAG_WIDTH-1:0] xlate_req_tag;
     wire xlate_req_write;
@@ -246,6 +249,9 @@ module lsq_l1d_store_performance_runner #(
         .req_size_o(),
         .req_wdata_o(lsq_req_wdata),
         .req_wstrb_o(lsq_req_wstrb),
+        .posted_store_complete_valid_o(lsq_posted_complete_valid),
+        .posted_store_complete_id_o(lsq_posted_complete_id),
+        .posted_store_complete_slot_o(lsq_posted_complete_slot),
         .resp_valid_i(l1d_resp_valid),
         .resp_ready_o(lsq_resp_ready),
         .resp_tag_i(l1d_resp_tag),
@@ -386,16 +392,23 @@ module lsq_l1d_store_performance_runner #(
                 issue_cooldown_q <= phase_gap;
             end
             if (result_fire) begin
-                if (!phase_active || !lsq_result_store ||
-                    lsq_result_access_fault || lsq_result_page_fault ||
-                    (lsq_result_id !== ID_WIDTH'(phase_retired_q)))
+                if (!phase_active ||
+                    (lsq_posted_complete_id !==
+                     ID_WIDTH'(phase_retired_q)) ||
+                    (lsq_posted_complete_slot !==
+                     {RETIRE_SLOT_WIDTH{1'b0}}))
                     $fatal(1,
-                           "mode=%0d bad store result id=%0d expected=%0d store=%0b access=%0b page=%0b",
-                           SYNC_TAG_LOOKUP, lsq_result_id,
-                           ID_WIDTH'(phase_retired_q), lsq_result_store,
-                           lsq_result_access_fault, lsq_result_page_fault);
+                           "mode=%0d bad store sideband id=%0d expected=%0d slot=%0d",
+                           SYNC_TAG_LOOKUP, lsq_posted_complete_id,
+                           ID_WIDTH'(phase_retired_q),
+                           lsq_posted_complete_slot);
                 phase_retired_q <= phase_retired_q + 1;
             end
+            if (lsq_result_valid)
+                $fatal(1,
+                    "mode=%0d cacheable store used full result path id=%0d store=%0b access=%0b page=%0b",
+                    SYNC_TAG_LOOKUP, lsq_result_id, lsq_result_store,
+                    lsq_result_access_fault, lsq_result_page_fault);
 
             if (u_l1d.store_buffer_count_q > store_buffer_max_q)
                 store_buffer_max_q <= u_l1d.store_buffer_count_q;

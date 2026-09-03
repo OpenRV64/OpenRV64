@@ -1767,6 +1767,155 @@ module tb_top_3p_soc #(
         (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.complete_id_q ==
          trace_retire_head_id);
 
+`ifdef OPENRV64_SIM_STORE_WAVE
+    /*
+     * Deliberately small waveform surface for store retirement diagnostics.
+     * Dumping the complete SoC makes a short steady-state window needlessly
+     * large and obscures the distinct translation, ordered launch, posted
+     * ROB completion, and downstream store-done handshakes.
+     */
+    reg [1023:0] store_wave_path;
+    integer store_wave_start_cycle;
+    integer store_wave_cycle_count;
+    reg store_wave_enabled;
+
+    wire wave_head_present = dut.backend_retire_occupancy != 0;
+    wire wave_head_retire_valid = dut.u_backend.queue_retire_valid[0];
+    wire wave_head_complete = dut.u_backend.u_retire_queue.complete_q[
+        dut.u_backend.next_retire_slot];
+    wire [2:0] wave_retire_arch = dut.backend_retire_arch;
+    wire [2:0] wave_retire_accept = dut.u_backend.queue_retire_accept;
+
+    wire wave_lsq_xlate_valid =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.xlate_req_valid_o;
+    wire wave_lsq_xlate_ready =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.xlate_req_ready_i;
+    wire wave_lsq_xlate_write =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.xlate_req_write_o;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] wave_lsq_xlate_tag =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.xlate_req_tag_o;
+    wire wave_lsq_xlate_resp_valid =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.xlate_resp_valid_i;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] wave_lsq_xlate_resp_tag =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.xlate_resp_tag_i;
+
+    wire wave_lsq_req_valid =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.req_valid_o;
+    wire wave_lsq_req_ready =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.req_ready_i;
+    wire wave_lsq_req_write =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.req_write_o;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] wave_lsq_req_tag =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.req_tag_o;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] wave_lsq_req_id =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.request_id_r;
+
+    wire wave_lsq_result_valid =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.result_valid_o;
+    wire wave_lsq_result_ready =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.result_ready_i;
+    wire wave_lsq_result_store =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.result_store_o;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] wave_lsq_result_id =
+        dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.result_id_o;
+    wire wave_posted_completion_valid =
+        dut.u_backend.posted_store_complete_valid;
+    wire wave_posted_completion_accept =
+        dut.u_backend.posted_store_complete_accept;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] wave_posted_completion_id =
+        dut.u_backend.posted_store_complete_id;
+    wire [$clog2(RETIRE_DEPTH)-1:0] wave_posted_completion_slot =
+        dut.u_backend.posted_store_complete_slot;
+
+    wire wave_mem_valid = dut.backend_mem_valid;
+    wire wave_mem_ready = dut.backend_mem_ready;
+    wire wave_mem_write = dut.backend_mem_write;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] wave_mem_tag =
+        dut.backend_mem_tag;
+    wire wave_store_done_valid = dut.backend_mem_store_done_valid;
+    wire wave_store_done_ready = dut.backend_mem_store_done_ready;
+    wire [`OPENRV64_LSU_TAG_WIDTH-1:0] wave_store_done_tag =
+        dut.backend_mem_store_done_tag;
+
+    wire wave_store_address_valid =
+        dut.u_backend.exec_store_address_valid;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] wave_store_address_id =
+        dut.u_backend.exec_store_address_id;
+    // The detector outputs are only defined for a valid store-address event.
+    // Gate the waveform aliases so idle-cycle payload values cannot look like
+    // collisions or ordering violations in GTKWave.
+    wire wave_store_collision = wave_store_address_valid &&
+                                dut.u_backend.memory_store_collision_r;
+    wire wave_store_violation = wave_store_address_valid &&
+                                dut.u_backend.memory_store_violation_r;
+    wire wave_memory_replay_pending = dut.u_backend.memory_replay_pending_q;
+    wire wave_memory_replay_valid = dut.u_backend.memory_replay_valid;
+
+    initial begin
+        store_wave_path = 0;
+        store_wave_start_cycle = 0;
+        store_wave_cycle_count = 512;
+        store_wave_enabled = $value$plusargs("store_wave=%s",
+                                             store_wave_path);
+        if (!$value$plusargs("store_wave_start=%d",
+                             store_wave_start_cycle)) begin
+        end
+        if (!$value$plusargs("store_wave_cycles=%d",
+                             store_wave_cycle_count)) begin
+        end
+        if (store_wave_enabled) begin
+            $dumpfile(store_wave_path);
+            $dumpvars(0, clk, rst_n, cycles,
+                      trace_retire_head_id, trace_retire_head_op,
+                      trace_retire_head_lsq_valid,
+                      trace_retire_head_lsq_xlate_done,
+                      trace_retire_head_lsq_access_sent,
+                      trace_retire_head_lsq_result,
+                      trace_retire_head_lsu_complete,
+                      wave_head_present, wave_head_retire_valid,
+                      wave_head_complete,
+                      wave_retire_arch, wave_retire_accept,
+                      wave_lsq_xlate_valid, wave_lsq_xlate_ready,
+                      wave_lsq_xlate_write, wave_lsq_xlate_tag,
+                      wave_lsq_xlate_resp_valid,
+                      wave_lsq_xlate_resp_tag,
+                      wave_lsq_req_valid, wave_lsq_req_ready,
+                      wave_lsq_req_write, wave_lsq_req_tag,
+                      wave_lsq_req_id,
+                      wave_lsq_result_valid, wave_lsq_result_ready,
+                      wave_lsq_result_store, wave_lsq_result_id,
+                      wave_posted_completion_valid,
+                      wave_posted_completion_accept,
+                      wave_posted_completion_id,
+                      wave_posted_completion_slot,
+                      wave_mem_valid, wave_mem_ready, wave_mem_write,
+                      wave_mem_tag, wave_store_done_valid,
+                      wave_store_done_ready, wave_store_done_tag,
+                      wave_store_address_valid, wave_store_address_id,
+                      wave_store_collision, wave_store_violation,
+                      wave_memory_replay_pending,
+                      wave_memory_replay_valid);
+            $dumpoff;
+        end
+    end
+
+    always @(negedge clk) begin
+        if (store_wave_enabled && rst_n &&
+            (cycles == store_wave_start_cycle)) begin
+            $dumpon;
+            $display("STORE_WAVE start=%0d cycles=%0d path=%0s",
+                     store_wave_start_cycle, store_wave_cycle_count,
+                     store_wave_path);
+        end
+        if (store_wave_enabled && rst_n &&
+            (cycles == store_wave_start_cycle + store_wave_cycle_count)) begin
+            $dumpoff;
+            $display("STORE_WAVE complete cycle=%0d path=%0s",
+                     cycles, store_wave_path);
+        end
+    end
+`endif
+
     wire done_pc_retired =
         (dut.backend_retire_arch[0] &&
          (dut.u_backend.queue_retire_result[

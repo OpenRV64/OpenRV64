@@ -450,6 +450,7 @@ sim-core-3p-icx-l2: $(CORE_3P_ICX_L2_VERILATOR_BUILD) \
 		+memh_words=$(CORE_3P_ICX_L2_MEMH_WORDS) \
 		+max_cycles=$(CORE_3P_ICX_L2_MAX_CYCLES) \
 		$(if $(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE),+pipeline_state_trace=$(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE) +pipeline_state_trace_start=$(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_START) +pipeline_state_trace_cycles=$(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_CYCLES) +pipeline_state_trace_flush=$(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_FLUSH)) \
+		$(if $(CORE_3P_ICX_L2_STORE_WAVE_PATH),+store_wave=$(CORE_3P_ICX_L2_STORE_WAVE_PATH) +store_wave_start=$(CORE_3P_ICX_L2_STORE_WAVE_START) +store_wave_cycles=$(CORE_3P_ICX_L2_STORE_WAVE_CYCLES)) \
 		$(CORE_3P_ICX_L2_ARGS)
 
 generate-core-3p-branch-oracle:
@@ -540,6 +541,9 @@ sw-memcpy-4k: $(MEMCPY_4K_ELF) $(MEMCPY_4K_BIN) \
 sw-memcpy-64k: $(MEMCPY_64K_ELF) $(MEMCPY_64K_BIN) \
 	$(MEMCPY_64K_DISASM)
 
+sw-memcpy-64k-vm: $(MEMCPY_64K_VM_ELF) $(MEMCPY_64K_VM_BIN) \
+	$(MEMCPY_64K_VM_MEMH) $(MEMCPY_64K_VM_DISASM)
+
 sw-memcpy-sweep: $(MEMCPY_SWEEP_ELF) $(MEMCPY_SWEEP_BIN) \
 	$(MEMCPY_SWEEP_DISASM)
 
@@ -598,6 +602,24 @@ bench-memcpy-64k: $(MEMCPY_64K_ELF)
 		AXI_3P_PERF_ARGS="+memh_words=$(MEMCPY_MEMH_WORDS) +done_pc=$(MEMCPY_64K_MEASURE_END)" \
 		AXI_3P_TRACE_CSV=sim/memcpy-64k-bench-trace.csv \
 		AXI_3P_TRACE_REPORT=sim/memcpy-64k-bench-pipeline.txt
+
+bench-memcpy-64k-ddr3-vm: $(MEMCPY_64K_VM_MEMH)
+	test -n "$(MEMCPY_64K_VM_MEASURE_END)"
+	$(MAKE) sim-core-3p-icx-l2 \
+		CORE_3P_ICX_L2_MEMH=$(MEMCPY_64K_VM_MEMH) \
+		CORE_3P_ICX_L2_MEMH_WORDS=$(MEMCPY_VM_MEMH_WORDS) \
+		CORE_3P_ICX_L2_ARGS="+done_pc=$(MEMCPY_64K_VM_MEASURE_END) +require_sv39 +require_timed_memory" \
+		CORE_3P_ICX_L2_MAX_CYCLES=$(MEMCPY_64K_MAX_CYCLES) \
+		CORE_3P_ICX_L2_DDR3=1
+
+sim-memcpy-64k-ddr3-vm: $(MEMCPY_64K_VM_MEMH)
+	test -n "$(MEMCPY_64K_VM_DONE)"
+	$(MAKE) sim-core-3p-icx-l2 \
+		CORE_3P_ICX_L2_MEMH=$(MEMCPY_64K_VM_MEMH) \
+		CORE_3P_ICX_L2_MEMH_WORDS=$(MEMCPY_VM_MEMH_WORDS) \
+		CORE_3P_ICX_L2_ARGS="+expect_a0=$(MEMCPY_PASS) +done_pc=$(MEMCPY_64K_VM_DONE) +require_sv39 +require_timed_memory" \
+		CORE_3P_ICX_L2_MAX_CYCLES=$(MEMCPY_64K_MAX_CYCLES) \
+		CORE_3P_ICX_L2_DDR3=1
 
 bench-memcpy-sweep: $(MEMCPY_SWEEP_ELF)
 	test -n "$(MEMCPY_SWEEP_REPORT_PC)"

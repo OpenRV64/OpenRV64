@@ -16,6 +16,8 @@ module tb_backend_3p_banked #(
     parameter integer SCHEDULER_DEPTH = RETIRE_DEPTH
 );
     localparam integer IW = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH;
+    localparam integer SLOT_WIDTH = (RETIRE_DEPTH <= 1) ? 1 :
+        $clog2(RETIRE_DEPTH);
     localparam integer RCW = $clog2(RETIRE_DEPTH + 1);
     localparam integer DCW = $clog2(
         (((ISSUE_WINDOW != 0) || (RENAME_MODE != 0)) ?
@@ -1957,28 +1959,19 @@ module tb_backend_3p_banked #(
             replay_store_tag = mem_tag;
             mem_ready = 1'b1;
             #1;
-            if (!dut.u_exec.g_3p.u_exec.u_lsu
-                    .posted_store_complete_bypass ||
-                !dut.completion_fire[2] ||
-                (dut.complete_id[
-                    2*`OPENRV64_INSTR_ID_WIDTH +:
-                    `OPENRV64_INSTR_ID_WIDTH] !=
-                 dut.ordered_head_id)) begin
-                $display({"store bypass state bypass=%b qvalid=%b ",
-                          "lsqvalid=%b posted=%b ready=%b ",
-                          "complete=%b fire=%b id=%0d"},
-                         dut.u_exec.g_3p.u_exec.u_lsu
-                            .posted_store_complete_bypass,
-                         dut.u_exec.g_3p.u_exec.u_lsu.complete_valid_q,
-                         dut.u_exec.g_3p.u_exec.u_lsu.lsq_result_valid,
-                         dut.u_exec.g_3p.u_exec.u_lsu
-                            .lsq_result_posted_store,
-                         dut.u_exec.g_3p.u_exec.u_lsu.complete_ready_i,
-                         dut.complete_valid, dut.completion_fire,
-                         dut.complete_id[
-                            2*`OPENRV64_INSTR_ID_WIDTH +:
-                            `OPENRV64_INSTR_ID_WIDTH]);
-                fail("accepted posted store did not bypass to ROB completion");
+            if (!dut.posted_store_complete_valid ||
+                !dut.posted_store_complete_accept ||
+                (dut.posted_store_complete_id != dut.ordered_head_id)) begin
+                $display({"store sideband state valid=%b accept=%b ",
+                          "id=%0d slot=%0d head_id=%0d head_slot=%0d ",
+                          "full_complete=%b"},
+                         dut.posted_store_complete_valid,
+                         dut.posted_store_complete_accept,
+                         dut.posted_store_complete_id,
+                         dut.posted_store_complete_slot,
+                         dut.ordered_head_id, dut.ordered_head_slot,
+                         dut.completion_fire);
+                fail("accepted posted store missed ROB sideband completion");
             end
             tick();
             mem_ready = 1'b0;
@@ -2179,7 +2172,7 @@ module tb_backend_3p_banked #(
             end
 
             if ((dut.perf_memory_store_address_checks_q !=
-                 replay_check_count_before + 4) ||
+                replay_check_count_before + 4) ||
                 (dut.perf_memory_store_violations_q !=
                  replay_violation_count_before + 1) ||
                 (dut.perf_memory_replays_q != replay_count_before + 1))

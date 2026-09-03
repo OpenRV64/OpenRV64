@@ -22,8 +22,8 @@ module openrv64_retire_records_3p #(
     input  wire [3*ALLOC_WIDTH-1:0]     alloc_record_i,
     input  wire [2:0]                   alloc_complete_i,
     // Write the ordinary result/control bank without marking the ordering
-    // entry complete.  Out-of-line extensions use this to initialize next-PC
-    // while keeping private result data in extension-owned storage.
+    // entry complete.  Sideband-completed operations use this to initialize
+    // any retirement fields that will not arrive on the full result path.
     input  wire [2:0]                   alloc_result_valid_i,
     input  wire [3*RESULT_WIDTH-1:0]    alloc_result_i,
     input  wire [3*64-1:0]              alloc_trace_i,

@@ -71,6 +71,11 @@ module openrv64_exec_lsu #(
     output wire [RETIRE_SLOT_WIDTH-1:0] complete_slot_o,
     output wire [`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
                                         complete_payload_o,
+    output wire                         posted_store_complete_valid_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        posted_store_complete_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0]
+                                        posted_store_complete_slot_o,
 
     output wire                         mem_valid_o,
     input  wire                         mem_ready_i,
@@ -392,7 +397,6 @@ module openrv64_exec_lsu #(
     wire lsq_result_access_fault;
     wire lsq_result_page_fault;
     wire lsq_result_store;
-    wire lsq_result_posted_store;
     wire lsq_load_alloc_ready;
     wire lsq_store_alloc_ready;
     wire lsq_store_pending;
@@ -670,6 +674,10 @@ module openrv64_exec_lsu #(
         .req_size_o(lsq_req_size),
         .req_wdata_o(lsq_req_wdata),
         .req_wstrb_o(lsq_req_wstrb),
+        .posted_store_complete_valid_o(
+            posted_store_complete_valid_o),
+        .posted_store_complete_id_o(posted_store_complete_id_o),
+        .posted_store_complete_slot_o(posted_store_complete_slot_o),
         .load_access_valid_o(lsq_load_access_valid),
         .load_access_id_o(lsq_load_access_id),
         .load_access_slot_o(lsq_load_access_slot),
@@ -701,7 +709,6 @@ module openrv64_exec_lsu #(
         .result_access_fault_o(lsq_result_access_fault),
         .result_page_fault_o(lsq_result_page_fault),
         .result_store_o(lsq_result_store),
-        .result_posted_store_o(lsq_result_posted_store),
         .store_pending_o(lsq_store_pending),
         .quiescent_o(lsq_quiescent),
         .empty_o()
@@ -1314,32 +1321,13 @@ module openrv64_exec_lsu #(
         {`RV64_XLEN{1'b0}}
     };
 
-    // An accepted cacheable posted store cannot report a precise fault after
-    // the request handshake.  Fall its completion through to the ROB instead
-    // of always paying this generic output register.  The LSQ retains the
-    // store guard and tag until L1D returns store_done.  If the ROB cannot
-    // accept the fall-through result, complete_valid_q remains its skid
-    // buffer.
-    //
-    // Keep the registered path during flush.  Accepted stores are
-    // irrevocable, while the ROB may be changing its live prefix on that
-    // edge.
-    wire posted_store_complete_bypass =
-        !flush_i && !complete_valid_q &&
-        !atomic_result_valid && !misaligned_result_valid &&
-        lsq_result_valid && lsq_result_store &&
-        lsq_result_posted_store;
-    wire posted_store_complete_bypass_fire =
-        posted_store_complete_bypass && complete_ready_i;
-
-    assign complete_valid_o = complete_valid_q ||
-                              posted_store_complete_bypass;
-    assign complete_id_o = posted_store_complete_bypass ?
-                           lsq_result_id : complete_id_q;
-    assign complete_slot_o = posted_store_complete_bypass ?
-                             lsq_result_slot : complete_slot_q;
-    assign complete_payload_o = posted_store_complete_bypass ?
-                                completion_data : complete_payload_q;
+    // Loads, faults, atomics, and misaligned operations still carry a full
+    // completion payload through this register.  Ordinary accepted cacheable
+    // stores bypass this datapath entirely through the identity-only port.
+    assign complete_valid_o = complete_valid_q;
+    assign complete_id_o = complete_id_q;
+    assign complete_slot_o = complete_slot_q;
+    assign complete_payload_o = complete_payload_q;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -1395,8 +1383,7 @@ module openrv64_exec_lsu #(
                 complete_slot_q <= misaligned_slot_q;
                 complete_payload_q <= completion_data;
                 complete_store_q <= 1'b1;
-            end else if (lsq_result_fire &&
-                         !posted_store_complete_bypass_fire) begin
+            end else if (lsq_result_fire) begin
                 complete_valid_q <= 1'b1;
                 complete_id_q <= lsq_result_id;
                 complete_slot_q <= lsq_result_slot;

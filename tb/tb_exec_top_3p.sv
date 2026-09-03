@@ -89,6 +89,9 @@ module tb_exec_top_3p #(
     wire [3*ID_WIDTH-1:0] complete_id;
     wire [3*SLOT_WIDTH-1:0] complete_slot;
     wire [3*COMPLETE_WIDTH-1:0] complete_payload;
+    wire posted_store_complete_valid;
+    wire [ID_WIDTH-1:0] posted_store_complete_id;
+    wire [SLOT_WIDTH-1:0] posted_store_complete_slot;
     wire redirect_valid;
     wire [ID_WIDTH-1:0] redirect_id;
     wire [`RV64_XLEN-1:0] redirect_target;
@@ -188,6 +191,9 @@ module tb_exec_top_3p #(
         .complete_ready_i(complete_ready),
         .complete_id_o(complete_id),
         .complete_slot_o(complete_slot),
+        .posted_store_complete_valid_o(posted_store_complete_valid),
+        .posted_store_complete_id_o(posted_store_complete_id),
+        .posted_store_complete_slot_o(posted_store_complete_slot),
         .complete_payload_o(complete_payload),
         .redirect_valid_o(redirect_valid),
         .redirect_id_o(redirect_id),
@@ -798,21 +804,19 @@ module tb_exec_top_3p #(
             (mem_wdata != 64'hdead_beef_cafe_f00d) || (mem_wstrb != 8'hff))
             fail("ordered store request mismatch");
         saved_mem_tag = mem_tag;
+        if (!posted_store_complete_valid ||
+            (posted_store_complete_id != ID_WIDTH'(2)) ||
+            (posted_store_complete_slot != 3'd2))
+            fail("accepted MEM store missed sideband completion");
         tick();
-        // Once L1D accepts the posted request, the store may complete before
-        // its later tagged response.  A coincident younger redirect must not
-        // discard that irrevocable store completion.
+        // Once L1D accepts the posted request, only the tag-release state
+        // remains in the LSU.  A younger redirect must not discard it.
         flush = 1'b1;
         tick();
         flush = 1'b0;
         #1;
-        if (!complete_valid[2])
-            fail("accepted MEM store did not complete across flush");
-        if (complete_payload[2*COMPLETE_WIDTH + COMPLETE_EXCEPTION])
-            fail("MEM store raised an unexpected exception");
-        complete_ready = 3'b100;
-        tick();
-        complete_ready = 3'b000;
+        if (complete_valid[2])
+            fail("accepted MEM store entered full completion path");
         mem_resp_valid = 1'b1;
         mem_resp_tag = saved_mem_tag;
         #1;
@@ -1313,13 +1317,14 @@ module tb_exec_top_3p #(
             (mem_wstrb != 8'hff))
             fail("younger store did not drain after misaligned LD");
         saved_mem_tag = mem_tag;
+        if (!posted_store_complete_valid ||
+            (posted_store_complete_id != ID_WIDTH'(43)) ||
+            (posted_store_complete_slot != 3'd3))
+            fail("younger store missed sideband completion");
         tick();
         #1;
-        if (!complete_valid[2])
-            fail("younger store did not complete after misaligned LD");
-        complete_ready = 3'b100;
-        tick();
-        complete_ready = 3'b000;
+        if (complete_valid[2])
+            fail("younger store used full completion after misaligned LD");
         mem_resp_tag = saved_mem_tag;
         mem_resp_valid = 1'b1;
         #1;

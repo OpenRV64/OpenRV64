@@ -602,6 +602,28 @@ $(MEMCPY_64K_BIN): $(MEMCPY_64K_ELF)
 $(MEMCPY_64K_DISASM): $(MEMCPY_64K_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
+$(MEMCPY_64K_VM_ELF): $(OPENRV64_MAKEFILES) sw/runtime/sv39.S \
+		sw/runtime/c_start.inc sw/memcpy/memcpy.S \
+		sw/runtime/openrv64-sv39.ld
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(MEMCPY_ASFLAGS) -DOPENRV64_RUNTIME_NO_BSS_CLEAR \
+		-Wa,--defsym,MEMCPY_BYTES=65536 \
+		-Wa,--defsym,MEMCPY_VM=1 \
+		-Wl,--build-id=none,-Map,$(MEMCPY_64K_VM_MAP) \
+		-T sw/runtime/openrv64-sv39.ld -o $@ \
+		sw/runtime/sv39.S sw/memcpy/memcpy.S
+
+$(MEMCPY_64K_VM_BIN): $(MEMCPY_64K_VM_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(MEMCPY_64K_VM_MEMH): $(MEMCPY_64K_VM_BIN) tools/bin2mem.py
+	mkdir -p $(dir $@)
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(MEMCPY_VM_MEMH_BYTES) --word-bytes 32
+
+$(MEMCPY_64K_VM_DISASM): $(MEMCPY_64K_VM_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
 $(MEMCPY_SWEEP_ELF): $(OPENRV64_MAKEFILES) sw/memcpy/memcpy_sweep.S \
 		sw/runtime/bare.S sw/runtime/c_start.inc sw/openrv64.ld
 	mkdir -p $(dir $@)

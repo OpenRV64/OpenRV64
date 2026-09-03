@@ -61,7 +61,10 @@ module tb_lsq;
     logic [TAGW-1:0] store_done_tag;
     wire store_done_ready;
     wire result_valid, result_access_fault, result_page_fault;
-    wire result_store, result_posted_store;
+    wire result_store;
+    wire posted_store_complete_valid;
+    wire [IDW-1:0] posted_store_complete_id;
+    wire [2:0] posted_store_complete_slot;
     wire store_pending, quiescent, empty;
     logic result_ready;
     wire [IDW-1:0] result_id;
@@ -124,6 +127,9 @@ module tb_lsq;
         .req_addr_o(req_addr), .req_vaddr_o(req_vaddr),
         .req_size_o(req_size), .req_wdata_o(req_wdata),
         .req_wstrb_o(req_wstrb),
+        .posted_store_complete_valid_o(posted_store_complete_valid),
+        .posted_store_complete_id_o(posted_store_complete_id),
+        .posted_store_complete_slot_o(posted_store_complete_slot),
         .resp_valid_i(resp_valid), .resp_ready_o(resp_ready),
         .resp_tag_i(resp_tag), .resp_paddr_i(resp_paddr),
         .resp_rdata_i(resp_rdata),
@@ -138,7 +144,6 @@ module tb_lsq;
         .result_access_fault_o(result_access_fault),
         .result_page_fault_o(result_page_fault),
         .result_store_o(result_store),
-        .result_posted_store_o(result_posted_store),
         .store_pending_o(store_pending),
         .quiescent_o(quiescent),
         .empty_o(empty)
@@ -267,6 +272,18 @@ module tb_lsq;
                     req_write, write, req_addr, addr);
             tag = req_tag;
             req_ready = 1'b1;
+            #1;
+            if (write && (addr < 64'h1_0000)) begin
+                if (!posted_store_complete_valid ||
+                    (posted_store_complete_id != dut.request_id_r))
+                    $fatal(1,
+                        "cacheable store lacked sideband completion id=%0d/%0d",
+                        posted_store_complete_id, dut.request_id_r);
+            end else if (posted_store_complete_valid) begin
+                $fatal(1,
+                    "non-posted request produced sideband completion addr=%h",
+                    addr);
+            end
             tick();
             req_ready = 1'b0;
         end
@@ -358,13 +375,6 @@ module tb_lsq;
                     result_rdata, data,
                     result_access_fault, result_page_fault,
                     access_fault, page_fault);
-            if (is_store && !access_fault && !page_fault &&
-                !result_posted_store)
-                $fatal(1,
-                    "accepted cacheable store result was not marked posted id=%0d",
-                    id);
-            if (!is_store && result_posted_store)
-                $fatal(1, "load result was marked posted id=%0d", id);
             result_ready = 1'b1;
             tick();
             result_ready = 1'b0;
@@ -499,10 +509,12 @@ module tb_lsq;
         end
         head_valid = 1; head_id = IDW'(1); head_slot = 3'd1;
         take_req(1'b1, 64'h2000, st);
-        // Cacheable stores complete architecturally from request acceptance,
-        // before the later L1D response.  Their tag remains occupied until
-        // that response returns.
-        take_result(IDW'(1), 1, 0, 0, 0);
+        // Cacheable stores complete architecturally through the identity-only
+        // sideband checked by take_req.  Their tag remains occupied until the
+        // later L1D response returns; the data result port stays unused.
+        #1;
+        if (result_valid)
+            $fatal(1, "posted store entered the full result path");
         if (!store_pending)
             $fatal(1, "accepted posted store was released before response");
         alloc_store(IDW'(2), 3'd2, 64'h1100, 3'd3,
@@ -573,7 +585,8 @@ module tb_lsq;
                     64'h0123_4567_89ab_cdef, 8'hff);
         head_valid = 1; head_id = IDW'(4); head_slot = 3'd4;
         take_req(1'b1, 64'h1800, st);
-        take_result(IDW'(4), 1, 0, 0, 0);
+        if (result_valid)
+            $fatal(1, "posted store entered result path before flush");
         head_valid = 0;
         flush = 1; tick(); flush = 0;
         if (!store_pending)
@@ -595,7 +608,8 @@ module tb_lsq;
                     64'h1111_2222_3333_4444, 8'hff);
         head_valid = 1; head_id = IDW'(5); head_slot = 3'd5;
         take_req(1'b1, 64'h2000, st);
-        take_result(IDW'(5), 1, 0, 0, 0);
+        if (result_valid)
+            $fatal(1, "posted store blocked concurrent result path");
         head_valid = 0;
         alloc_load(IDW'(6), 3'd6, 64'h3000, 3'd3);
         take_req(1'b0, 64'h3000, lt);
@@ -624,9 +638,8 @@ module tb_lsq;
 
         reset_dut();
 
-        // Exercise the exact MRET-like boundary: architectural store result
-        // consumption and full flush coincide, followed by delayed L1D tag
-        // release.
+        // A full flush immediately after sideband completion must preserve the
+        // accepted store until its delayed L1D tag release.
         translation_bypass = 1'b1;
         alloc_store(IDW'(7), 3'd7, 64'h3800, 3'd3,
                     64'ha5a5_5a5a_a5a5_5a5a, 8'hff);
@@ -634,15 +647,13 @@ module tb_lsq;
         take_req(1'b1, 64'h3800, st);
         head_valid = 0;
         flush = 1'b1;
-        result_ready = 1'b1;
         #1;
-        if (!result_valid || !result_store || result_id != IDW'(7))
-            $fatal(1, "flush-cycle posted-store result absent");
+        if (result_valid)
+            $fatal(1, "flush exposed a posted store on the result port");
         tick();
         flush = 1'b0;
-        result_ready = 1'b0;
         if (!store_pending)
-            $fatal(1, "flush-cycle result released posted-store tag early");
+            $fatal(1, "flush released posted-store tag early");
         complete_store(st);
         if (store_pending)
             $fatal(1, "delayed completion after flush retained store");
@@ -658,7 +669,6 @@ module tb_lsq;
                     64'hccdd_eeff_0011_2233, 8'hff);
         head_valid = 1; head_id = IDW'(8); head_slot = 3'd0;
         take_req(1'b1, 64'h4000, st);
-        take_result(IDW'(8), 1, 0, 0, 0);
         head_valid = 0;
         store_done_tag = st;
         store_done_valid = 1'b1;
@@ -852,7 +862,6 @@ module tb_lsq;
                        IDW'(5), 0, 64'h0123_4567_89ab_cdef);
         head_valid = 1'b1; head_id = IDW'(4); head_slot = 3'd4;
         take_req(1'b1, 64'h7000, st);
-        take_result(IDW'(4), 1, 0, 0, 0);
         complete_store(st);
         head_valid = 1'b0;
         translation_bypass = 1'b0;
@@ -874,7 +883,6 @@ module tb_lsq;
             $fatal(1, "same-word load passed store guard");
         head_valid = 1'b1; head_id = IDW'(6); head_slot = 3'd6;
         take_req(1'b1, 64'h8002, st);
-        take_result(IDW'(6), 1, 0, 0, 0);
         complete_store(st);
         head_valid = 1'b0;
         take_req(1'b0, 64'h8002, lt);

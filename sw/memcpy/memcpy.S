@@ -40,9 +40,13 @@ main:
      * moves exactly one L1 cache line.  The final FENCE is the architectural
      * end of the copy; a posted lower-level store tail may still drain after
      * retirement, as it can after a normal memcpy return.
-     */
+    */
     fence   rw, rw
+.ifdef MEMCPY_VM
+    csrr    s3, cycle
+.else
     csrr    s3, mcycle
+.endif
 
 .globl memcpy_measure_begin
 memcpy_measure_begin:
@@ -70,7 +74,11 @@ memcpy_measure_begin:
     bnez    s2, memcpy_measure_begin
 
     fence   rw, rw
+.ifdef MEMCPY_VM
+    csrr    t0, cycle
+.else
     csrr    t0, mcycle
+.endif
     sub     a0, t0, s3
     la      t1, memcpy_cycles
     sd      a0, 0(t1)

@@ -695,3 +695,132 @@ The run then stopped at its configured 7,500,000-cycle diagnostic limit while
 still in S-mode, at PC `ffffffff80280e58`.  Linux had progressed through early
 initialization but had not reached the shell prompt, so this is evidence that
 the identified redirect fault is fixed, not a Linux boot pass.
+
+## Linux bring-up: L1D response arbitration under backpressure
+
+The next source-current Linux run,
+`linux-l1-tomasulo-1h-ddr3-20260903T104141Z`, reached S-mode without a Linux
+fault edge, panic, Oops, or BUG, then failed at simulation time 145,234,000:
+
+```text
+L1D response changed while held by backpressure
+```
+
+This is a northbound ready/valid violation in the L1D, not a Linux or SATP
+failure.  The public response was a combinational priority mux over completed
+demand misses, resident L1 responses, and the simulation-only freeloader.  A
+resident response could be presented while the requester withheld ready, then
+be replaced by a newly eligible higher-priority demand completion before the
+resident response was accepted.
+
+The source-identical pre-fix simulator resumed from the 6,000,000-cycle
+checkpoint in `linux-l1-tomasulo-1h-ddr3-20260903T095928Z` and saved the
+requested exact-state snapshot at 14,000,000 cycles in
+`linux-l1-tomasulo-1h-ddr3-20260903T130420Z`.  Its managed validation is
+`checkpoint`; the simulator exited normally after writing the 529 MiB file,
+whose SHA-256 is
+`46b2780b72cac4a30e92c2f18a2a3c8e9d1e66bd86d3de50dbfae99bfc79e712`.
+The wrapper's later exit code 2 is only failed optional symbol-map
+postprocessing; `sim_exit_code=0` and the checkpoint is complete.
+
+Exact replays of the final failure window under GDB used the original
+checkpoint-compatible model.  On the capture edge, the public tuple was tag 0,
+data 0, no error, valid with ready low.  The L1 resident response was valid;
+the tag-2 demand waiter was found but its overlay was not yet ready, so the
+public tuple was unambiguously the resident response.  On the next edge, before
+that tuple was accepted, the public output became tag 2, data 1, no error.  The
+live source was then the completed demand waiter: tag 2, MSHR 0, overlay ready,
+and no speculation barrier.  The resident L1 response was still valid and its
+ready was withheld because the demand completion had taken priority.  Runs
+`linux-l1-tomasulo-1h-ddr3-20260903T140828Z` and
+`linux-l1-tomasulo-1h-ddr3-20260903T135542Z` record the capture and failure
+edges respectively.
+
+The L1D now has a one-entry fall-through response skid slot.  When empty and
+the requester is ready, it adds no response latency.  When the requester
+stalls, it accepts the selected internal source into the slot and owns its
+tag/data/error tuple until the requester accepts it.  When a held tuple drains,
+the next internal source can enter the slot on the same edge, preserving one
+response per cycle.  This also protects against a completed demand waiter
+changing selection while another demand response is held.
+
+The demand-MSHR directed test now explicitly presents a resident response,
+withholds northbound ready, and makes a demand waiter complete during the
+stall.  The pre-fix managed run
+`l1d-retired-store-mshr-20260903T125858Z` fails that check.  The fixed focused
+run `l1d-retired-store-mshr-20260903T130022Z` passes, and the combined run
+`l1d-response-arbiter-directed-20260903T130145Z` passes all seven L1D suites:
+prefetch, demand MSHR, retirement-canonical MSHR, store order, store buffer,
+fence, and invalidate arbitration.
+
+The fixed cache/response integration also passes the Sv39 timed-DDR3 atomic
+run `atomic-sv39-3p-tomasulo-ddr3-20260903T135855Z` and the 4,096-iteration
+redirect/LR-SC stress run
+`lrsc-redirect-stress-sv39-3p-tomasulo-ddr3-20260903T135855Z`.  The
+misaligned ordered-replay run
+`misaligned-order-replay-sv39-3p-tomasulo-ddr3-20260903T141120Z` also passes
+unchanged at 172,762 cycles, 21,801 retired instructions, and 31,966
+ordered-input replays.
+
+The fixed-RTL Linux run from reset,
+`linux-l1-tomasulo-1h-ddr3-20260903T135957Z`, crossed the old approximately
+14.5234M-cycle failure and stopped intentionally at 15,000,000 cycles with
+10,016,473 retired instructions.  It remained in S-mode and emitted no L1D
+hold failure, `LINUX_FAULT_EDGE`, panic, Oops, or BUG.  The simulator exit is
+zero and managed validation is `stopped`; the wrapper's exit code 2 is again
+only the unavailable optional Linux symbol map.  The run also saved a
+source-current 14,000,000-cycle checkpoint with SHA-256
+`6b4ff9f30b98771c291e7061f98346b868cafa4a17fd9db195edbe5483b2d150`.
+This is a targeted failure-boundary pass, not a completed Linux boot.  This
+work does not change SATP policy.
+
+## Posted-store identity-only completion
+
+An accepted ordinary cacheable store no longer occupies the LSU's full result
+datapath.  Retirement result storage is initialized for stores at allocation
+with the sequential next PC and zero data/control result.  When the L1D request
+handshake becomes irrevocable, the LSQ emits only the instruction ID and ROB
+slot on an independent posted-store completion port.  The ROB validates that
+identity and marks the entry complete.  A simulation assertion treats failure
+to match the live ROB entry as fatal.
+
+This port is independent of the three normal completion payloads and, in the
+4PF backend, the extension-completion sideband.  Loads, translation or access
+faults, atomics, uncached stores, and naturally misaligned operations retain
+their full-result paths.  The LSQ also retains a posted store until the later
+store-done response, so downstream protocol ownership and asynchronous store
+error reporting are unchanged.
+
+The source-matched Sv39 memcpy waveform run is
+`memcpy-64k-sv39-3p-tomasulo-ddr3-tage-store-wave-20260903T204827Z`.
+Edge-level analysis found 8,193 cacheable store request handshakes and 8,193
+same-edge sideband completions.  Every completion matched and was accepted by
+the ROB; no cacheable store used the full result port.  In 1,001 cycles the
+store sideband coincided with another LSU result, demonstrating that a load
+result no longer delays the store acknowledgment.
+
+This removes the local completion arbitration defect but does not improve this
+memcpy run's elapsed time.  Both the old payload-bypass run
+`memcpy-64k-sv39-3p-tomasulo-ddr3-tage-store-wave-20260903T200836Z` and the
+sideband run take 31,275 cycles for 20,529 retired instructions, IPC 0.6564.
+Store request wait remains 3,040 cycles and the DDR request schedule is
+unchanged.  Retirement attribution does change: head-incomplete cycles fall
+from 16,221 to 14,219 and store-at-head cycles from 14,703 to 11,700.  Those
+cycles are absorbed by other head states and retirement grouping rather than
+shortening the memory-bound critical path.
+
+Focused managed validation passes in:
+
+- `lsq-store-guards-20260903T204415Z`;
+- `retire-queue-store-sideband-20260903T204804Z`;
+- `lsu-xlate-generation-3p-20260903T205139Z`;
+- `top-4pf-screen-policy-regression-20260903T204721Z`; and
+- the full Sv39 memcpy run above.
+
+The broader `ret-load-inhibit-focused-20260903T204550Z` run reaches and passes
+its new posted-store sideband check, then fails a later, separate misaligned
+memory-replay counter assertion.  The observed counts are five store-address
+checks, two violations, and three total emitted replays versus an expected two;
+the additional event is an ordered-input replay preceding the collision
+replay.  This is not evidence of a store-completion failure, but that broader
+test is not a clean pass and should not be reported as one.

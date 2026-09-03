@@ -236,6 +236,11 @@ module openrv64_exec_top #(
     output wire [3*RETIRE_SLOT_WIDTH_3P-1:0] complete_slot_3p_o,
     output wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
                                         complete_payload_3p_o,
+    output wire                         posted_store_complete_valid_3p_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        posted_store_complete_id_3p_o,
+    output wire [RETIRE_SLOT_WIDTH_3P-1:0]
+                                        posted_store_complete_slot_3p_o,
     output wire                         async_store_fault_3p_o,
     output wire                         async_store_page_fault_3p_o,
     output wire [`RV64_XLEN-1:0]        async_store_fault_pc_3p_o,
@@ -292,6 +297,11 @@ module openrv64_exec_top #(
             assign complete_slot_3p_o = {3*RETIRE_SLOT_WIDTH_3P{1'b0}};
             assign complete_payload_3p_o =
                 {3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH{1'b0}};
+            assign posted_store_complete_valid_3p_o = 1'b0;
+            assign posted_store_complete_id_3p_o =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign posted_store_complete_slot_3p_o =
+                {RETIRE_SLOT_WIDTH_3P{1'b0}};
             assign redirect_id_3p_o =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             assign redirect_slot_3p_o = {RETIRE_SLOT_WIDTH_3P{1'b0}};
@@ -418,6 +428,12 @@ module openrv64_exec_top #(
                 .complete_id_o(complete_id_3p_o),
                 .complete_slot_o(complete_slot_3p_o),
                 .complete_payload_o(complete_payload_3p_o),
+                .posted_store_complete_valid_o(
+                    posted_store_complete_valid_3p_o),
+                .posted_store_complete_id_o(
+                    posted_store_complete_id_3p_o),
+                .posted_store_complete_slot_o(
+                    posted_store_complete_slot_3p_o),
                 .async_store_fault_o(async_store_fault_3p_o),
                 .async_store_page_fault_o(async_store_page_fault_3p_o),
                 .async_store_fault_pc_o(async_store_fault_pc_3p_o),
@@ -675,6 +691,11 @@ module openrv64_exec_top #(
                 {RETIRE_SLOT_WIDTH_3P{1'b0}};
             assign ordered_issue_replay_pc_3p_o = {`RV64_XLEN{1'b0}};
             assign store_barrier_request_3p_o = 1'b0;
+            assign posted_store_complete_valid_3p_o = 1'b0;
+            assign posted_store_complete_id_3p_o =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign posted_store_complete_slot_3p_o =
+                {RETIRE_SLOT_WIDTH_3P{1'b0}};
         end
     endgenerate
 

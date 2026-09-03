@@ -217,6 +217,7 @@ $(CORE_3P_ICX_L2_VERILATOR_BUILD): tb/tb_top_3p_soc.v \
 		$(AXI_DDR3_SRCS) $(ISA_SRCS) $(ARITH_DEPS) $(BP_DEPS)
 	mkdir -p $(CORE_3P_ICX_L2_VERILATOR_DIR)
 	$(VERILATOR) --binary --timing -Wall -Wno-fatal -j 0 -Irtl \
+		$(if $(filter 1,$(CORE_3P_ICX_L2_STORE_WAVE_TRACE)),--trace-fst --trace-depth 1 -DOPENRV64_SIM_STORE_WAVE) \
 		--top-module tb_top_3p_soc \
 		-GFETCH_CAROUSEL=$(CORE_3P_ICX_L2_FETCH_CAROUSEL) \
 		-GFETCH_ALT_LOOKASIDE=$(CORE_3P_ICX_L2_MODE) \

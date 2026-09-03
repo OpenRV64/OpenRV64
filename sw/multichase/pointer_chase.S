@@ -45,7 +45,11 @@ main:
     bne     s0, t0, .Lfail
     li      s1, POINTER_CHASE_STEPS
     fence   rw, rw
+.ifdef POINTER_CHASE_VM
+    csrr    s2, cycle
+.else
     csrr    s2, mcycle
+.endif
 
 .globl pointer_chase_measure_begin
 pointer_chase_measure_begin:
@@ -54,7 +58,11 @@ pointer_chase_measure_begin:
     bnez    s1, pointer_chase_measure_begin
 
     fence   rw, rw
+.ifdef POINTER_CHASE_VM
+    csrr    t1, cycle
+.else
     csrr    t1, mcycle
+.endif
     sub     a0, t1, s2
     la      t2, pointer_chase_cycles
     sd      a0, 0(t2)

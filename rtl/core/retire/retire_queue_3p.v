@@ -6,7 +6,8 @@ module openrv64_retire_queue_3p #(
     parameter integer ID_WIDTH = `OPENRV64_INSTR_ID_WIDTH,
     parameter integer INDEX_WIDTH = (DEPTH <= 1) ? 1 : $clog2(DEPTH),
     parameter integer COUNT_WIDTH = $clog2(DEPTH + 1),
-    parameter integer ENABLE_EXTENSION_COMPLETION = 0
+    parameter integer ENABLE_EXTENSION_COMPLETION = 0,
+    parameter integer ENABLE_POSTED_STORE_COMPLETION = 0
 ) (
     input  wire                         clk,
     input  wire                         rst_n,
@@ -35,6 +36,13 @@ module openrv64_retire_queue_3p #(
     input  wire [ID_WIDTH-1:0]          extension_complete_id_i,
     input  wire [INDEX_WIDTH-1:0]       extension_complete_slot_i,
     output wire                         extension_complete_accept_o,
+
+    // Independent identity-only completion for an irrevocably accepted
+    // cacheable store.  Its retirement result was initialized at allocation.
+    input  wire                         posted_store_complete_valid_i,
+    input  wire [ID_WIDTH-1:0]          posted_store_complete_id_i,
+    input  wire [INDEX_WIDTH-1:0]       posted_store_complete_slot_i,
+    output wire                         posted_store_complete_accept_o,
 
     output wire [2:0]                   retire_valid_o,
     input  wire [2:0]                   retire_accept_i,
@@ -170,6 +178,23 @@ module openrv64_retire_queue_3p #(
         end
     endgenerate
 
+    generate
+        if (ENABLE_POSTED_STORE_COMPLETION != 0) begin : g_posted_store_complete
+            assign posted_store_complete_accept_o =
+                posted_store_complete_valid_i &&
+                (!squash_younger_i ||
+                 (!(squash_inclusive_i &&
+                    (posted_store_complete_id_i == squash_id_i)) &&
+                  !id_is_younger(posted_store_complete_id_i,
+                                 squash_id_i))) &&
+                valid_q[posted_store_complete_slot_i] &&
+                (id_q[posted_store_complete_slot_i] ==
+                 posted_store_complete_id_i);
+        end else begin : g_no_posted_store_complete
+            assign posted_store_complete_accept_o = 1'b0;
+        end
+    endgenerate
+
     function [INDEX_WIDTH-1:0] index_add;
         input [INDEX_WIDTH-1:0] base;
         input [1:0] increment;
@@ -285,6 +310,9 @@ module openrv64_retire_queue_3p #(
 
             if (extension_complete_accept_o)
                 complete_q[extension_complete_slot_i] <= 1'b1;
+
+            if (posted_store_complete_accept_o)
+                complete_q[posted_store_complete_slot_i] <= 1'b1;
 
             if (!squash_younger_i && alloc_fire[0]) begin
                 valid_q[alloc_slot0] <= 1'b1;
