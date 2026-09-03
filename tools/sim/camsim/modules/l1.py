@@ -56,7 +56,10 @@ class L1(Module):
         self.depth = depth
         self._req, self._resp, self._ready = req, resp, ready
         self.publishes = [
-            out(resp, REG, PULSE, None, doc="completed access"),
+            # ASYNC: the answer is available in the cycle the array read
+            # completes.  A registered response here is a pipeline stage the
+            # hit path does not have, and it lands on every load.
+            out(resp, ASYNC, PULSE, None, doc="completed access"),
             out(ready, ASYNC, LEVEL, True, doc="can accept a request"),
         ]
         # The I-side sees no stores.  Self-modifying code would need an
@@ -118,30 +121,52 @@ class L1(Module):
         return victim
 
     # -- phases -------------------------------------------------------------
+    def _ripe(self, bus):
+        """The access completing this cycle, if any.  Pure: one response port,
+        ordered, so the oldest ready entry wins and nothing is mutated."""
+        ready = [t for t in self.pipe if t[0] <= bus.cycle]
+        if not ready:
+            return None
+        return min(ready, key=lambda t: (t[0], t[1].tag))
+
+    def _data_for(self, r):
+        """The bytes this access returns.  A resident line answers from the
+        array; a line still being filled answers from memory, which is where
+        the refill was going to get them anyway -- the cycles were already
+        charged when the miss was accepted."""
+        line = self._find(r.addr)
+        base = (r.addr // self.line_bytes) * self.line_bytes
+        off = r.addr - base
+        if line is not None:
+            return line.data[off:off + r.size]
+        return self.mem.read(r.addr, r.size)
+
     def settle(self, bus):
-        bus.pub(self.S_READY,
-                len(self.pipe) < self.depth and not bus.resetting())
+        if bus.resetting():
+            bus.pub(self.S_READY, False)
+            bus.pub(self.S_RESP, None)
+            return
+        bus.pub(self.S_READY, len(self.pipe) < self.depth)
+        t = self._ripe(bus)
+        bus.pub(self.S_RESP,
+                None if t is None else MemResp(t[1].tag, t[1].addr,
+                                               self._data_for(t[1])))
 
     def tick(self, bus):
         if bus.resetting():
             self._reset_state()
             return
         self.clock += 1
-        # One completion per cycle: the response port is single and ordered.
-        ready = [(c, r, h) for c, r, h in self.pipe if c <= bus.cycle]
-        done = []
-        if ready:
-            first = min(ready, key=lambda t: (t[0], t[1].tag))
-            self.pipe.remove(first)
-            done = [(first[1], first[2])]
-        for r, hit in done:
+        t = self._ripe(bus)
+        if t is not None:
+            self.pipe.remove(t)
+            r = t[1]
+            # Read allocate happens here, not in settle: filling a way is a
+            # state change and settle runs several times a cycle.
             line = self._find(r.addr)
             if line is None:
                 line = self._allocate(r.addr)
             line.used = self.clock
-            off = r.addr - (r.addr // self.line_bytes) * self.line_bytes
-            bus.pub(self.S_RESP,
-                    MemResp(r.tag, r.addr, line.data[off:off + r.size]))
 
         for st in (bus.get(self.S_ST) or ()) if self.S_ST is not None else ():
             # Write through, no write allocate: the bytes are already in memory

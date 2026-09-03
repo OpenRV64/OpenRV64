@@ -703,6 +703,16 @@ class Lsu(Module):
                                 max(0, self.depth - len(self.q))))
         bus.pub(self.S_REQ, self._next_request(bus))
 
+    def _effective_q(self, bus):
+        """The queue as it will be at the end of this cycle: what is already
+        queued, plus what issue is handing over right now.
+
+        Address generation is combinational, so a load arriving at an empty
+        queue can be launched in its arrival cycle rather than waiting a cycle
+        to be enqueued first.  That floor was 17% of loads."""
+        _, incoming = self._agen(bus)
+        return self.q + incoming
+
     def _next_request(self, bus):
         """The oldest access not yet handed to the MTL.  Pure.
 
@@ -710,19 +720,20 @@ class Lsu(Module):
         will take it, without waiting for the one before it to come back."""
         if not bus.get(self.S_DRDY) or len(self.sent) >= self.outstanding:
             return None
-        for i, (pkt, addr, data) in enumerate(self.q):
+        q = self._effective_q(bus)
+        for i, (pkt, addr, data) in enumerate(q):
             ins = pkt.ins
             if ins.uid in self.sent:
                 continue
             size = (R.STORE_SIZE if ins.is_store else R.LOAD_SIZE)[
                 R.funct3(ins.instr)]
             if not ins.is_store:
-                st = self._disambiguate(ins.uid, addr, size, i)
+                st = self._disambiguate(ins.uid, addr, size, i, q)
                 if st == "wait":
                     return None
                 if st is not None:
                     continue          # forwarded; it needs no memory access
-            elif i and any(self.q[j][0].ins.is_store for j in range(i)):
+            elif i and any(q[j][0].ins.is_store for j in range(i)):
                 # Stores translate in order among themselves; what makes them
                 # visible is retirement, which is ordered anyway.  `continue`,
                 # not `return`: stopping the scan here blocks every *load*
@@ -733,7 +744,7 @@ class Lsu(Module):
             return Xlate(ins.uid, addr, size, acc, data, side="d")
         return None
 
-    def _disambiguate(self, uid, addr, size, idx):
+    def _disambiguate(self, uid, addr, size, idx, q=None):
         """What older stores mean for this load.
 
         ``None``  nothing older overlaps -- go to memory.
@@ -747,9 +758,10 @@ class Lsu(Module):
         every store regardless of where they point -- which measured as 4.5
         cycles per load sitting in this queue before it was even sent, more
         than the entire cache round trip."""
+        q = self.q if q is None else q
         best = None
         for j in range(idx):
-            pkt_j, addr_j, data_j = self.q[j]
+            pkt_j, addr_j, data_j = q[j]
             other = pkt_j.ins
             if not other.is_store:
                 continue

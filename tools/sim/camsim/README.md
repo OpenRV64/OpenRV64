@@ -613,21 +613,40 @@ cycles, which is DRAM. It is **bp9 (TAGE) with DDR3**.
 
 | | camsim | golden |
 |---|---:|---:|
-| span | **43,753** | **40,407** |
+| span | **40,650** | **40,407** |
 | retired | 52,976 | 52,593 |
-| IPC | 1.211 | 1.302 |
-| squashed | 40.8% | 35.8% |
+| IPC | **1.303** | **1.302** |
+| squashed | 41.2% | 35.8% |
 | result | `0x0a27789d` | -- |
 
-**+8.3%.** Per-class issue-to-complete:
+**+0.6% on span, IPC within 0.001.** Per-class issue-to-complete:
 
 | class | camsim p50 / mean | golden p50 / mean | |
 |---|---|---|---|
 | alu | 1 / 1.00 | 1 / 1.02 | matches |
 | branch | 1 / 1.00 | 1 / 1.03 | matches |
 | jump | 1 / 1.00 | 1 / 1.03 | matches |
-| load | 6 / 7.16 | 3 / 3.89 | closing |
-| store | 3 / 5.65 | 6 / 6.57 | faster; boundaries differ |
+| load | 5 / 5.18 | 3 / 3.89 | 1.3 cycles long |
+| store | 3 / 5.13 | 6 / 6.57 | faster; boundaries differ |
+
+Retire mix is close too: idle 35.9% vs 36.9%, 1/cycle 33.4% vs 34.1%,
+2/cycle 30.0% vs 25.5%, 3/cycle 36.6% vs 40.4%.
+
+### The aggregate agrees; the components do not
+
+Worth stating plainly, because a 0.6% span match invites more confidence than
+it has earned. Loads are still 1.3 cycles long and 5 points more work is thrown
+away -- both *worse* than the golden -- and yet the total lands. Something is
+compensating, and the candidate is instruction supply: `IFetch` keeps its own
+line buffer, so the L1I sees **28 reads in the whole run** and fetch is very
+nearly free here where the real machine pays for it.
+
+**There is no DRAM model.** Below the L1 is a dict with zero latency; an L1
+miss costs `hit_latency + beats x beat_cycles` = 9 cycles flat. No tRCD/tCL/tRP,
+no bank or row state, no refresh, no controller queueing. That is defensible
+only because this workload fits in 16 KiB -- **40 L1 misses in the entire run**,
+and the golden agrees (0.05% of its loads exceed 40 cycles). On anything with a
+real working set the number would not survive.
 
 ### The page screen
 
@@ -658,12 +677,16 @@ Measured hop by hop, which is the only way this was ever going to be found:
 |---|---:|---:|
 | select -> dreq | 4.50 | 3.88 |
 | dreq -> l1req (MTL accept) | 1.00 | **0.00** |
-| l1req -> l1resp (cache) | 2.01 | 2.00 |
+| l1req -> l1resp (cache) | 2.01 | 1.00 |
 | l1resp -> dresp (MTL response) | 1.00 | 1.00 |
-| dresp -> done | 0.00 | 0.28 |
-| **total** | **8.51** | **7.16** |
+| dresp -> done | 0.00 | 0.25 |
+| **total** | **8.51** | **5.18** |
 
-Two bugs fell out of the first column. The LSU treated "there is a store ahead
+Three fixes account for it. The LSU now generates addresses and launches in
+the same cycle -- enqueueing first put a one-cycle floor under 17% of loads.
+The L1 answers in the cycle its array read completes rather than a cycle later;
+a registered response there is a pipeline stage the hit path does not have, and
+it lands on every load. And two bugs fell out of the first column. The LSU treated "there is a store ahead
 of me" as a reason for a load to wait, without comparing addresses -- and when
 a *store* had to wait behind an older store it `return`ed instead of
 `continue`d, blocking every load behind it too. And what the LSU advertises as
@@ -676,13 +699,16 @@ service rate of 0.771 gives 3.47 cycles, against 3.88 measured.
 
 ### Next, by measurement
 
-1. **Load latency: 7.2 cycles, needs 3.9.** Two hops remain: the cache's
-   registered response and the MTL's, where the RTL bypasses one of them on a
-   screen hit. The response-side bypass is not modelled yet -- only the
-   request side is.
-2. **bp9/TAGE.** camsim throws away 40.8% of dispatched work against the
-   golden's 35.8%, and bp8 runs 90.7% conditional accuracy. This is now the
-   larger of the two remaining terms.
+1. **`IFetch` shadows the L1I** -- 28 reads in the whole run, so instruction
+   supply is nearly free. This is the compensating error above, and unifying it
+   with the casim-validated `modules/fetch.py` is what would make the aggregate
+   agreement mean what it looks like it means.
+2. **bp9/TAGE.** 41.2% of dispatched work thrown away against the golden's
+   35.8%; bp8 runs 90.7% conditional accuracy.
+3. **The last load cycle**: the MTL's registered response. The RTL bypasses it
+   on a screen hit (`fetch_page_screen_resp_bypass`); only the request side of
+   the screen is modelled.
+4. **A DRAM model.** Invisible on this workload, decisive on any other.
 4. **`IFetch` shadows the L1I** -- its own line buffer means the cache sees 28
    accesses at a 0% hit rate. Until it is the casim-validated
    `modules/fetch.py`, no frontend number here is trustworthy.
