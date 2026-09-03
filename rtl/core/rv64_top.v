@@ -1506,6 +1506,11 @@ module openrv64_rv64_top #(
         .ordered_head_id_3p_i(
             {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .ordered_head_slot_3p_i(3'd0),
+        .ordered_store_window_valid_3p_i(3'b000),
+        .ordered_store_window_complete_3p_i(3'b000),
+        .ordered_store_window_id_3p_i(
+            {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .ordered_store_window_slot_3p_i(9'd0),
         .store_barrier_busy_3p_i(1'b0),
         .complete_ready_3p_i(3'b000)
     );

@@ -27,6 +27,19 @@ module tb_lsq;
     logic head_valid;
     logic [IDW-1:0] head_id;
     logic [2:0] head_slot;
+    logic store_window_override;
+    logic [2:0] store_window_valid_override;
+    logic [2:0] store_window_complete_override;
+    logic [3*IDW-1:0] store_window_id_override;
+    logic [8:0] store_window_slot_override;
+    wire [2:0] store_window_valid = store_window_override ?
+        store_window_valid_override : {2'b00, head_valid};
+    wire [2:0] store_window_complete = store_window_override ?
+        store_window_complete_override : 3'b000;
+    wire [3*IDW-1:0] store_window_id = store_window_override ?
+        store_window_id_override : {{2*IDW{1'b0}}, head_id};
+    wire [8:0] store_window_slot = store_window_override ?
+        store_window_slot_override : {6'd0, head_slot};
 
     wire atomic_start_valid, atomic_start_allowed;
     wire [TAGW-1:0] atomic_start_tag;
@@ -78,6 +91,7 @@ module tb_lsq;
         .LOAD_QUEUE_DEPTH(4),
         .STORE_QUEUE_DEPTH(2),
         .TAG_WIDTH(TAGW),
+        .ENABLE_ORDERED_STORE_WINDOW(1),
         .CACHEABLE_BASE(64'h0),
         .CACHEABLE_SIZE(64'h1_0000)
     ) dut (
@@ -100,6 +114,10 @@ module tb_lsq;
         .store_alloc_wstrb_i(s_wstrb),
         .ordered_head_valid_i(head_valid), .ordered_head_id_i(head_id),
         .ordered_head_slot_i(head_slot),
+        .ordered_store_window_valid_i(store_window_valid),
+        .ordered_store_window_complete_i(store_window_complete),
+        .ordered_store_window_id_i(store_window_id),
+        .ordered_store_window_slot_i(store_window_slot),
         .atomic_start_valid_o(atomic_start_valid),
         .atomic_start_tag_o(atomic_start_tag),
         .atomic_start_id_o(atomic_start_id),
@@ -423,6 +441,11 @@ module tb_lsq;
         s_immediate = 0; s_input_fault = 0; s_atomic = 0;
         s_vaddr = 0; s_size = 0; s_wdata = 0; s_wstrb = 0;
         head_valid = 0; head_id = 0; head_slot = 0;
+        store_window_override = 0;
+        store_window_valid_override = 0;
+        store_window_complete_override = 0;
+        store_window_id_override = 0;
+        store_window_slot_override = 0;
         atomic_active = 0; atomic_tag = 0; atomic_irrevocable = 0;
         atomic_done = 0; xlate_ready = 0; xlate_resp_valid = 0;
         xlate_resp_tag = 0; xlate_resp_paddr = 0;
@@ -431,6 +454,41 @@ module tb_lsq;
         store_done_valid = 0; store_done_tag = 0;
         resp_paddr = 0; resp_rdata = 0; resp_access_fault = 0;
         resp_page_fault = 0; result_ready = 0;
+
+        reset_dut();
+
+        // Two consecutive cacheable stores in the raw ROB-head window may
+        // reach L1D on consecutive cycles while the registered ordered head
+        // still names the first store.  Each request handshake independently
+        // publishes its ROB completion; neither store retires before that
+        // acknowledgement.
+        translation_bypass = 1'b1;
+        alloc_store(IDW'(50), 3'd2, 64'h1000, 3'd3,
+                    64'h1111_1111_1111_1111, 8'hff);
+        alloc_store(IDW'(51), 3'd3, 64'h1008, 3'd3,
+                    64'h2222_2222_2222_2222, 8'hff);
+        head_valid = 1'b1;
+        head_id = IDW'(50);
+        head_slot = 3'd2;
+        store_window_override = 1'b1;
+        store_window_valid_override = 3'b011;
+        store_window_complete_override = 3'b000;
+        store_window_id_override = {
+            {IDW{1'b0}}, IDW'(51), IDW'(50)};
+        store_window_slot_override = {3'd0, 3'd3, 3'd2};
+        take_req(1'b1, 64'h1000, st);
+        if (head_id != IDW'(50))
+            $fatal(1, "ordered head advanced inside directed test");
+        #1;
+        if (!req_valid || !req_write || (req_addr != 64'h1008))
+            $fatal(1,
+                "younger head-prefix store was not available next cycle");
+        take_req(1'b1, 64'h1008, lt);
+        complete_store(st);
+        complete_store(lt);
+        store_window_override = 1'b0;
+        head_valid = 1'b0;
+        translation_bypass = 1'b0;
 
         reset_dut();
 
@@ -869,25 +927,94 @@ module tb_lsq;
 
         reset_dut();
 
-        // Same-word accesses use the same guard flow.  This cut contains no
-        // byte-owner matrix and no store-to-load forwarding path.
-        alloc_store(IDW'(6), 3'd6, 64'h8002, 3'd2,
-                    64'h0000_aabb_ccdd_0000, 8'h3c);
-        alloc_load(IDW'(7), 3'd7, 64'h8002, 3'd2);
-        take_xlate(1'b1, 64'h8002, st);
-        respond_xlate(st, 64'h8002, 0, 0);
-        take_xlate(1'b0, 64'h8002, lt);
-        respond_xlate(lt, 64'h8002, 0, 0);
+        // A cacheable load may complete from the youngest older store when
+        // that one store covers every requested byte.  Hold the result port
+        // blocked while the store is accepted and acknowledged to prove that
+        // the forwarded value no longer depends on the live SQ entry.
+        alloc_store(IDW'(6), 3'd6, 64'h8000, 3'd3,
+                    64'haabb_ccdd_1122_3344, 8'hff);
+        alloc_load(IDW'(7), 3'd7, 64'h8004, 3'd2);
+        take_xlate(1'b1, 64'h8000, st);
+        respond_xlate(st, 64'h8000, 0, 0);
+        take_xlate(1'b0, 64'h8004, lt);
+        respond_xlate(lt, 64'h8004, 0, 0);
         #1;
         if (req_valid && !req_write)
-            $fatal(1, "same-word load passed store guard");
+            $fatal(1, "fully covered load issued a memory request");
+        tick();
+        if (!result_valid || result_id != IDW'(7) || result_store ||
+            result_rdata != 64'haabb_ccdd_1122_3344)
+            $fatal(1,
+                "covered load did not enter forwarding result slot");
         head_valid = 1'b1; head_id = IDW'(6); head_slot = 3'd6;
-        take_req(1'b1, 64'h8002, st);
+        take_req(1'b1, 64'h8000, st);
         complete_store(st);
         head_valid = 1'b0;
-        take_req(1'b0, 64'h8002, lt);
-        respond_result(lt, 64'h8002, 64'h0000_aabb_ccdd_0000,
-                       IDW'(7), 0, 64'h0000_aabb_ccdd_0000);
+        take_result(IDW'(7), 0, 64'haabb_ccdd_1122_3344, 0, 0);
+        flush = 1; tick(); flush = 0;
+
+        reset_dut();
+
+        // Partial byte coverage is deliberately not merged with memory or
+        // another store.  It stays behind the guard until the store has
+        // reached L1D, then takes the ordinary memory path.
+        alloc_store(IDW'(20), 3'd4, 64'h8800, 3'd2,
+                    64'h0000_0000_5566_7788, 8'h0f);
+        alloc_load(IDW'(21), 3'd5, 64'h8800, 3'd3);
+        take_xlate(1'b1, 64'h8800, st);
+        respond_xlate(st, 64'h8800, 0, 0);
+        take_xlate(1'b0, 64'h8800, lt);
+        respond_xlate(lt, 64'h8800, 0, 0);
+        repeat (2) begin
+            tick();
+            if (result_valid || (req_valid && !req_write))
+                $fatal(1, "partial store mask escaped slow path");
+        end
+        head_valid = 1'b1; head_id = IDW'(20); head_slot = 3'd4;
+        take_req(1'b1, 64'h8800, st);
+        complete_store(st);
+        head_valid = 1'b0;
+        take_req(1'b0, 64'h8800, lt);
+        respond_result(lt, 64'h8800, 64'hdead_beef_5566_7788,
+                       IDW'(21), 0, 64'hdead_beef_5566_7788);
+
+        reset_dut();
+
+        // SQ array position is not age.  When two older stores cover the same
+        // bytes, forward the younger store's value.
+        alloc_store(IDW'(22), 3'd6, 64'h8a00, 3'd3,
+                    64'h1111_2222_3333_4444, 8'hff);
+        alloc_store(IDW'(23), 3'd7, 64'h8a00, 3'd3,
+                    64'haaaa_bbbb_cccc_dddd, 8'hff);
+        alloc_load(IDW'(24), 3'd0, 64'h8a00, 3'd3);
+        take_xlate(1'b1, 64'h8a00, st);
+        respond_xlate(st, 64'h8a00, 0, 0);
+        take_xlate(1'b1, 64'h8a00, st);
+        respond_xlate(st, 64'h8a00, 0, 0);
+        take_xlate(1'b0, 64'h8a00, lt);
+        respond_xlate(lt, 64'h8a00, 0, 0);
+        take_result(IDW'(24), 0, 64'haaaa_bbbb_cccc_dddd, 0, 0);
+        flush = 1; tick(); flush = 0;
+
+        reset_dut();
+
+        // A selective squash invalidates a held forwarded result just like an
+        // unsent load entry; it must never leak onto the completion port.
+        translation_bypass = 1'b1;
+        alloc_store(IDW'(25), 3'd1, 64'h8c00, 3'd3,
+                    64'h0123_4567_89ab_cdef, 8'hff);
+        alloc_load(IDW'(26), 3'd2, 64'h8c00, 3'd3);
+        tick();
+        if (!result_valid || result_id != IDW'(26))
+            $fatal(1, "forwarded squash test did not hold a result");
+        squash_id = IDW'(25);
+        squash_younger = 1'b1;
+        tick();
+        squash_younger = 1'b0;
+        #1;
+        if (result_valid || dut.forward_valid_q)
+            $fatal(1, "squashed forwarded result remained visible");
+        translation_bypass = 1'b0;
         flush = 1; tick(); flush = 0;
 
         reset_dut();
@@ -1055,7 +1182,7 @@ module tb_lsq;
         head_valid = 1'b0;
         req_ready = 1'b0;
 
-        $display("PASS: four-load table, exact 8-byte store guards, ordering, faults, and selective recovery");
+        $display("PASS: four-load table, store forwarding/guards, ordering, faults, and selective recovery");
         $finish;
     end
 

@@ -503,9 +503,9 @@ machine-check policy and is not a replayable page/PMP fault.
 ## Load/store and memory ordering
 
 The 3P backend uses `exec_lsu.v` as its containing LSU and `lsq.v` as a
-separate, parameterized unified load/store queue. The defaults are four load
-entries and four store entries. The single age-ordered entry array uses fixed
-load/store slot partitions so its two allocation-ready paths are independent.
+separate, parameterized compact load table plus persistent store queue. The
+defaults are four load entries and four store entries. Fixed load/store slot
+partitions keep the two allocation-ready paths independent.
 The LSU owns address generation, translation and cache request sequencing,
 RV64A, exception construction, and backend completion. The LSQ owns entry
 state, age/order checks, physical-address disambiguation, forwarding, and
@@ -523,10 +523,12 @@ L1D admitted the store into its ordered store buffer.
 
 An ordinary load also translates before physical access. It waits behind every
 older store whose physical address is unknown. Once all relevant addresses are
-known, a cacheable load may pass stores on different physical cache lines. A
-same-word load whose requested bytes are fully covered by older stores is
-forwarded bytewise from the youngest matching stores. Partial coverage and
-other same-line cases wait. Uncacheable loads issue only at the ordered head.
+known, a cacheable load may pass stores in different physical 8-byte granules.
+A same-granule load whose requested mask is fully covered by the youngest older
+store completes from that store's aligned word through a registered result
+slot. The current fast path does not merge multiple partial stores; partial
+coverage and other same-granule cases wait. Uncacheable loads issue only at the
+ordered head.
 These rules use translated physical addresses; virtual-address equality is not
 used as a memory-dependence proof.
 

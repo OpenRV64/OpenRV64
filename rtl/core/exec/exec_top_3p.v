@@ -90,6 +90,12 @@ module openrv64_exec_top_3p #(
     input  wire                         ordered_head_valid_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] ordered_head_slot_i,
+    input  wire [2:0]                   ordered_store_window_valid_i,
+    input  wire [2:0]                   ordered_store_window_complete_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        ordered_store_window_id_i,
+    input  wire [3*RETIRE_SLOT_WIDTH-1:0]
+                                        ordered_store_window_slot_i,
     output wire                         store_barrier_request_o,
     input  wire                         store_barrier_busy_i,
 
@@ -609,6 +615,7 @@ module openrv64_exec_top_3p #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
         .LOAD_QUEUE_DEPTH(LOAD_QUEUE_DEPTH),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
+        .ENABLE_ORDERED_STORE_WINDOW(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
         .COHERENT_ATOMICS(ENABLE_COHERENT_ATOMICS),
         .ENABLE_MEMORY_DISAMBIGUATION(ENABLE_MEMORY_DISAMBIGUATION),
@@ -653,6 +660,11 @@ module openrv64_exec_top_3p #(
         .ordered_head_valid_i(ordered_head_valid_i),
         .ordered_head_id_i(ordered_head_id_i),
         .ordered_head_slot_i(ordered_head_slot_i),
+        .ordered_store_window_valid_i(ordered_store_window_valid_i),
+        .ordered_store_window_complete_i(
+            ordered_store_window_complete_i),
+        .ordered_store_window_id_i(ordered_store_window_id_i),
+        .ordered_store_window_slot_i(ordered_store_window_slot_i),
         .complete_valid_o(lsu_complete_valid),
         .complete_ready_i(lsu_complete_ready),
         .complete_id_o(lsu_complete_id),

@@ -824,3 +824,54 @@ checks, two violations, and three total emitted replays versus an expected two;
 the additional event is an ordered-input replay preceding the collision
 replay.  This is not evidence of a store-completion failure, but that broader
 test is not a clean pass and should not be reported as one.
+
+## ROB-head store-prefix authorization
+
+Posted completion alone left a registered-head bubble between consecutive
+stores.  The ROB now exposes the identity and slot of its first three raw
+entries, independent of their completion state.  The LSU may authorize the
+consecutive ordinary cacheable-store prefix from that window.  Its existing
+oldest-request selection still presents at most one request per cycle, so an
+older ready store always reaches the single L1D port before a younger one.
+
+Authorization is not retirement.  Every store must already have a live,
+translated, fault-free cacheable SQ entry, and its own L1D request handshake
+must publish the identity-only ROB completion before the ROB can retire it.
+The SQ entry remains allocated until the later store-done response.  Atomics,
+uncached stores, immediate faults, misaligned operations, replay, and the
+younger side of a pending interrupt retain exact-head ordering.
+
+The source-matched timing waveform run
+`memcpy-64k-sv39-3p-tomasulo-ddr3-tage-store-wave-20260903T214303Z` takes
+28,290 cycles for 20,529 retired instructions, IPC 0.7257.  Relative to the
+31,275-cycle posted-sideband baseline above, this is 2,985 fewer cycles
+(9.54%) and 10.56% higher IPC.  Of 8,193 store handshakes, 6,129 used the
+head-prefix authorization while the registered ordered head still named an
+older store.  The waveform contains 6,129 one-cycle store-request gaps; the
+baseline contains none.
+
+The full Sv39 correctness workload
+`memcpy-64k-sv39-3p-tomasulo-ddr3-tage-correctness-20260903T214303Z` also
+passes: 77,890 retired instructions in 61,982 cycles, IPC 1.2567, and all
+8,193 stores acknowledged and retired.  Its preceding source-matched result
+was 65,159 cycles and IPC 1.1954.  Focused store guards pass in
+`lsq-store-guards-20260903T214557Z`, including a directed assertion that the
+second store is presented in the cycle immediately following the first while
+the externally registered ordered head remains unchanged.  The banked-window
+lint run `3p-banked-window-lint-20260903T214557Z` also passes without adding a
+retire/LSQ combinational loop.
+
+The complete resident-state trace is
+`memcpy-64k-sv39-3p-tomasulo-ddr3-tage-trace-20260903T214704Z`.  Its validated
+`pipeline-state.csv.bz2` is 7,419,425 bytes and contains 2,450,175 rows over
+27,811 sampled cycles for 23,896 dynamic instruction IDs.  The trace reader
+and report generation both pass directly on the compressed file.
+
+This workload does not retire two stores in the same cycle.  The L1D request
+interface still accepts at most one store per cycle, and the ROB generally
+retires each store as soon as that individual acknowledgement arrives.  The
+throughput gain comes from eliminating the otherwise idle cycle between
+successive store acknowledgements.  Supporting more than one store
+acknowledgement per cycle would require a multi-entry L1D enqueue interface;
+delaying acknowledged stores merely to retire them as a batch would not add
+throughput.

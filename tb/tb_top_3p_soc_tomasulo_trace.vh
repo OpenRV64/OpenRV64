@@ -725,6 +725,27 @@ generate
                                         `OPENRV64_TTRACE_REASON_XLATE_ARBITRATION;
                             end
                             else if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu
+                                         .u_lsq.load_forward_ready_r[
+                                             ttrace_slot] ||
+                                     (dut.u_backend.u_exec.g_3p.u_exec.u_lsu
+                                          .u_lsq.forward_valid_q &&
+                                      (dut.u_backend.u_exec.g_3p.u_exec.u_lsu
+                                           .u_lsq.forward_load_index_q ==
+                                       ttrace_slot))) begin
+                                if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu
+                                        .u_lsq.result_select_forward &&
+                                    (dut.u_backend.u_exec.g_3p.u_exec.u_lsu
+                                         .u_lsq.forward_load_index_q ==
+                                     ttrace_slot))
+                                    ttrace_reason = dut.u_backend.u_exec.g_3p
+                                        .u_exec.u_lsu.u_lsq.result_ready_i ?
+                                        `OPENRV64_TTRACE_REASON_NONE :
+                                        `OPENRV64_TTRACE_REASON_COMPLETION_BACKPRESSURE;
+                                else
+                                    ttrace_reason =
+                                        `OPENRV64_TTRACE_REASON_RESULT_ARBITRATION;
+                            end
+                            else if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu
                                          .u_lsq.load_guard_block_r[
                                              ttrace_slot])
                                 ttrace_reason =
@@ -776,7 +797,9 @@ generate
                                 `OPENRV64_TTRACE_STAGE_LSQ, ttrace_slot, 2,
                                 `OPENRV64_TTRACE_STATE_LOAD, ttrace_reason,
                                 64'd0,
-                                {56'd0,
+                                {55'd0,
+                                 dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                                    .load_forward_r[ttrace_slot],
                                  dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                                     .load_order_match[ttrace_slot],
                                  dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq

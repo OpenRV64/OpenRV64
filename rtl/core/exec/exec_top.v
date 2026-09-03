@@ -228,6 +228,12 @@ module openrv64_exec_top #(
     input  wire                         ordered_head_valid_3p_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] ordered_head_id_3p_i,
     input  wire [RETIRE_SLOT_WIDTH_3P-1:0] ordered_head_slot_3p_i,
+    input  wire [2:0]                   ordered_store_window_valid_3p_i,
+    input  wire [2:0]                   ordered_store_window_complete_3p_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        ordered_store_window_id_3p_i,
+    input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0]
+                                        ordered_store_window_slot_3p_i,
     output wire                         store_barrier_request_3p_o,
     input  wire                         store_barrier_busy_3p_i,
     output wire [2:0]                   complete_valid_3p_o,
@@ -421,6 +427,14 @@ module openrv64_exec_top #(
                 .ordered_head_valid_i(ordered_head_valid_3p_i),
                 .ordered_head_id_i(ordered_head_id_3p_i),
                 .ordered_head_slot_i(ordered_head_slot_3p_i),
+                .ordered_store_window_valid_i(
+                    ordered_store_window_valid_3p_i),
+                .ordered_store_window_complete_i(
+                    ordered_store_window_complete_3p_i),
+                .ordered_store_window_id_i(
+                    ordered_store_window_id_3p_i),
+                .ordered_store_window_slot_i(
+                    ordered_store_window_slot_3p_i),
                 .store_barrier_request_o(store_barrier_request_3p_o),
                 .store_barrier_busy_i(store_barrier_busy_3p_i),
                 .complete_valid_o(complete_valid_3p_o),

@@ -9288,7 +9288,7 @@ module tb_top_3p_soc #(
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_load_flushed_q);
         $display(
-            "PERF_ICX_L2_SPEC_STORE alloc=%0d spec_alloc=%0d ordered_alloc=%0d atomic_alloc=%0d xlate=%0d spec_xlate=%0d ordered_access=%0d posted_results=%0d done=%0d",
+            "PERF_ICX_L2_SPEC_STORE alloc=%0d spec_alloc=%0d ordered_alloc=%0d atomic_alloc=%0d xlate=%0d spec_xlate=%0d accesses=%0d head_ahead_access=%0d posted_results=%0d done=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_store_allocations_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
@@ -9303,6 +9303,8 @@ module tb_top_3p_soc #(
                 .perf_store_spec_xlate_requests_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_store_access_requests_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_window_access_requests_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_store_posted_results_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq

@@ -187,6 +187,12 @@ module tb_exec_top_3p #(
         .ordered_head_valid_i(ordered_head_valid),
         .ordered_head_id_i(ordered_head_id),
         .ordered_head_slot_i(ordered_head_slot),
+        .ordered_store_window_valid_i({2'b00, ordered_head_valid}),
+        .ordered_store_window_complete_i(3'b000),
+        .ordered_store_window_id_i(
+            {{2*ID_WIDTH{1'b0}}, ordered_head_id}),
+        .ordered_store_window_slot_i(
+            {{2*SLOT_WIDTH{1'b0}}, ordered_head_slot}),
         .complete_valid_o(complete_valid),
         .complete_ready_i(complete_ready),
         .complete_id_o(complete_id),

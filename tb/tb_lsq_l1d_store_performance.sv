@@ -215,6 +215,11 @@ module lsq_l1d_store_performance_runner #(
         .ordered_head_valid_i(ordered_head_valid),
         .ordered_head_id_i(ordered_head_id),
         .ordered_head_slot_i({RETIRE_SLOT_WIDTH{1'b0}}),
+        .ordered_store_window_valid_i(3'b000),
+        .ordered_store_window_complete_i(3'b000),
+        .ordered_store_window_id_i({3*ID_WIDTH{1'b0}}),
+        .ordered_store_window_slot_i(
+            {3*RETIRE_SLOT_WIDTH{1'b0}}),
         .atomic_start_valid_o(),
         .atomic_start_tag_o(),
         .atomic_start_id_o(),

@@ -382,6 +382,7 @@ module openrv64_backend_3p #(
     wire [63:0] async_store_fault_trace;
     wire [`RV64_INSTR_WIDTH-1:0] async_store_fault_instr;
     reg async_store_fault_pending_q;
+    reg memory_replay_pending_q;
     reg [`RV64_EXCEPT_CAUSE_WIDTH-1:0] async_store_fault_cause_q;
     reg [`RV64_XLEN-1:0] async_store_fault_addr_q;
     reg [`RV64_XLEN-1:0] async_store_fault_pc_q;
@@ -591,6 +592,11 @@ module openrv64_backend_3p #(
     wire [3*RETIRE_RESULT_WIDTH-1:0] queue_retire_commit;
     wire [3*64-1:0] queue_retire_trace;
     wire [3*SLOT_WIDTH-1:0] queue_retire_slot;
+    wire [2:0] queue_head_valid;
+    wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] queue_head_id;
+    wire [2:0] ordered_store_window_valid;
+    wire [2:0] ordered_store_window_complete;
+    wire [RETIRE_DEPTH-1:0] completed_entry_valid;
     wire [2:0] queue_alloc_accept;
     wire [2:0] queue_complete_accept;
     wire [2:0] queue_complete_match;
@@ -744,6 +750,50 @@ module openrv64_backend_3p #(
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] queue_post_retire_id;
     wire [SLOT_WIDTH-1:0] queue_post_retire_slot;
     wire [3*SLOT_WIDTH-1:0] window_retire_slot = queue_retire_slot;
+
+    // Expose only an ordinary-store prefix from the first three raw ROB
+    // entries.  Unlike post-retirement-head selection, this does not depend
+    // on the current retire accept and therefore cannot recreate the banked
+    // retire -> LSQ -> completion -> retire combinational loop.  A pending
+    // interrupt may retire the current head and trap immediately afterward,
+    // so it suppresses authorization of younger stores in the window.
+    genvar ordered_store_window_lane;
+    generate
+        for (ordered_store_window_lane = 0;
+             ordered_store_window_lane < 3;
+             ordered_store_window_lane = ordered_store_window_lane + 1) begin :
+                g_ordered_store_window
+            wire [RETIRE_RECORD_WIDTH-1:0] head_record =
+                queue_retire_record[
+                    ordered_store_window_lane*RETIRE_RECORD_WIDTH +:
+                    RETIRE_RECORD_WIDTH];
+            wire [RETIRE_RESULT_WIDTH-1:0] head_result =
+                queue_retire_commit[
+                    ordered_store_window_lane*RETIRE_RESULT_WIDTH +:
+                    RETIRE_RESULT_WIDTH];
+            wire [SLOT_WIDTH-1:0] head_slot = queue_retire_slot[
+                ordered_store_window_lane*SLOT_WIDTH +: SLOT_WIDTH];
+            wire ordinary_store = queue_head_valid[
+                    ordered_store_window_lane] &&
+                head_record[`OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT] &&
+                !head_record[`OPENRV64_RETIRE_ALLOC_MEM_READ_BIT] &&
+                !head_record[`OPENRV64_RETIRE_ALLOC_HARD_BIT];
+            wire individual_complete =
+                completed_entry_valid[head_slot];
+            assign ordered_store_window_valid[
+                ordered_store_window_lane] =
+                (ENABLE_POSTED_STORES != 0) && ordinary_store &&
+                !flush_i && !squash_frontend_i &&
+                !memory_replay_pending_q &&
+                !async_store_fault_pending_q &&
+                ((ordered_store_window_lane == 0) || !irq_pending_i);
+            assign ordered_store_window_complete[
+                ordered_store_window_lane] =
+                individual_complete &&
+                !head_result[`OPENRV64_RETIRE_RESULT_EXCEPTION_BIT] &&
+                !head_result[`OPENRV64_RETIRE_RESULT_HALT_BIT];
+        end
+    endgenerate
 
     wire retire_exception;
     wire retire_halt;
@@ -1044,7 +1094,6 @@ module openrv64_backend_3p #(
     reg [MEMORY_WATCH_DEPTH-1:0] memory_control_watch_valid_q;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
         memory_control_watch_id_q [0:MEMORY_WATCH_DEPTH-1];
-    reg memory_replay_pending_q;
     reg memory_replay_ordered_issue_q;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] memory_replay_id_q;
     reg [SLOT_WIDTH-1:0] memory_replay_slot_q;
@@ -1668,8 +1717,6 @@ module openrv64_backend_3p #(
                                          {`RV64_XLEN{1'b0}});
         end
     endgenerate
-
-    wire [RETIRE_DEPTH-1:0] completed_entry_valid;
 
     // Remember the youngest allocated producer of each architectural
     // register.  The compact retirement-slot tag qualifies the branch-only
@@ -5423,6 +5470,11 @@ module openrv64_backend_3p #(
         .ordered_head_valid_3p_i(ordered_head_valid),
         .ordered_head_id_3p_i(ordered_head_id),
         .ordered_head_slot_3p_i(ordered_head_slot),
+        .ordered_store_window_valid_3p_i(ordered_store_window_valid),
+        .ordered_store_window_complete_3p_i(
+            ordered_store_window_complete),
+        .ordered_store_window_id_3p_i(queue_head_id),
+        .ordered_store_window_slot_3p_i(queue_retire_slot),
         .store_barrier_request_3p_o(store_barrier_request_o),
         .store_barrier_busy_3p_i(store_barrier_busy_i),
         .complete_valid_3p_o(complete_valid),
@@ -5554,6 +5606,8 @@ module openrv64_backend_3p #(
         .retire_accept_i(queue_retire_accept),
         .retire_id_o(queue_retire_id),
         .retire_slot_o(queue_retire_slot),
+        .head_valid_o(queue_head_valid),
+        .head_id_o(queue_head_id),
         .completed_entry_valid_o(completed_entry_valid),
         .occupancy_o(retire_occupancy_o),
         .next_retire_id_o(next_retire_id),

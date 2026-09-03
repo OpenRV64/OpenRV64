@@ -48,6 +48,11 @@ module openrv64_retire_queue_3p #(
     input  wire [2:0]                   retire_accept_i,
     output wire [3*ID_WIDTH-1:0]        retire_id_o,
     output wire [3*INDEX_WIDTH-1:0]     retire_slot_o,
+    // Raw first-three ROB entries, independent of completion.  The LSU uses
+    // this window to authorize a consecutive cacheable-store prefix without
+    // deriving the next ordered store from the combinational retire result.
+    output wire [2:0]                   head_valid_o,
+    output wire [3*ID_WIDTH-1:0]        head_id_o,
     output wire [DEPTH-1:0]             completed_entry_valid_o,
 
     output wire [COUNT_WIDTH-1:0]       occupancy_o,
@@ -116,6 +121,16 @@ module openrv64_retire_queue_3p #(
         retire_valid0 ? id_q[retire_slot0] : {ID_WIDTH{1'b0}}
     };
     assign retire_slot_o = {retire_slot2, retire_slot1, retire_slot0};
+    assign head_valid_o = {
+        valid_q[retire_slot2] && (count_q > 2),
+        valid_q[retire_slot1] && (count_q > 1),
+        valid_q[retire_slot0] && (count_q != 0)
+    };
+    assign head_id_o = {
+        head_valid_o[2] ? id_q[retire_slot2] : {ID_WIDTH{1'b0}},
+        head_valid_o[1] ? id_q[retire_slot1] : {ID_WIDTH{1'b0}},
+        head_valid_o[0] ? id_q[retire_slot0] : {ID_WIDTH{1'b0}}
+    };
 
     assign occupancy_o = count_q;
     // Ring position, rather than consecutive numeric IDs, defines retirement

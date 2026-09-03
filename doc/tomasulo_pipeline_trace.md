@@ -224,7 +224,7 @@ not listed below are zero.
 | REGREAD active | 0 group valid, 2:1 lane valid, 6:3 fire mask, 10:7 operand-ready mask | operand-done mask `[3:0]` | response-now mask `[3:0]` |
 | REGREAD pending | 0 group valid, 2:1 lane valid, 6:3 operand-ready mask | operand-done mask `[3:0]` | 0 |
 | EXEC/COMPLETE/RETIRE | 0 valid, 1 ready/accept | completion/retirement result for COMPLETE/RETIRE | next PC for COMPLETE/RETIRE |
-| LSQ load | 0 valid, 1 immediate, 2 translation sent, 3 translation done, 4 access sent, 5 killed, 6 guard block, 7 order match | virtual address | physical address |
+| LSQ load | 0 valid, 1 immediate, 2 translation sent, 3 translation done, 4 access sent, 5 killed, 6 guard block, 7 order match, 8 forward ready/held | virtual address | physical address |
 | LSQ store | load phase bits plus 5 result sent, 6 access done, 7 killed, 8 order match, 9 atomic | virtual address | physical address |
 | ROB | 0 present, 1 valid, 2 complete, 3 head | rs1 `[4:0]`, rs2 `[12:8]`, rd `[20:16]`, control/class bits `[32:24]`, new physical tag `[47:40]` | result data |
 
