@@ -148,6 +148,8 @@ module tb_4h_3p #(
 `ifdef OPENRV64_TOMASULO_HARNESS
     integer tomasulo_debug;
     integer tomasulo_debug_start;
+    logic [63:0] tomasulo_debug_pc_first;
+    logic [63:0] tomasulo_debug_pc_last;
     integer tomasulo_timeout_scan;
 `endif
     string pc_trace_path;
@@ -544,6 +546,7 @@ module tb_4h_3p #(
     logic [63:0] hart_start_counter_last;
     logic linux_prompt_seen;
     logic linux_panic_seen;
+    logic linux_fault_trace_seen;
     logic linux_smp_online_seen;
     logic linux_smp_threads_seen;
     integer opensbi_banner_index;
@@ -561,8 +564,6 @@ module tb_4h_3p #(
     integer opensbi_trace_write;
     integer opensbi_trace_count;
     integer opensbi_hang_cycles;
-    integer opensbi_trace_dump;
-    integer opensbi_trace_slot;
     string opensbi_banner = "OpenSBI v1.9";
     string opensbi_payload_text = "OPENRV64 SBI TIMER PAYLOAD";
     string linux_prompt_text = "openrv64# ";
@@ -1317,11 +1318,11 @@ module tb_4h_3p #(
                     (g_hart[0].u_core.u_backend.dispatch_pipe_payload[
                          tomasulo_debug_pipe*
                          `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64] >=
-                     64'hffff_ffff_8007_4180) &&
+                     tomasulo_debug_pc_first) &&
                     (g_hart[0].u_core.u_backend.dispatch_pipe_payload[
                          tomasulo_debug_pipe*
                          `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64] <
-                     64'hffff_ffff_8007_4210))
+                     tomasulo_debug_pc_last))
                     $display(
                         "TOMASULO_DEBUG_ACCEPT cycle=%0d pipe=%0d id=%0d pc=%016h instr=%08h psrc1=%0d psrc2=%0d prod1=%0b:%0d prod2=%0b:%0d squashed=%0b",
                         cycles, tomasulo_debug_pipe,
@@ -1367,11 +1368,11 @@ module tb_4h_3p #(
                     (g_hart[0].u_core.u_backend.pipe_payload[
                          tomasulo_debug_pipe*
                          `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64] >=
-                     64'hffff_ffff_8007_4180) &&
+                     tomasulo_debug_pc_first) &&
                     (g_hart[0].u_core.u_backend.pipe_payload[
                          tomasulo_debug_pipe*
                          `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64] <
-                     64'hffff_ffff_8007_4210))
+                     tomasulo_debug_pc_last))
                     $display(
                         "TOMASULO_DEBUG_ISSUE cycle=%0d pipe=%0d id=%0d pc=%016h instr=%08h rs1=%016h rs2=%016h",
                         cycles, tomasulo_debug_pipe,
@@ -1399,10 +1400,10 @@ module tb_4h_3p #(
                     load_issue_ready_o &&
                 (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
                      load_issue_payload_i[274 +: 64] >=
-                 64'hffff_ffff_8007_4180) &&
+                 tomasulo_debug_pc_first) &&
                 (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
                      load_issue_payload_i[274 +: 64] <
-                 64'hffff_ffff_8007_4210))
+                 tomasulo_debug_pc_last))
                 $display(
                     "TOMASULO_DEBUG_LOAD cycle=%0d id=%0d pc=%016h instr=%08h base=%016h imm=%016h addr=%016h squashed=%0b cut=%0d",
                     cycles,
@@ -1429,10 +1430,10 @@ module tb_4h_3p #(
                     store_issue_ready_o &&
                 (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
                      store_issue_payload_i[274 +: 64] >=
-                 64'hffff_ffff_8007_4180) &&
+                 tomasulo_debug_pc_first) &&
                 (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
                      store_issue_payload_i[274 +: 64] <
-                 64'hffff_ffff_8007_4210))
+                 tomasulo_debug_pc_last))
                 $display(
                     "TOMASULO_DEBUG_STORE cycle=%0d id=%0d pc=%016h instr=%08h base=%016h data=%016h imm=%016h addr=%016h squashed=%0b cut=%0d",
                     cycles,
@@ -1526,11 +1527,11 @@ module tb_4h_3p #(
                     (g_hart[0].u_core.u_backend.complete_payload[
                          tomasulo_debug_complete*
                          `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 329 +: 64] >=
-                     64'hffff_ffff_8007_4180) &&
+                     tomasulo_debug_pc_first) &&
                     (g_hart[0].u_core.u_backend.complete_payload[
                          tomasulo_debug_complete*
                          `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 329 +: 64] <
-                     64'hffff_ffff_8007_4210))
+                     tomasulo_debug_pc_last))
                     $display(
                         "TOMASULO_DEBUG_COMPLETE cycle=%0d port=%0d id=%0d slot=%0d match=%b storage_ready=%b fire=%b pc=%016h instr=%08h rd=%0d data=%016h",
                         cycles, tomasulo_debug_complete,
@@ -1568,11 +1569,11 @@ module tb_4h_3p #(
                     (g_hart[0].u_core.u_debug.queue_retire_result[
                          tomasulo_debug_retire*
                          `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 329 +: 64] >=
-                         64'hffff_ffff_8007_4180) &&
+                         tomasulo_debug_pc_first) &&
                     (g_hart[0].u_core.u_debug.queue_retire_result[
                          tomasulo_debug_retire*
                          `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 329 +: 64] <
-                     64'hffff_ffff_8007_4210))
+                     tomasulo_debug_pc_last))
                     $display(
                         "TOMASULO_DEBUG_RETIRE cycle=%0d lane=%0d id=%0d pc=%016h instr=%08h rd=%0d data=%016h",
                         cycles, tomasulo_debug_retire,
@@ -2925,8 +2926,14 @@ module tb_4h_3p #(
 `ifdef OPENRV64_TOMASULO_HARNESS
         tomasulo_debug = $test$plusargs("tomasulo_debug");
         tomasulo_debug_start = 0;
+        tomasulo_debug_pc_first = 64'hffff_ffff_8007_4180;
+        tomasulo_debug_pc_last = 64'hffff_ffff_8007_4210;
         void'($value$plusargs(
             "tomasulo_debug_start=%d", tomasulo_debug_start));
+        void'($value$plusargs(
+            "tomasulo_debug_pc_first=%h", tomasulo_debug_pc_first));
+        void'($value$plusargs(
+            "tomasulo_debug_pc_last=%h", tomasulo_debug_pc_last));
 `endif
         pc_trace_path = "";
         void'($value$plusargs("pc_trace_mask=%h", pc_trace_mask));
@@ -3035,6 +3042,7 @@ module tb_4h_3p #(
         opensbi_payload_index = 0;
         linux_prompt_seen = 1'b0;
         linux_panic_seen = 1'b0;
+        linux_fault_trace_seen = 1'b0;
         linux_smp_online_seen = 1'b0;
         linux_smp_threads_seen = 1'b0;
         linux_prompt_index = 0;
@@ -4352,6 +4360,31 @@ module tb_4h_3p #(
                     if (opensbi_trace_count < OPENSBI_TRACE_DEPTH)
                         opensbi_trace_count <=
                             opensbi_trace_count + 1;
+                end
+
+                // The panic string arrives only after Linux has executed a
+                // large SBI console path, which overwrites the short retire
+                // history.  Capture the repeatable bring-up fault at its
+                // architectural exception edge instead.  The current fault
+                // is printed separately because the ring update above is
+                // nonblocking and is not visible to this same-cycle dump.
+                if ((linux_mode != 0) && !linux_fault_trace_seen &&
+                    g_hart[0].u_core.u_debug.backend_exception &&
+                    (g_hart[0].u_core.u_debug.csr_priv_mode ==
+                     `RV64_PRIV_S) &&
+                    (g_hart[0].u_core.u_debug.backend_cause ==
+                     `RV64_EXCEPT_CAUSE_LOAD_PAGE_FAULT) &&
+                    (g_hart[0].u_core.u_debug.backend_retire_tval ==
+                     64'h0000_0000_0000_0400)) begin
+                    linux_fault_trace_seen <= 1'b1;
+                    dump_opensbi_trace("linux-load-page-fault-400");
+                    $display(
+                        "LINUX_FAULT_EDGE cycle=%0d pc=%016h instr=%08h cause=%0d tval=%016h",
+                        cycles,
+                        g_hart[0].u_core.u_debug.backend_retire_pc,
+                        g_hart[0].u_core.u_debug.backend_retire_instr,
+                        g_hart[0].u_core.u_debug.backend_cause,
+                        g_hart[0].u_core.u_debug.backend_retire_tval);
                 end
 
                 if ((dbg_pc[63:0] ==

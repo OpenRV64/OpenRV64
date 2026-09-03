@@ -51,6 +51,7 @@ module tb_backend_3p_banked #(
     reg flush;
     reg squash;
     reg inhibit_load_speculation;
+    reg branch_target_mispredict;
     reg [2:0] decode_valid;
     wire [2:0] decode_ready;
     reg [3*IW-1:0] decode_payload;
@@ -83,6 +84,7 @@ module tb_backend_3p_banked #(
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id;
     wire [63:0] redirect_target;
     wire redirect_tagged_recovery;
+    wire [63:0] branch_target;
     wire [2:0] retire_arch;
     wire [1:0] retire_count;
     wire exception;
@@ -199,6 +201,7 @@ module tb_backend_3p_banked #(
         .mem1_size_o(),
         .irq_pending_i(1'b0),
         .irq_cause_i({`RV64_EXCEPT_CAUSE_WIDTH{1'b0}}),
+        .branch_target_mispredict_i(branch_target_mispredict),
         .redirect_valid_o(redirect_valid),
         .redirect_id_o(redirect_id),
         .redirect_target_o(redirect_target),
@@ -209,6 +212,7 @@ module tb_backend_3p_banked #(
         .branch_taken_o(),
         .branch_pc_o(),
         .branch_instr_o(),
+        .branch_target_o(branch_target),
         .branch_id_o(),
         .branch_slot_o(),
         .branch_train_valid_o(),
@@ -947,6 +951,7 @@ module tb_backend_3p_banked #(
         flush = 1'b0;
         squash = 1'b0;
         inhibit_load_speculation = 1'b0;
+        branch_target_mispredict = 1'b0;
         decode_valid = 3'b000;
         decode_payload = {3*IW{1'b0}};
         decode_uses_rs1 = 3'b000;
@@ -2291,6 +2296,43 @@ module tb_backend_3p_banked #(
                 fail("saved EX redirect did not drain after publication");
             if (dut.memory_replay_pending_q)
                 fail("saved EX redirect retained a younger ordered replay");
+
+            // A target-mispredict pulse is separate from the execution
+            // pipe's direction-mispredict pulse.  When its branch is older
+            // than an ordered replay, publish the branch cut immediately;
+            // replaying first cannot remove the intervening wrong-path work.
+            dut.memory_replay_pending_q = 1'b1;
+            dut.memory_replay_ordered_issue_q = 1'b1;
+            dut.memory_replay_id_q = `OPENRV64_INSTR_ID_WIDTH'(100);
+            dut.memory_replay_slot_q = SLOT_WIDTH'(10);
+            dut.memory_replay_target_q = 64'h0000_0000_0000_1900;
+            force dut.exec_redirect_valid = 1'b0;
+            force dut.exec_redirect_id =
+                `OPENRV64_INSTR_ID_WIDTH'(90);
+            force dut.exec_redirect_slot = SLOT_WIDTH'(9);
+            force dut.exec_redirect_target = 64'h0000_0000_0000_1800;
+            force dut.exec_branch_resolved = 1'b1;
+            branch_target_mispredict = 1'b1;
+            #1;
+            if (!redirect_valid ||
+                dut.redirect_memory_replay_o ||
+                redirect_tagged_recovery ||
+                (redirect_id != `OPENRV64_INSTR_ID_WIDTH'(90)) ||
+                (redirect_target != 64'h0000_0000_0000_1800) ||
+                (branch_target != 64'h0000_0000_0000_1800))
+                fail("older target correction lost behind ordered replay");
+            squash = 1'b1;
+            tick();
+            squash = 1'b0;
+            branch_target_mispredict = 1'b0;
+            release dut.exec_redirect_valid;
+            release dut.exec_redirect_id;
+            release dut.exec_redirect_slot;
+            release dut.exec_redirect_target;
+            release dut.exec_branch_resolved;
+            #1;
+            if (dut.memory_replay_pending_q)
+                fail("target correction retained a younger ordered replay");
 
             // A normal collision replay waits behind an older unresolved
             // control.  That pending state must not suppress retirement of

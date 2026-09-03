@@ -137,6 +137,7 @@ module openrv64_backend_3p #(
 
     input  wire                         irq_pending_i,
     input  wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] irq_cause_i,
+    input  wire                         branch_target_mispredict_i,
 
     output wire                         redirect_valid_o,
     output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id_o,
@@ -148,6 +149,7 @@ module openrv64_backend_3p #(
     output wire                         branch_taken_o,
     output wire [`RV64_XLEN-1:0]        branch_pc_o,
     output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
+    output wire [`RV64_XLEN-1:0]        branch_target_o,
     output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] branch_id_o,
     output wire [SLOT_WIDTH-1:0]        branch_slot_o,
     output wire [2:0]                   branch_train_valid_o,
@@ -1060,11 +1062,21 @@ module openrv64_backend_3p #(
         memory_replay_pending_q &&
         (memory_replay_ordered_issue_q ||
          !memory_replay_older_control_pending_r);
+    // The branch predictor detects a wrong predicted target independently of
+    // the execution pipe's direction-mispredict output.  If that branch is
+    // older than a simultaneous replay, its cut must win now: the replay cut
+    // cannot remove wrong-path work between the branch and the replaying load.
+    wire exec_target_redirect_valid = memory_disambiguation_enabled &&
+        branch_target_mispredict_i && exec_branch_resolved;
+    wire exec_target_redirect_wins_memory_replay =
+        memory_replay_candidate && exec_target_redirect_valid &&
+        memory_id_is_younger(memory_replay_id_q, exec_redirect_id);
     // A saved older branch redirect owns this cycle.  Keep the replay pending
     // so it can be emitted after the older redirect rather than silently
     // consuming both one-shot events in one arbitration slot.
     wire memory_replay_valid = memory_replay_candidate &&
-        !memory_replay_deferred_redirect_valid_q;
+        !memory_replay_deferred_redirect_valid_q &&
+        !exec_target_redirect_wins_memory_replay;
     wire memory_replay_collides_with_older_exec_redirect =
         memory_replay_valid && exec_redirect_valid &&
         memory_id_is_younger(memory_replay_id_q, exec_redirect_id);
@@ -1500,9 +1512,10 @@ module openrv64_backend_3p #(
     assign redirect_valid_o = memory_replay_deferred_redirect_valid_q ? 1'b1 :
         memory_replay_valid ? 1'b1 :
         free_branch_mispredict ? 1'b1 :
-        speculative_window ? exec_redirect_valid :
+        speculative_window ?
+            (exec_redirect_valid || exec_target_redirect_valid) :
         (ENABLE_ISSUE_WINDOW != 0) ? window_direction_mispredict :
-                                     exec_redirect_valid;
+            (exec_redirect_valid || exec_target_redirect_valid);
     assign redirect_id_o = memory_replay_deferred_redirect_valid_q ?
         memory_replay_deferred_redirect_id_q :
         memory_replay_valid ? memory_replay_id_q :
@@ -1552,6 +1565,10 @@ module openrv64_backend_3p #(
         (ENABLE_ISSUE_WINDOW != 0) ?
             window_resolve_meta[`OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
                                   `RV64_INSTR_WIDTH] : exec_branch_instr;
+    assign branch_target_o = free_branch_resolved ? free_branch_next_pc :
+        speculative_window ? exec_redirect_target :
+        (ENABLE_ISSUE_WINDOW != 0) ? window_branch_next_pc :
+                                     exec_redirect_target;
     assign branch_id_o = free_branch_resolved ?
         allocation_id[
             free_branch_lane*`OPENRV64_INSTR_ID_WIDTH +:

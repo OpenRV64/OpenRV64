@@ -47,6 +47,7 @@ module openrv64_core_debug_stub (
     input wire [2:0] backend_retire_arch /* verilator public_flat_rd */,
     input wire [31:0] backend_retire_instr /* verilator public_flat_rd */,
     input wire [63:0] backend_retire_pc /* verilator public_flat_rd */,
+    input wire [63:0] backend_retire_tval /* verilator public_flat_rd */,
     input wire backend_sfence_vma /* verilator public_flat_rd */,
     input wire backend_redirect /* verilator public_flat_rd */,
     input wire [63:0] backend_redirect_target /* verilator public_flat_rd */,

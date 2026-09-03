@@ -338,6 +338,7 @@ module openrv64_rv64_top_3p #(
     wire branch_taken;
     wire [63:0] branch_pc;
     wire [31:0] branch_instr;
+    wire [63:0] branch_target;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] branch_id;
     wire [$clog2(RETIRE_DEPTH)-1:0] branch_slot;
     wire [2:0] branch_train_valid;
@@ -957,7 +958,7 @@ module openrv64_rv64_top_3p #(
         .resolve_branch_i(branch_conditional),
         .resolve_taken_i(branch_taken),
         .resolve_instr_i(branch_instr), .resolve_pc_i(branch_pc),
-        .resolve_target_i(backend_redirect_target),
+        .resolve_target_i(branch_target),
         .resolve_id_i(branch_id),
         .train_valid_i(branch_train_valid),
         .train_branch_i(branch_train_conditional),
@@ -1546,6 +1547,7 @@ module openrv64_rv64_top_3p #(
         .mem1_effective_addr_o(backend_mem1_effective_addr),
         .mem1_size_o(backend_mem1_size),
         .irq_pending_i(csr_irq_pending), .irq_cause_i(csr_irq_cause),
+        .branch_target_mispredict_i(bp_target_mispredict_effective),
         .redirect_valid_o(backend_redirect),
         .redirect_id_o(backend_redirect_id),
         .redirect_target_o(backend_redirect_target),
@@ -1555,6 +1557,7 @@ module openrv64_rv64_top_3p #(
         .branch_conditional_o(branch_conditional),
         .branch_id_o(branch_id), .branch_slot_o(branch_slot),
         .branch_pc_o(branch_pc), .branch_instr_o(branch_instr),
+        .branch_target_o(branch_target),
         .branch_train_valid_o(branch_train_valid),
         .branch_train_conditional_o(branch_train_conditional),
         .branch_train_taken_o(branch_train_taken),
@@ -2112,6 +2115,7 @@ module openrv64_rv64_top_3p #(
         .backend_retire_arch(backend_retire_arch),
         .backend_retire_instr(backend_retire_instr),
         .backend_retire_pc(backend_retire_pc),
+        .backend_retire_tval(backend_retire_tval),
         .backend_sfence_vma(backend_sfence_vma),
         .backend_redirect(backend_redirect),
         .backend_redirect_target(backend_redirect_target),

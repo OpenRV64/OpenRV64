@@ -65,6 +65,8 @@ exactly one suppressed pre-flush and one post-retirement flush.  SATP keeps its
 existing acceptance-edge flush until a failing case demonstrates that it needs
 the same treatment.  Managed run
 `3p-tomasulo-pmp-directed-20260903T031106Z` passed all 16 write/replay pairs.
+The current target-correction interface was recompiled through the same full
+top and re-passed in `3p-tomasulo-pmp-directed-20260903T100438Z`.
 The non-Tomasulo 3P integration suite also passed with the shared top-level
 logic in `lsu-xlate-generation-3p-20260903T031932Z`.
 
@@ -570,16 +572,29 @@ points, so the replay wait cannot drain.  The stale-gate build independently
 reproduced the same pattern in
 `atomic-sv39-3p-tomasulo-ddr3-20260903T071915Z`.
 
-Retirement is now held on the actual redirect edge, not for the entire pending
-interval.  Older instructions can retire while the replay waits; a redirect
-still blocks all retirement on the edge that applies its ROB cut.  A first
-attempt to use the combinational violation detector as an additional hold was
-discarded because Verilator correctly exposed a combinational loop through
-retire, dispatch, and LSU selection.  Linux run
-`linux-l1-tomasulo-1h-ddr3-20260903T071733Z` was stopped before its result was
-used.  No such new loop appears in the accepted build.
+Retirement cannot simply be opened for the entire pending interval.  Only ROB
+entries strictly older than the registered replay ID may retire while the
+replay waits.  The replay target and younger suffix remain uncommitted, and an
+actual redirect edge blocks all retirement while it applies the ROB cut.  This
+preserves forward progress without allowing architectural state to cross a
+pending recovery boundary.
 
-The accepted RTL passes these managed runs:
+A first attempt to use the combinational violation detector as an additional
+hold was discarded because Verilator correctly exposed a combinational loop
+through retire, dispatch, and LSU selection.  Linux run
+`linux-l1-tomasulo-1h-ddr3-20260903T071733Z` was stopped before its result was
+used.  The subsequent all-open retirement experiment crossed the old LSQ
+timeout, but `linux-l1-tomasulo-1h-ddr3-20260903T072350Z` later took a kernel
+load fault at virtual address `0x400`, with EPC `ffffffff80288b80`.  That
+policy is still architecturally invalid because it permits the replay target
+and younger instructions to retire before the pending cut.  It was not,
+however, the cause of this particular fault: the corrected replay-ID prefix
+build reproduced the same fault in
+`linux-l1-tomasulo-1h-ddr3-20260903T081205Z`.  No combinational loop exists in
+the registered replay-ID prefix mask.
+
+The earlier all-open experiment passed these managed tests, which were
+insufficient to catch its retirement-boundary bug:
 
 - `3p-banked-directed-20260903T072217Z`, including pending-replay retirement
   and retained-redirect replay-filter checks;
@@ -591,6 +606,92 @@ The accepted RTL passes these managed runs:
   at 172,762 cycles, 21,801 retired instructions, and 31,966 ordered-input
   replays.
 
-The source-current Linux result is recorded below after it crosses the known
-six-million-cycle boundary.  SATP remains unchanged: neither failure above
-involved stale translation state or a SATP ordering violation.
+The corrected prefix policy additionally passes:
+
+- `3p-banked-directed-20260903T080546Z`, which checks both a fully older
+  three-lane group and a mixed group ending at the replay cut;
+- `atomic-sv39-3p-tomasulo-ddr3-20260903T080613Z`;
+- `lrsc-redirect-stress-sv39-3p-tomasulo-ddr3-20260903T081012Z`, with 8,192
+  atomic starts and completions; and
+- `misaligned-order-replay-sv39-3p-tomasulo-ddr3-20260903T081050Z`, unchanged
+  at 172,762 cycles, 21,801 retired instructions, and 31,966 ordered-input
+  replays.
+
+The Linux harness now dumps its 128-entry retirement/exception history on a
+kernel panic, rather than only on the OpenSBI `_start_hang` detector.  The
+source-current Linux result is recorded below after it crosses the known
+failure boundaries.
+
+## Linux bring-up: JALR target correction versus memory replay
+
+The prefix-policy failure is a redirect-composition bug, not a demonstrated
+SATP or translation-context bug.  The exact fault-edge run
+`linux-l1-tomasulo-1h-ddr3-20260903T084758Z` reported the architectural load
+page fault at cycle 5,958,596:
+
+```text
+pc=ffffffff80288b80 instr=0005b783 cause=13 tval=0000000000000400
+```
+
+The source-matched kernel image executes the switch sequence at
+`ffffffff802850ec` through `ffffffff802850f4`: load the table entry, add its
+base, then `jalr` to `ffffffff80285214`.  A dynamic backend trace over this
+region in `linux-l1-tomasulo-1h-ddr3-20260903T092047Z` establishes the failure
+order:
+
+1. Wrong-path memcpy load ID 128 at `ffffffff80288b80` issues early with base
+   `0x400`.
+2. JALR ID 127 obtains its actual target `ffffffff80285214` and issues at cycle
+   5,958,592.
+3. In that same cycle, younger ordered replay ID 157 wins the backend redirect
+   port with target `ffffffff80288b80`.
+4. The JALR is predicted taken, so the execution pipe has no direction
+   mispredict pulse.  Its wrong-target correction is a separate predictor
+   pulse.  The replay deferral logic only retained execution direction
+   redirects, and the replay cut at ID 157 could not remove older wrong-path
+   load ID 128.
+5. JALR ID 127 retires at cycle 5,958,595; ID 128 reaches the precise exception
+   boundary one cycle later and faults on `0x400`.
+
+There was a second target-path defect in the same interface.  Predictor
+resolution consumed the backend's arbitrated redirect target.  During a
+simultaneous memory replay that value names the replay PC, not the resolving
+branch's actual target.  The backend now exports the raw resolved branch target
+separately for predictor comparison and training.
+
+For the Tomasulo speculative backend, an older live target correction now
+preempts a younger memory replay.  This is intentionally different from the
+existing two-phase ordered-replay/direction-redirect collision: the older
+branch cut immediately removes the replaying load and every intervening
+wrong-path instruction, while a replay-first cut cannot.  An older replay still
+discards a younger resolving branch normally.  The directed regression forces
+the failing age relation and checks that branch ID 90 redirects while replay ID
+100 remains pending until the branch squash removes it.
+
+SATP remains unchanged.  A pre/post SATP hard flush may still be evaluated as
+a conservative architectural policy, but this failure supplies no evidence for
+it: the fault is fully explained before any stale translation state is needed.
+
+The target-correction arbitration and raw-target interface pass these managed
+regressions:
+
+- `3p-banked-directed-20260903T095444Z`, including the forced older-target-
+  correction/younger-replay collision;
+- `atomic-sv39-3p-tomasulo-ddr3-20260903T095459Z`;
+- `lrsc-redirect-stress-sv39-3p-tomasulo-ddr3-20260903T095803Z`, with 8,192
+  atomic starts and completions; and
+- `misaligned-order-replay-sv39-3p-tomasulo-ddr3-20260903T095835Z`, unchanged
+  at 172,762 cycles, 21,801 retired instructions, and 31,966 ordered-input
+  replays.
+
+The source-current Linux run
+`linux-l1-tomasulo-1h-ddr3-20260903T095928Z` crossed both previously observed
+failure boundaries: the exact load-fault edge at cycle 5,958,596 and the prior
+kernel-panic point at cycle 7,086,900.  It emitted neither a
+`LINUX_FAULT_EDGE` record nor a kernel panic, Oops, or BUG record.  A source-
+matched checkpoint was saved at 6,000,000 cycles as
+`run/log/linux-l1-tomasulo-1h-ddr3-20260903T095928Z/checkpoint-6000000.vls`.
+The run then stopped at its configured 7,500,000-cycle diagnostic limit while
+still in S-mode, at PC `ffffffff80280e58`.  Linux had progressed through early
+initialization but had not reached the shell prompt, so this is evidence that
+the identified redirect fault is fixed, not a Linux boot pass.
