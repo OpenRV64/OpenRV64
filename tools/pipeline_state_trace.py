@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and summarize openrv64-pipeline-state-v1 resident-state CSV."""
+"""Validate and summarize versioned OpenRV64 resident-state CSV."""
 
 from __future__ import annotations
 
@@ -12,13 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-SCHEMA = "openrv64-pipeline-state-v1"
+SCHEMAS = {"openrv64-pipeline-state-v1", "openrv64-pipeline-state-v2"}
 HEADER = (
     "schema", "cycle", "insn_id", "core_id", "pc", "instr", "stage",
     "slot", "lane", "state", "reason", "blocker_id", "flags",
     "detail0", "detail1",
 )
-STAGES = {
+STAGES_V1 = {
     1: "FETCH",
     2: "DECODE",
     3: "SCHED",
@@ -29,6 +29,7 @@ STAGES = {
     8: "ROB",
     9: "RETIRE",
 }
+STAGES_V2 = {**STAGES_V1, 10: "DISPATCH"}
 STATES = {
     1: "PRESENT",
     2: "WAIT",
@@ -82,6 +83,9 @@ REASONS = {
     35: "HALT_OR_WFI",
     36: "RESULT_ARBITRATION",
     37: "ATOMIC_UNIT",
+    38: "BP_LOOKUP",
+    39: "BP_CAPACITY",
+    40: "BP_TARGET",
     255: "UNKNOWN",
 }
 
@@ -152,6 +156,8 @@ def validate_and_collect(
     first_cycle: int | None = None
     last_cycle: int | None = None
     cycle_keys: set[tuple[int, int, int, int]] = set()
+    schema: str | None = None
+    stages: dict[int, str] = STAGES_V1
 
     with open_trace(path) as source:
         reader = csv.DictReader(source)
@@ -159,14 +165,23 @@ def validate_and_collect(
             raise ValueError("trace has no CSV header")
         if tuple(reader.fieldnames) != HEADER:
             raise ValueError(
-                "trace header does not match openrv64-pipeline-state-v1: "
+                "trace header does not match OpenRV64 pipeline-state ABI: "
                 f"{','.join(reader.fieldnames)}"
             )
 
         for line, raw in enumerate(reader, start=2):
-            if raw["schema"] != SCHEMA:
+            row_schema = raw["schema"]
+            if row_schema not in SCHEMAS:
                 raise ValueError(
-                    f"line {line}: unsupported schema {raw['schema']!r}"
+                    f"line {line}: unsupported schema {row_schema!r}"
+                )
+            if schema is None:
+                schema = row_schema
+                stages = (STAGES_V2 if schema.endswith("v2") else STAGES_V1)
+            elif row_schema != schema:
+                raise ValueError(
+                    f"line {line}: schema changed from {schema!r} "
+                    f"to {row_schema!r}"
                 )
             row = Row(
                 line=line,
@@ -189,12 +204,12 @@ def validate_and_collect(
             )
 
             if row.cycle > 0xFFFFFFFF:
-                raise ValueError(f"line {line}: cycle exceeds v1 width")
+                raise ValueError(f"line {line}: cycle exceeds 32-bit width")
             if row.insn_id == 0 or row.insn_id > 0xFFFFFFFF:
-                raise ValueError(f"line {line}: invalid v1 instruction ID")
+                raise ValueError(f"line {line}: invalid 32-bit instruction ID")
             if row.blocker_id > 0xFFFFFFFF:
-                raise ValueError(f"line {line}: blocker ID exceeds v1 width")
-            if row.stage not in STAGES:
+                raise ValueError(f"line {line}: blocker ID exceeds 32-bit width")
+            if row.stage not in stages:
                 raise ValueError(f"line {line}: unknown stage {row.stage}")
             if row.state not in STATES:
                 raise ValueError(f"line {line}: unknown state {row.state}")
@@ -242,7 +257,7 @@ def validate_and_collect(
 
     report = [
         f"trace: {path}",
-        f"schema: {SCHEMA}",
+        f"schema: {schema}",
         f"cycles: {first_cycle}..{last_cycle} ({cycle_count} sampled)",
         f"rows: {row_count}",
         f"instructions: {len(identities)}",
@@ -250,8 +265,8 @@ def validate_and_collect(
         "component rows:",
     ]
     report.extend(
-        f"  {STAGES[code]:8s} {stage_counts[code]}"
-        for code in STAGES if stage_counts[code]
+        f"  {stages[code]:8s} {stage_counts[code]}"
+        for code in stages if stage_counts[code]
     )
     report.extend(("", "primary non-progress reasons:"))
     if reason_counts:
@@ -268,7 +283,7 @@ def validate_and_collect(
             report.append(
                 f"  c={row.cycle:10d} id={row.insn_id:08x} "
                 f"pc={row.pc:016x} insn={row.instr:08x} "
-                f"{STAGES[row.stage]}[{row.slot},{row.lane}] "
+                f"{stages[row.stage]}[{row.slot},{row.lane}] "
                 f"{STATES[row.state]} reason={REASONS[row.reason]}"
                 f"{blocker} flags={row.flags:016x} "
                 f"d0={row.detail0:016x} d1={row.detail1:016x}"

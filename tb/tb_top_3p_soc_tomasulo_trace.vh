@@ -70,14 +70,14 @@ generate
                         ttrace_cycle, stage);
                 if (uid[63:32] != 32'd0)
                     $fatal(1,
-                        "openrv64-pipeline-state-v1 UID overflow: %016h",
+                        "openrv64-pipeline-state-v2 UID overflow: %016h",
                         uid);
                 if (blocker_uid[63:32] != 32'd0)
                     $fatal(1,
-                        "openrv64-pipeline-state-v1 blocker overflow: %016h",
+                        "openrv64-pipeline-state-v2 blocker overflow: %016h",
                         blocker_uid);
                 $fdisplay(ttrace_fd,
-                    "openrv64-pipeline-state-v1,%0d,%08x,%03x,%016x,%08x,%0d,%0d,%0d,%0d,%0d,%08x,%016x,%016x,%016x",
+                    "openrv64-pipeline-state-v2,%0d,%08x,%03x,%016x,%08x,%0d,%0d,%0d,%0d,%0d,%08x,%016x,%016x,%016x",
                     ttrace_cycle, uid[31:0], core_id, pc, instr, stage,
                     slot, lane, state_code, reason_code, blocker_uid[31:0],
                     flags, detail0, detail1);
@@ -119,8 +119,12 @@ generate
             input [63:0] detail0;
             input [63:0] detail1;
             begin
-                ttrace_emit(payload[338 +: 64], core_id,
-                    payload[274 +: 64], payload[242 +: 32], stage, slot,
+                ttrace_emit(payload[
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_TRACE_ID_LSB +: 64],
+                    core_id,
+                    payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_PC_LSB +: 64],
+                    payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_LSB +: 32],
+                    stage, slot,
                     lane, state_code, reason_code, blocker_uid, flags,
                     detail0, detail1);
             end
@@ -173,7 +177,7 @@ generate
             if ((ttrace_fd != 0) && rst_n) begin
                 if (dut.trace_cycle_q[63:32] != 32'd0)
                     $fatal(1,
-                        "openrv64-pipeline-state-v1 cycle overflow: %016h",
+                        "openrv64-pipeline-state-v2 cycle overflow: %016h",
                         dut.trace_cycle_q);
                 ttrace_cycle = dut.trace_cycle_q[31:0];
                 if ((ttrace_cycle >= ttrace_start_cycle) &&
@@ -188,16 +192,20 @@ generate
                                 ttrace_lane*64 +: 64];
                             ttrace_emit(ttrace_payload,
                                 dut.backend_decode_allocation_id[
-                                    ttrace_lane*`OPENRV64_INSTR_ID_WIDTH +:
-                                    `OPENRV64_INSTR_ID_WIDTH],
-                                dut.backend_decode_payload[
+                                    0 +: `OPENRV64_INSTR_ID_WIDTH] +
+                                    ((BP_TYPE == `OPENRV64_BP_TAGE_BTB) ?
+                                        dut.bp_stage_output_count : 2'd0) +
+                                    ttrace_lane,
+                                dut.frontend_decode_payload[
                                     ttrace_lane*
                                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
-                                    274 +: 64],
-                                dut.backend_decode_payload[
+                                    `OPENRV64_EXEC_ISSUE_PAYLOAD_PC_LSB +:
+                                    64],
+                                dut.frontend_decode_payload[
                                     ttrace_lane*
                                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
-                                    242 +: 32],
+                                    `OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_LSB +:
+                                    32],
                                 `OPENRV64_TTRACE_STAGE_FETCH, -1,
                                 ttrace_lane, `OPENRV64_TTRACE_STATE_PRESENT,
                                 `OPENRV64_TTRACE_REASON_NONE, 64'd0,
@@ -207,8 +215,11 @@ generate
                                  dut.fetch_decode_valid[ttrace_lane]},
                                 64'd0, 64'd0);
 
-                            if (dut.backend_decode_valid[ttrace_lane] &&
-                                dut.backend_decode_ready[ttrace_lane]) begin
+                            if (((BP_TYPE == `OPENRV64_BP_TAGE_BTB) &&
+                                 dut.frontend_decode_fire[ttrace_lane]) ||
+                                ((BP_TYPE != `OPENRV64_BP_TAGE_BTB) &&
+                                 dut.backend_decode_valid[ttrace_lane] &&
+                                 dut.backend_decode_ready[ttrace_lane])) begin
                                 ttrace_reason =
                                     `OPENRV64_TTRACE_REASON_NONE;
                                 ttrace_state =
@@ -219,9 +230,12 @@ generate
                                 if (dut.halted_q || dut.wfi_sleep_q)
                                     ttrace_reason =
                                         `OPENRV64_TTRACE_REASON_HALT_OR_WFI;
-                                else if (dut.bp_decode_stall)
+                                else if (dut.bp_unresolved_target_stall)
                                     ttrace_reason =
-                                        `OPENRV64_TTRACE_REASON_BP_STALL;
+                                        `OPENRV64_TTRACE_REASON_BP_TARGET;
+                                else if (dut.bp_capacity_stall)
+                                    ttrace_reason =
+                                        `OPENRV64_TTRACE_REASON_BP_CAPACITY;
                                 else if (dut.translation_barrier_busy)
                                     ttrace_reason =
                                         `OPENRV64_TTRACE_REASON_TRANSLATION_BARRIER;
@@ -257,16 +271,20 @@ generate
                                 dut.backend_dispatch_occupancy;
                             ttrace_emit(ttrace_payload,
                                 dut.backend_decode_allocation_id[
-                                    ttrace_lane*`OPENRV64_INSTR_ID_WIDTH +:
-                                    `OPENRV64_INSTR_ID_WIDTH],
-                                dut.backend_decode_payload[
+                                    0 +: `OPENRV64_INSTR_ID_WIDTH] +
+                                    ((BP_TYPE == `OPENRV64_BP_TAGE_BTB) ?
+                                        dut.bp_stage_output_count : 2'd0) +
+                                    ttrace_lane,
+                                dut.frontend_decode_payload[
                                     ttrace_lane*
                                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
-                                    274 +: 64],
-                                dut.backend_decode_payload[
+                                    `OPENRV64_EXEC_ISSUE_PAYLOAD_PC_LSB +:
+                                    64],
+                                dut.frontend_decode_payload[
                                     ttrace_lane*
                                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
-                                    242 +: 32],
+                                    `OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_LSB +:
+                                    32],
                                 `OPENRV64_TTRACE_STAGE_DECODE, -1,
                                 ttrace_lane, ttrace_state, ttrace_reason,
                                 64'd0,
@@ -275,6 +293,87 @@ generate
                                  dut.backend_decode_valid[ttrace_lane],
                                  dut.frontend_decode_fire[ttrace_lane]},
                                 ttrace_detail0, ttrace_detail1);
+                        end
+                    end
+
+                    // BP9's synchronous direction lookup resides in the
+                    // elastic dispatch boundary, not in combinational decode.
+                    // Emit that residency separately so a lookup wait cannot
+                    // be misreported as a decode-stage stall.
+                    if (BP_TYPE == `OPENRV64_BP_TAGE_BTB) begin
+                        for (ttrace_lane = 0; ttrace_lane < 3;
+                             ttrace_lane = ttrace_lane + 1) begin
+                            if (dut.bp_dispatch_valid_q[ttrace_lane]) begin
+                                ttrace_payload = dut.backend_decode_payload[
+                                    ttrace_lane*
+                                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                                    `OPENRV64_EXEC_ISSUE_PAYLOAD_TRACE_ID_LSB +:
+                                    64];
+                                if (dut.backend_decode_fire[ttrace_lane]) begin
+                                    ttrace_state =
+                                        `OPENRV64_TTRACE_STATE_FIRE;
+                                    ttrace_reason =
+                                        `OPENRV64_TTRACE_REASON_NONE;
+                                end else begin
+                                    ttrace_state =
+                                        `OPENRV64_TTRACE_STATE_WAIT;
+                                    if (dut.bp_unresolved_target_stall)
+                                        ttrace_reason =
+                                            `OPENRV64_TTRACE_REASON_BP_TARGET;
+                                    else if (dut.bp_capacity_stall)
+                                        ttrace_reason =
+                                            `OPENRV64_TTRACE_REASON_BP_CAPACITY;
+                                    else if (dut.bp_decode_stall)
+                                        ttrace_reason =
+                                            `OPENRV64_TTRACE_REASON_BP_LOOKUP;
+                                    else if (dut.translation_barrier_busy)
+                                        ttrace_reason =
+                                            `OPENRV64_TTRACE_REASON_TRANSLATION_BARRIER;
+                                    else if (dut.u_backend.u_dispatch.g_3p
+                                                 .g_tomasulo
+                                                 .rename_free_count == 0)
+                                        ttrace_reason =
+                                            `OPENRV64_TTRACE_REASON_RENAME_TAG;
+                                    else if (!dut.u_backend.allocation_ready)
+                                        ttrace_reason =
+                                            `OPENRV64_TTRACE_REASON_ROB_CAPACITY;
+                                    else if (dut.backend_dispatch_occupancy ==
+                                             ISSUE_WINDOW_DEPTH)
+                                        ttrace_reason =
+                                            `OPENRV64_TTRACE_REASON_SCHED_CAPACITY;
+                                    else
+                                        ttrace_reason =
+                                            `OPENRV64_TTRACE_REASON_DECODE_DOWNSTREAM;
+                                end
+                                ttrace_detail0 = 64'd0;
+                                ttrace_detail0[15:0] =
+                                    dut.u_backend.u_dispatch.g_3p.g_tomasulo
+                                        .rename_free_count;
+                                ttrace_detail1 = 64'd0;
+                                ttrace_detail1[15:0] =
+                                    dut.backend_retire_occupancy;
+                                ttrace_detail1[31:16] =
+                                    dut.backend_dispatch_occupancy;
+                                ttrace_emit_issue_payload(
+                                    dut.backend_decode_payload[
+                                        ttrace_lane*
+                                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH],
+                                    dut.backend_decode_allocation_id[
+                                        ttrace_lane*
+                                        `OPENRV64_INSTR_ID_WIDTH +:
+                                        `OPENRV64_INSTR_ID_WIDTH],
+                                    `OPENRV64_TTRACE_STAGE_DISPATCH, -1,
+                                    ttrace_lane, ttrace_state, ttrace_reason,
+                                    64'd0,
+                                    {60'd0,
+                                     dut.bp_dispatch_control_select_q[
+                                         ttrace_lane],
+                                     dut.backend_decode_ready[ttrace_lane],
+                                     dut.backend_decode_valid[ttrace_lane],
+                                     dut.backend_decode_fire[ttrace_lane]},
+                                    ttrace_detail0, ttrace_detail1);
+                            end
                         end
                     end
 

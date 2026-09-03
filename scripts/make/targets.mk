@@ -2,6 +2,9 @@
 
 .PHONY: FORCE fpga-sd-image verify-fpga-sd-image fpga-opensbi-core-dcp \
 	fpga-xc7k480t-3p-yosys fpga-xc7k480t-3p-yosys-check \
+	fpga-xc7k480t-3p-vivado fpga-xc7k480t-3p-vivado-check \
+	fpga-xc7k480t-dispatch-rename-breakdown \
+	fpga-xc7k480t-dispatch-rename-breakdown-check \
 	fpga-xc7k480t-module-stats fpga-xc7k480t-module-stats-check \
 	fpga-xc7k480t-3p-utilization \
 	fpga-xc7k480t-3p-utilization-check \

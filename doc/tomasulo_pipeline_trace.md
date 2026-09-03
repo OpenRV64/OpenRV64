@@ -2,7 +2,7 @@
 
 ## Purpose and scope
 
-`openrv64-pipeline-state-v1` is a long-form, simulation-only event stream for
+`openrv64-pipeline-state-v2` is a long-form, simulation-only event stream for
 the `tb_top_3p_soc` Tomasulo profile.  It records every visible instruction in
 every sampled component, with a cycle, stable instruction ID, component-local
 state, and one primary reason why the instruction is not making its next
@@ -14,7 +14,7 @@ time as a scheduler, register-read, execution, completion, or LSQ row.  A GUI
 must preserve those simultaneous rows rather than choosing one exclusive
 stage.
 
-The first version is sufficient to reconstruct instruction residency,
+The format is sufficient to reconstruct instruction residency,
 movement, the active scheduler/LSQ/ROB contents, and causal wait codes.  It is
 not yet a complete machine snapshot: it does not dump PRF values, rename-map
 contents, cache lines, TLB entries, predictor tables, or all global control
@@ -101,6 +101,10 @@ Numeric encoding is fixed:
   instruction.  For `BOTH_SOURCES_PENDING`, it names source 1; both internal
   producer tags remain in scheduler `detail0`.
 
+Version 2 adds component code 10 (`DISPATCH`) for the BP9 synchronous lookup
+register.  The reader remains backward-compatible with version 1 traces,
+whose component set ends at code 9.
+
 The same `insn_id` must always retain the same PC and instruction encoding.
 The writer rejects zero or overflowing IDs.  The validator also rejects cycle
 regression, unknown codes, changed identity, and duplicate component rows.
@@ -118,6 +122,7 @@ regression, unknown codes, changed identity, and duplicate component rows.
 | 7 | `LSQ` | one live load or store transaction | LSQ array slot / 2 load or 3 store |
 | 8 | `ROB` | one live retirement record | ROB slot / `-1` |
 | 9 | `RETIRE` | ordered retirement candidate | ROB slot / retirement lane |
+| 10 | `DISPATCH` | BP9 elastic decode-to-dispatch register | `-1` / dispatch lane |
 
 The scheduler row and matching EXEC `FIRE` row coexist in the issue cycle.
 The scheduler entry disappears after the issue edge in physical-rename mode;
@@ -128,6 +133,10 @@ CoreMark window, so that trace contains no `REGREAD` rows; this is observed
 profile behavior, not proof that the writer cannot emit them.
 The LSU compact metadata retains the trace ID so an LSQ row remains
 self-identifying after a posted store has retired and outlived its ROB entry.
+For BP9, `DECODE` records the combinational candidate entering the elastic
+boundary and `DISPATCH` records the retained bundle presented to rename and
+scheduler allocation.  The synchronous TAGE/BTB read latency is therefore a
+`DISPATCH` residency interval rather than a `DECODE` wait.
 
 ## State codes
 
@@ -183,7 +192,7 @@ that the instruction will retire in that cycle.
 | 26 | `RETIRE_BACKPRESSURE` | ordered retirement candidate is not accepted |
 | 27 | `REDIRECT_SQUASH` | selective/full recovery is removing the work |
 | 28 | `FRONTEND_CONTROL` | frontend prefix, flush, or redirect gate |
-| 29 | `BP_STALL` | branch predictor frontend stall |
+| 29 | `BP_STALL` | legacy aggregate branch-predictor stall code |
 | 30 | `TRANSLATION_BARRIER` | frontend translation barrier is active |
 | 31 | `RENAME_TAG` | no physical rename tag is available |
 | 32 | `ROB_CAPACITY` | retirement allocation is not ready |
@@ -192,6 +201,9 @@ that the instruction will retire in that cycle.
 | 35 | `HALT_OR_WFI` | core is halted or sleeping in WFI |
 | 36 | `RESULT_ARBITRATION` | LSQ local result lost result-port arbitration |
 | 37 | `ATOMIC_UNIT` | atomic waits for the ordered atomic engine |
+| 38 | `BP_LOOKUP` | synchronous predictor response is pending in dispatch |
+| 39 | `BP_CAPACITY` | predictor in-flight resolution storage is full |
+| 40 | `BP_TARGET` | indirect control has no predicted target and awaits resolution |
 | 255 | `UNKNOWN` | a live entry failed an unclassified gate; treat as a bug |
 
 For source, ordering, and barrier causes, `blocker_id` names an instruction
@@ -207,6 +219,7 @@ not listed below are zero.
 |---|---|---|---|
 | FETCH | 0 valid, 1 backend-valid, 2 backend-ready, 3 fetch-ready | 0 | 0 |
 | DECODE | 0 fire, 1 valid, 2 ready, 3 fetch-ready | free tags `[15:0]` | ROB occupancy `[15:0]`, scheduler occupancy `[31:16]` |
+| DISPATCH | 0 fire, 1 backend-valid, 2 backend-ready, 3 control | free tags `[15:0]` | ROB occupancy `[15:0]`, scheduler occupancy `[31:16]` |
 | SCHED | 0 valid, 1 issued, 2 eligible, 3/4 source ready, 5/6 source used, 7 result ready, 8 blocker valid | source core IDs `[15:0]`, `[31:16]` | ROB slot `[7:0]`, source physical tags `[15:8]` and `[23:16]`, destination tag `[31:24]` |
 | REGREAD active | 0 group valid, 2:1 lane valid, 6:3 fire mask, 10:7 operand-ready mask | operand-done mask `[3:0]` | response-now mask `[3:0]` |
 | REGREAD pending | 0 group valid, 2:1 lane valid, 6:3 operand-ready mask | operand-done mask `[3:0]` | 0 |

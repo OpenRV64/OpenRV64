@@ -4437,12 +4437,185 @@ module tb_top_3p_soc #(
         end
     endtask
 
+    // Focused LR/SC recovery trace.  This observes only existing handshake
+    // state, so the trace itself cannot change completion ownership.
+    integer atomic_recovery_debug;
+    always @(posedge clk) begin
+        if (rst_n && (atomic_recovery_debug != 0)) begin
+            if ((cycles < 2000) &&
+                dut.u_backend.dispatch_pipe_candidate_valid[3])
+                $display(
+                    "ATOMIC_RECOVERY_MEM1_CAND cycle=%0d id=%0d pc=%016h instr=%08h valid=%0b squashed=%0b rank=%0d enabled=%0b req_valid=%0b from_held=%0b ready=%0b accept=%0b capacity=%0b resident_valid=%0b resident_id=%0d operands=%02b read_req=%06b read_ack=%06b held=%03b drain=%0b recovery=%0b cut=%0d",
+                    cycles,
+                    dut.u_backend.dispatch_pipe_id[
+                        3*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH],
+                    dut.u_backend.dispatch_pipe_payload[
+                        3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +:
+                        `RV64_XLEN],
+                    dut.u_backend.dispatch_pipe_payload[
+                        3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 242 +:
+                        `RV64_INSTR_WIDTH],
+                    dut.u_backend.dispatch_pipe_valid[3],
+                    dut.u_backend.dispatch_pipe_squashed[3],
+                    dut.u_backend.dispatch_pipe_age_rank[3*2 +: 2],
+                    dut.u_backend.banked_independent_candidate_enabled[3],
+                    dut.u_backend.banked_independent_candidate_request_valid[3],
+                    dut.u_backend.banked_independent_candidate_from_held[3],
+                    dut.u_backend.banked_independent_pipe_ready[3],
+                    dut.u_backend.banked_independent_accept[3],
+                    dut.u_backend.banked_independent_output_capacity[3],
+                    dut.u_backend.banked_independent_valid_q[3],
+                    dut.u_backend.banked_independent_id_q[
+                        3*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH],
+                    dut.u_backend.banked_independent_operand_ready[
+                        3*2 +: 2],
+                    dut.u_backend.banked_independent_read_req,
+                    dut.u_backend.gpr_read_ack,
+                    dut.u_backend.banked_independent_held_valid_q,
+                    dut.u_backend.banked_gpr_drain_q,
+                    dut.u_backend.squash_frontend_i,
+                    dut.u_backend.redirect_id_o);
+
+            if ((cycles < 2000) &&
+                dut.u_backend.banked_independent_valid_q[3])
+                $display(
+                    "ATOMIC_RECOVERY_MEM1_STATE cycle=%0d id=%0d pc=%016h instr=%08h operands=%02b done=%02b response=%02b offer=%0b exec_ready=%0b fire=%0b owner_valid=%06b owner_pipe=%012b owner_id=%0h read_valid=%06b squash=%0b cut=%0d",
+                    cycles,
+                    dut.u_backend.banked_independent_id_q[
+                        3*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH],
+                    dut.u_backend.banked_independent_payload_q[
+                        3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +:
+                        `RV64_XLEN],
+                    dut.u_backend.banked_independent_payload_q[
+                        3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 242 +:
+                        `RV64_INSTR_WIDTH],
+                    dut.u_backend.banked_independent_operand_ready[
+                        3*2 +: 2],
+                    dut.u_backend.banked_independent_operand_done_q[
+                        3*2 +: 2],
+                    dut.u_backend.banked_independent_response_now[
+                        3*2 +: 2],
+                    dut.u_backend.banked_independent_pipe_offer[3],
+                    dut.u_backend.pipe_ready[3],
+                    dut.u_backend.banked_independent_pipe_fire[3],
+                    dut.u_backend.banked_independent_response_owner_valid_q,
+                    dut.u_backend.banked_independent_response_owner_pipe_q,
+                    dut.u_backend.banked_independent_response_owner_id_q,
+                    dut.u_backend.gpr_read_valid,
+                    dut.u_backend.squash_frontend_i,
+                    dut.u_backend.redirect_id_o);
+
+            if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    store_issue_valid_i &&
+                dut.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    store_issue_ready_o)
+                $display(
+                    "ATOMIC_RECOVERY_ISSUE cycle=%0d id=%0d slot=%0d pc=%016h instr=%08h atomic=%0b squashed=%0b live=%0b alloc_fire=%0b alloc_index=%0d cut=%0d",
+                    cycles,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_id_i,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_slot_i,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_payload_i[274 +: `RV64_XLEN],
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_payload_i[242 +: `RV64_INSTR_WIDTH],
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.store_is_atomic,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_squashed,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.store_issue_live,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                        store_alloc_fire,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq.
+                        store_free_array_index_r,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.squash_id_i);
+
+            if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.atomic_start_valid)
+                $display(
+                    "ATOMIC_RECOVERY_START cycle=%0d id=%0d slot=%0d tag=%0d ready=%0b active=%0b head=%0d head_slot=%0d",
+                    cycles,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.atomic_start_id,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.atomic_start_slot,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.atomic_start_tag,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.atomic_start_ready,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.atomic_active,
+                    dut.u_backend.next_retire_id,
+                    dut.u_backend.next_retire_slot);
+
+            if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    atomic_result_valid)
+                $display(
+                    "ATOMIC_RECOVERY_RESULT cycle=%0d id=%0d slot=%0d fire=%0b data=%016h output_valid=%0b output_id=%0d output_slot=%0d output_ready=%0b squash=%0b cut=%0d",
+                    cycles,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        atomic_result_id,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        atomic_result_slot,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        atomic_result_fire,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.atomic_result,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.complete_valid_q,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.complete_id_q,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.complete_slot_q,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.complete_ready_i,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.squash_younger_i,
+                    dut.u_backend.u_exec.g_3p.u_exec.u_lsu.squash_id_i);
+
+            if (dut.u_backend.complete_valid[2])
+                $display(
+                    "ATOMIC_RECOVERY_COMPLETE cycle=%0d id=%0d slot=%0d match=%0b storage=%0b fire=%0b accept=%0b prf_req=%0b prf_ack=%0b pc=%016h instr=%08h rd=%0d data=%016h squash=%0b cut=%0d",
+                    cycles,
+                    dut.u_backend.complete_id[
+                        2*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH],
+                    dut.u_backend.complete_slot[
+                        2*$clog2(RETIRE_DEPTH) +: $clog2(RETIRE_DEPTH)],
+                    dut.u_backend.queue_complete_match[2],
+                    dut.u_backend.completion_storage_ready[2],
+                    dut.u_backend.completion_fire[2],
+                    dut.u_backend.queue_complete_accept[2],
+                    dut.u_backend.completion_prf_write_req[2],
+                    dut.u_backend.completion_prf_write_ack_r[2],
+                    dut.u_backend.complete_payload[
+                        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        RETIRE_RESULT_PC_LSB +: `RV64_XLEN],
+                    dut.u_backend.complete_payload[
+                        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        RETIRE_RESULT_INSTR_LSB +: `RV64_INSTR_WIDTH],
+                    dut.u_backend.complete_payload[
+                        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        `OPENRV64_COMPLETE_RD_LSB +: `RV64_REG_ADDR_WIDTH],
+                    dut.u_backend.complete_payload[
+                        2*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +
+                        `OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN],
+                    dut.u_backend.squash_frontend_i,
+                    dut.u_backend.redirect_id_o);
+
+            if (dut.u_backend.squash_frontend_i)
+                $display(
+                    "ATOMIC_RECOVERY_REDIRECT cycle=%0d cut=%0d slot=%0d replay=%0b target=%016h head=%0d head_slot=%0d head_complete=%0b",
+                    cycles, dut.u_backend.redirect_id_o,
+                    dut.u_backend.branch_slot_o,
+                    dut.u_backend.redirect_memory_replay_o,
+                    dut.u_backend.redirect_target_o,
+                    dut.u_backend.next_retire_id,
+                    dut.u_backend.next_retire_slot,
+                    dut.u_backend.u_retire_queue.complete_q[
+                        dut.u_backend.next_retire_slot]);
+        end
+    end
+
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
         max_cycles = 250000;
         expected_a0 = 0;
         expected_a0_valid = 1'b0;
+        atomic_recovery_debug =
+            $test$plusargs("atomic_recovery_debug");
         done_pc = 0;
         done_pc_valid = 1'b0;
         retired = 0;
@@ -7534,11 +7707,12 @@ module tb_top_3p_soc #(
                 dut.bp_decode_stall, dut.frontend_decode_enable,
                 dut.control_redirect, dut.backend_memory_replay);
             $display(
-                "PERF_ICX_L2_TIMEOUT_RECOVERY squash=%0d redirect_valid=%0d redirect_id=%0d replay_pending=%0d replay_valid=%0d branch_resolved=%0d barrier=%0d watches=%h checks=%0d violations=%0d collisions=%0d device=%0d replays=%0d",
+                "PERF_ICX_L2_TIMEOUT_RECOVERY squash=%0d redirect_valid=%0d redirect_id=%0d replay_pending=%0d replay_ordered_issue=%0d replay_valid=%0d branch_resolved=%0d barrier=%0d watches=%h checks=%0d violations=%0d collisions=%0d device=%0d replays=%0d ordered_issue_replays=%0d",
                 dut.u_backend.squash_frontend_i,
                 dut.u_backend.redirect_valid_o,
                 dut.u_backend.redirect_id_o,
                 dut.u_backend.memory_replay_pending_q,
+                dut.u_backend.memory_replay_ordered_issue_q,
                 dut.u_backend.memory_replay_valid,
                 dut.u_backend.exec_branch_resolved,
                 dut.u_backend.barrier_active_o,
@@ -7547,7 +7721,8 @@ module tb_top_3p_soc #(
                 dut.u_backend.perf_memory_store_violations_q,
                 dut.u_backend.perf_memory_store_collisions_q,
                 dut.u_backend.perf_memory_store_device_replays_q,
-                dut.u_backend.perf_memory_replays_q);
+                dut.u_backend.perf_memory_replays_q,
+                dut.u_backend.perf_memory_ordered_issue_replays_q);
             $display(
                 "PERF_ICX_L2_TIMEOUT_REGREAD valid=%b ids=%h done=%b held_valid=%b held_req=%b owner_valid=%b poison=%b drain=%0d quiescent=%0d pipe_valid=%b pipe_ready=%b",
                 dut.u_backend.banked_independent_valid_q,
@@ -9048,6 +9223,15 @@ module tb_top_3p_soc #(
         $display(
             "PERF_ICX_L2_MEMORY_REPLAY_CONTROL_WAIT cycles=%0d",
             dut.u_backend.perf_memory_replay_control_wait_cycles_q);
+        $display(
+            "PERF_ICX_L2_MEMORY_ORDERED_ISSUE_REPLAY events=%0d",
+            dut.u_backend.perf_memory_ordered_issue_replays_q);
+        $display(
+            "PERF_ICX_L2_MEMORY_REPLAY_REDIRECT_COLLISION exec=%0d older_exec=%0d free=%0d older_free=%0d",
+            dut.u_backend.perf_memory_replay_exec_redirect_collisions_q,
+            dut.u_backend.perf_memory_replay_older_exec_redirect_collisions_q,
+            dut.u_backend.perf_memory_replay_free_redirect_collisions_q,
+            dut.u_backend.perf_memory_replay_older_free_redirect_collisions_q);
         if (ORACLE_BRANCHES != 0) begin
             if (branch_oracle_consumed != branch_oracle_expected)
                 $fatal(1,

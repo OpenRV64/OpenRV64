@@ -168,6 +168,12 @@ module openrv64_exec_top_3p #(
     output wire                         store_address_compressed_o,
     output wire [`RV64_XLEN-1:0]        store_address_paddr_o,
     output wire                         store_address_cacheable_o,
+    output wire                         ordered_issue_replay_valid_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        ordered_issue_replay_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0]
+                                        ordered_issue_replay_slot_o,
+    output wire [`RV64_XLEN-1:0]        ordered_issue_replay_pc_o,
 
     output wire                         mem_xlate_valid_o,
     input  wire                         mem_xlate_ready_i,
@@ -695,7 +701,11 @@ module openrv64_exec_top_3p #(
         .store_address_pc_o(store_address_pc_o),
         .store_address_compressed_o(store_address_compressed_o),
         .store_address_paddr_o(store_address_paddr_o),
-        .store_address_cacheable_o(store_address_cacheable_o)
+        .store_address_cacheable_o(store_address_cacheable_o),
+        .ordered_issue_replay_valid_o(ordered_issue_replay_valid_o),
+        .ordered_issue_replay_id_o(ordered_issue_replay_id_o),
+        .ordered_issue_replay_slot_o(ordered_issue_replay_slot_o),
+        .ordered_issue_replay_pc_o(ordered_issue_replay_pc_o)
     );
 
     // LSU has fixed priority on completion/writeback port 2.  If ALU2 was

@@ -35,6 +35,7 @@ module tb_dispatch_window_3p;
     reg rst_n;
     reg flush;
     reg squash;
+    reg squash_inclusive;
     reg [IDW-1:0] squash_id;
     reg translation_bypass;
     reg [2:0] decode_valid;
@@ -86,6 +87,7 @@ module tb_dispatch_window_3p;
     ) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush),
         .squash_frontend_i(squash),
+        .squash_inclusive_i(squash_inclusive),
         .squash_id_i(squash_id),
         .translation_bypass_i(translation_bypass),
         .decode_valid_i(decode_valid), .decode_ready_o(decode_ready),
@@ -202,6 +204,7 @@ module tb_dispatch_window_3p;
         rst_n = 1'b0;
         flush = 1'b0;
         squash = 1'b0;
+        squash_inclusive = 1'b0;
         squash_id = IDW'(0);
         translation_bypass = 1'b0;
         allocation_ready = 1'b1;
@@ -641,6 +644,32 @@ module tb_dispatch_window_3p;
         tick();
         if (queue_count != 2 || write_busy[7])
             fail("preempted recovery misordered modular IDs at wrap");
+
+        // Memory replay is an inclusive cut: unlike a branch redirect, the
+        // instruction naming the cut must not remain resident in the issue
+        // window after the retire queue has discarded it.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        pipe_ready = 4'b0000;
+        allocation_id = {IDW'(0), IDW'(0), IDW'(70)};
+        allocation_slot = {4'd0, 4'd0, 4'd0};
+        next_retire_id = IDW'(70);
+        p0 = alu_packet(64'd70, 5'd1, 5'd0, 5'd8);
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_valid = 3'b001;
+        tick();
+        clear_inputs();
+        squash_id = IDW'(70);
+        squash_inclusive = 1'b1;
+        squash = 1'b1;
+        tick();
+        squash = 1'b0;
+        squash_inclusive = 1'b0;
+        tick();
+        if (queue_count != 0 || write_busy[8])
+            fail("inclusive recovery retained its cut instruction");
 
         // A single memory operation must obey the same fixed-lane contract as
         // strict dispatch before testing paired admission below.

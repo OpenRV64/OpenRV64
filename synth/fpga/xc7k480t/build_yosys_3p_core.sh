@@ -15,7 +15,9 @@ rv64m_source=${RV64M_SOURCE:-rtl/core/exec/alu/rv64-m-fpga.v}
 # explicit so a utilization result cannot silently change with simulator
 # defaults.
 retire_depth=${RETIRE_DEPTH:-32}
+issue_window_depth=${ISSUE_WINDOW_DEPTH:-$retire_depth}
 phys_reg_count=${PHYS_REG_COUNT:-31}
+rename_mode=${RENAME_MODE:-0}
 banked_gpr=${BANKED_GPR:-0}
 fpga_gpr_lutram=${FPGA_GPR_LUTRAM:-0}
 issue_window=${ISSUE_WINDOW:-1}
@@ -25,6 +27,8 @@ relax_waw=${RELAX_WAW:-1}
 store_queue_depth=${STORE_QUEUE_DEPTH:-4}
 l1i_cache_bytes=${L1I_CACHE_BYTES:-16384}
 l1d_cache_bytes=${L1D_CACHE_BYTES:-16384}
+enable_l1i=${ENABLE_L1I:-1}
+enable_l1d=${ENABLE_L1D:-1}
 l1d_retired_store_mshr_canonical=${L1D_RETIRED_STORE_MSHR_CANONICAL:-0}
 l2_tlb_entries=${L2_TLB_ENTRIES:-256}
 l2_tlb_ways=${L2_TLB_WAYS:-4}
@@ -41,6 +45,11 @@ if [[ ! -s "$repo_root/$rv64m_source" ]]; then
 fi
 
 mkdir -p "$output_dir"
+
+printf 'OPENRV64 XC7K480T 3P YOSYS CONFIG retire=%s scheduler=%s phys=%s rename=%s banked_gpr=%s gpr_lutram=%s l1i=%s l1d=%s\n' \
+    "$retire_depth" "$issue_window_depth" "$phys_reg_count" \
+    "$rename_mode" "$banked_gpr" "$fpga_gpr_lutram" \
+    "$enable_l1i" "$enable_l1d"
 
 mapfile -t rtl_sources < <(
     cd "$repo_root"
@@ -72,7 +81,9 @@ chparam -set RESET_VECTOR 2147483648 \
         -set ENABLE_RV64ZBB 1 \
         -set HPM_COUNTERS 8 \
         -set RETIRE_DEPTH $retire_depth \
+        -set ISSUE_WINDOW_DEPTH $issue_window_depth \
         -set PHYS_REG_COUNT $phys_reg_count \
+        -set RENAME_MODE $rename_mode \
         -set BANKED_GPR $banked_gpr \
         -set FPGA_GPR_LUTRAM $fpga_gpr_lutram \
         -set COMPLETION_FORWARD_MASK 0 \
@@ -88,8 +99,8 @@ chparam -set RESET_VECTOR 2147483648 \
         -set ENABLE_ZICCLSM 1 \
         -set STORE_QUEUE_DEPTH $store_queue_depth \
         -set ENABLE_RV64A 1 \
-        -set ENABLE_L1I 1 \
-        -set ENABLE_L1D 1 \
+        -set ENABLE_L1I $enable_l1i \
+        -set ENABLE_L1D $enable_l1d \
         -set L1I_CACHE_BYTES $l1i_cache_bytes \
         -set L1D_CACHE_BYTES $l1d_cache_bytes \
         -set L1D_RETIRED_STORE_MSHR_CANONICAL $l1d_retired_store_mshr_canonical \

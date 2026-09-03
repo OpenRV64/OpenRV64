@@ -330,6 +330,7 @@ module openrv64_rv64_top_3p #(
 
     wire backend_redirect;
     wire backend_memory_replay;
+    wire backend_tagged_recovery;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] backend_redirect_id;
     wire [63:0] backend_redirect_target;
     wire branch_resolved;
@@ -376,11 +377,15 @@ module openrv64_rv64_top_3p #(
     wire control_trap = backend_exception && !backend_halt;
     wire wfi_irq_take;
     wire backend_pmp_update;
+    wire backend_pmp_preflush;
     wire fetch_priv_context_change = control_trap || backend_irq ||
         wfi_irq_take || backend_mret || backend_sret;
     wire control_restart = backend_fence_i || backend_sfence_vma ||
-                           backend_satp_write || backend_pmp_update ||
+                           backend_satp_write || backend_pmp_preflush ||
+                           backend_pmp_update ||
                            backend_wfi;
+    wire [63:0] control_restart_target = backend_pmp_preflush ?
+        backend_retire_pc : backend_retire_next_pc;
     wire control_flush = control_trap || backend_irq || wfi_irq_take ||
                          backend_mret || backend_sret || control_restart;
     wire fetch_invalidate = reset_pending_q || control_flush || backend_halt;
@@ -420,6 +425,13 @@ module openrv64_rv64_top_3p #(
     wire [63:0] bp_direct_target;
     wire bp_fetch_stall;
     wire bp_decode_stall;
+    wire bp_background_stall;
+    wire bp_capacity_stall;
+    wire bp_unresolved_target_stall;
+    localparam bit BP_REGISTERED_LOOKUP =
+        BP_TYPE == `OPENRV64_BP_TAGE_BTB;
+    wire bp_registered_prelaunch;
+    wire [1:0] bp_stage_output_count;
     wire l1i_speculation_sv39 =
         (csr_priv_mode != `RV64_PRIV_M) &&
         (csr_satp_mode == `RV64_SATP_MODE_SV39);
@@ -465,8 +477,14 @@ module openrv64_rv64_top_3p #(
     // so filling the real predictor's finite resolution queue would measure
     // that queue rather than the cost of imperfect prediction.  This matches
     // the historical oracle experiment, which forced both stalls low.
-    wire bp_fetch_stall_effective = bp_oracle_mode ? 1'b0 : bp_fetch_stall;
-    wire bp_decode_stall_effective = bp_oracle_mode ? 1'b0 : bp_decode_stall;
+    // A TAGE request launched while an elastic dispatch register is being
+    // filled may assert the synchronous-response wait internally.  That wait
+    // belongs to the register, not to fetch/decode.  Queue capacity and an
+    // unresolved targetless indirect remain real frontend backpressure.
+    wire bp_fetch_stall_effective = bp_oracle_mode ? 1'b0 :
+        (bp_registered_prelaunch ? bp_background_stall : bp_fetch_stall);
+    wire bp_decode_stall_effective = bp_oracle_mode ? 1'b0 :
+        (bp_registered_prelaunch ? bp_background_stall : bp_decode_stall);
     wire control_redirect = backend_redirect ||
                             bp_target_mispredict_effective;
 
@@ -474,7 +492,7 @@ module openrv64_rv64_top_3p #(
                           control_restart || control_redirect ||
                           bp_predict_redirect;
     wire [63:0] fetch3_restart_pc = except_vector_valid ?
-        except_vector_target : control_restart ? backend_retire_next_pc :
+        except_vector_target : control_restart ? control_restart_target :
         control_redirect ? backend_redirect_target :
         bp_predict_redirect ? bp_predict_target : RESET_VECTOR;
     wire fetch3_invalidate = reset_pending_q || except_vector_valid ||
@@ -779,9 +797,9 @@ module openrv64_rv64_top_3p #(
     endgenerate
 
     // The scalar predictor is shared by the oldest control instruction in
-    // the presented bundle.  Decode admission stops after that lane, so a
+    // the presented bundle.  Admission stops after that lane, so a
     // predicted-taken redirect never deposits a sequential younger lane into
-    // the dispatch queue on the redirecting edge.
+    // the backend on the redirecting edge.
     wire [2:0] frontend_control = fetch_decode_valid &
                                   (predecode_valid |
                                    decode_branch | decode_jump);
@@ -795,36 +813,87 @@ module openrv64_rv64_top_3p #(
         !frontend_control[0],
         1'b1
     };
-    wire [1:0] bp_lane = frontend_control_select[0] ? 2'd0 :
-                         frontend_control_select[1] ? 2'd1 : 2'd2;
-    wire bp_selected_predecode = predecode_valid[bp_lane];
-    wire [19:0] bp_selected_predecode_offset =
-        predecode_offset[bp_lane*20 +: 20];
-    wire [63:0] bp_selected_pc = (bp_lane == 2'd0) ? decode_pc0 :
-                                 (bp_lane == 2'd1) ? decode_pc1 : decode_pc2;
-    wire [31:0] bp_selected_instr = (bp_lane == 2'd0) ? instr0 :
-                                    (bp_lane == 2'd1) ? instr1 : instr2;
+    wire [1:0] bp_live_lane = frontend_control_select[0] ? 2'd0 :
+                              frontend_control_select[1] ? 2'd1 : 2'd2;
+    wire bp_live_predecode = predecode_valid[bp_live_lane];
+    wire [19:0] bp_live_predecode_offset =
+        predecode_offset[bp_live_lane*20 +: 20];
+    wire [63:0] bp_live_pc = (bp_live_lane == 2'd0) ? decode_pc0 :
+                             (bp_live_lane == 2'd1) ? decode_pc1 : decode_pc2;
+    wire [31:0] bp_live_instr = (bp_live_lane == 2'd0) ? instr0 :
+                                (bp_live_lane == 2'd1) ? instr1 : instr2;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0] bp_live_id =
+        backend_decode_allocation_id[0 +: `OPENRV64_INSTR_ID_WIDTH] +
+        {{(`OPENRV64_INSTR_ID_WIDTH-2){1'b0}}, bp_stage_output_count} +
+        {{(`OPENRV64_INSTR_ID_WIDTH-2){1'b0}}, bp_live_lane};
+    wire [63:0] bp_live_decode_imm =
+        decode_imm[bp_live_lane*64 +: 64];
+    wire [63:0] bp_live_imm = bp_live_predecode ?
+        {{43{bp_live_predecode_offset[19]}},
+         bp_live_predecode_offset, 1'b0} : bp_live_decode_imm;
+    wire bp_live_branch = bp_live_predecode ?
+        predecode_conditional[bp_live_lane] : decode_branch[bp_live_lane];
+    wire bp_live_jump = bp_live_predecode ?
+        !predecode_conditional[bp_live_lane] : decode_jump[bp_live_lane];
+    wire bp_live_indirect = bp_live_predecode ?
+        1'b0 : decode_br_indirect[bp_live_lane];
+
+    // BP9 uses an elastic register at the dispatch boundary.  The BRAM read
+    // launches from the incoming bundle; on the following cycle these fields
+    // name the retained bundle while its prediction is applied and allocated.
+    reg [2:0] bp_dispatch_valid_q;
+    reg [2:0] bp_dispatch_control_select_q;
+    reg [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        bp_dispatch_payload_q;
+    reg [2:0] bp_dispatch_uses_rs1_q;
+    reg [2:0] bp_dispatch_uses_rs2_q;
+    reg [63:0] bp_dispatch_selected_pc_q;
+    reg [31:0] bp_dispatch_selected_instr_q;
+    reg [63:0] bp_dispatch_selected_imm_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] bp_dispatch_selected_id_q;
+    reg bp_dispatch_lookup_branch_q;
+    reg bp_dispatch_lookup_jump_q;
+    reg bp_dispatch_lookup_indirect_q;
+    wire bp_dispatch_has_control = |bp_dispatch_control_select_q;
+    wire [1:0] bp_dispatch_lane =
+        bp_dispatch_control_select_q[0] ? 2'd0 :
+        (bp_dispatch_control_select_q[1] ? 2'd1 : 2'd2);
+    wire bp_lookup_from_dispatch = BP_REGISTERED_LOOKUP &&
+                                   bp_dispatch_has_control;
+    wire [1:0] bp_lane = bp_lookup_from_dispatch ? bp_dispatch_lane :
+                                                        bp_live_lane;
+    wire bp_stage_can_accept;
+
+    wire [63:0] bp_selected_pc = bp_lookup_from_dispatch ?
+        bp_dispatch_selected_pc_q : bp_live_pc;
+    wire [31:0] bp_selected_instr = bp_lookup_from_dispatch ?
+        bp_dispatch_selected_instr_q : bp_live_instr;
+    wire [63:0] bp_selected_imm = bp_lookup_from_dispatch ?
+        bp_dispatch_selected_imm_q : bp_live_imm;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] bp_selected_id =
-        backend_decode_allocation_id[
-            bp_lane*`OPENRV64_INSTR_ID_WIDTH +:
-            `OPENRV64_INSTR_ID_WIDTH];
-    wire [63:0] bp_selected_decode_imm =
-        decode_imm[bp_lane*64 +: 64];
-    wire [63:0] bp_selected_imm = bp_selected_predecode ?
-        {{43{bp_selected_predecode_offset[19]}},
-         bp_selected_predecode_offset, 1'b0} : bp_selected_decode_imm;
-    wire bp_lookup_branch = bp_selected_predecode ?
-        predecode_conditional[bp_lane] : decode_branch[bp_lane];
-    wire bp_lookup_jump = bp_selected_predecode ?
-        !predecode_conditional[bp_lane] : decode_jump[bp_lane];
-    wire bp_lookup_indirect = bp_selected_predecode ?
-        1'b0 : decode_br_indirect[bp_lane];
+        bp_lookup_from_dispatch ? bp_dispatch_selected_id_q : bp_live_id;
+    wire bp_lookup_branch = bp_lookup_from_dispatch ?
+        bp_dispatch_lookup_branch_q : bp_live_branch;
+    wire bp_lookup_jump = bp_lookup_from_dispatch ?
+        bp_dispatch_lookup_jump_q : bp_live_jump;
+    wire bp_lookup_indirect = bp_lookup_from_dispatch ?
+        bp_dispatch_lookup_indirect_q : bp_live_indirect;
     wire bp_lookup_rd_link =
         (`RV64_RD(bp_selected_instr) == 5'd1) ||
         (`RV64_RD(bp_selected_instr) == 5'd5);
 
+    assign bp_registered_prelaunch = BP_REGISTERED_LOOKUP &&
+        !bp_lookup_from_dispatch && bp_stage_can_accept &&
+        (|frontend_control_select) && !control_flush &&
+        !control_redirect && !halted_q && !wfi_sleep_q &&
+        !translation_barrier_busy && !bp_background_stall;
     assign bp_branch_present = use_icx_bus &&
-                               (|frontend_control_select) &&
+                               (bp_lookup_from_dispatch ?
+                                    bp_dispatch_has_control :
+                                    ((|frontend_control_select) &&
+                                     (!BP_REGISTERED_LOOKUP ||
+                                      (bp_stage_can_accept &&
+                                       !bp_background_stall)))) &&
                                !control_flush && !control_redirect &&
                                !halted_q && !wfi_sleep_q;
     // Unexpected speculative controls retain the real predictor behavior and
@@ -859,16 +928,17 @@ module openrv64_rv64_top_3p #(
         .ENABLE_TAGGED_RESOLUTION(ENABLE_SPECULATION_WINDOW)
     ) u_bp (
         .clk(clk), .rst_n(rst_n),
-        // A memory-order replay names the oldest colliding load.  The tagged
-        // predictor keeps older controls and discards only controls younger
-        // than that arbitrary instruction-ID cut.
+        // Memory replay and a deferred execution redirect name their cut
+        // explicitly.  A live branch redirect can use the simultaneous
+        // resolution tag; a deferred redirect cannot and therefore uses the
+        // same arbitrary-ID recovery path as memory replay.
         .flush_i(control_flush ||
                  (control_redirect &&
                   (ENABLE_SPECULATION_WINDOW == 0))),
         .squash_i(control_redirect &&
                   (ENABLE_SPECULATION_WINDOW != 0) &&
-                  !backend_memory_replay),
-        .recovery_i(backend_memory_replay),
+                  !backend_tagged_recovery),
+        .recovery_i(backend_tagged_recovery),
         .recovery_id_i(backend_redirect_id),
         .ras_context_flush_i(control_flush),
         .lookup_valid_i(bp_branch_present),
@@ -901,11 +971,16 @@ module openrv64_rv64_top_3p #(
         .update_overflow_o(bp_update_overflow),
         .fetch_stall_o(bp_fetch_stall),
         .decode_stall_o(bp_decode_stall),
+        .background_stall_o(bp_background_stall),
+        .capacity_stall_o(bp_capacity_stall),
+        .unresolved_target_stall_o(bp_unresolved_target_stall),
         .inhibit_load_speculation_o(inhibit_load_speculation)
     );
 
+    wire bp_packet_prediction = BP_REGISTERED_LOOKUP ? 1'b0 :
+                                bp_prediction_taken_effective;
     wire [2:0] bp_lane_prediction = frontend_control_select &
-                                    {3{bp_prediction_taken_effective}};
+                                    {3{bp_packet_prediction}};
 
     wire [2:0] decode_ebreak = {
         instr2 == `RV64_INSTR_EBREAK,
@@ -914,7 +989,7 @@ module openrv64_rv64_top_3p #(
         instr2 == `RV64_INSTR_ECALL,
         instr1 == `RV64_INSTR_ECALL, instr0 == `RV64_INSTR_ECALL};
     wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
-        backend_decode_payload;
+        frontend_decode_payload;
 
     generate
         for (decode_lane = 0; decode_lane < 3;
@@ -927,7 +1002,7 @@ module openrv64_rv64_top_3p #(
                 (decode_lane == 1) ? instr_fault1 : instr_fault2;
             wire lane_page_fault = (decode_lane == 0) ? instr_page_fault0 :
                 (decode_lane == 1) ? instr_page_fault1 : instr_page_fault2;
-            assign backend_decode_payload[
+            assign frontend_decode_payload[
                 decode_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] = {
                 fetch_decode_trace[decode_lane*64 +: 64],
@@ -969,14 +1044,59 @@ module openrv64_rv64_top_3p #(
     endgenerate
 
     wire [2:0] backend_decode_ready;
-    wire frontend_decode_enable = !control_flush && !control_redirect &&
+    wire frontend_common_enable = !control_flush && !control_redirect &&
                                   !halted_q && !wfi_sleep_q &&
-                                  !bp_decode_stall_effective &&
                                   !translation_barrier_busy;
-    wire [2:0] backend_decode_valid = fetch_decode_valid &
-        frontend_prefix_allow & {3{frontend_decode_enable}};
-    wire [2:0] frontend_decode_fire = backend_decode_valid &
-        backend_decode_ready;
+    wire frontend_decode_enable = frontend_common_enable &&
+        (BP_REGISTERED_LOOKUP ?
+            (!bp_fetch_stall_effective && !bp_predict_redirect) :
+            !bp_decode_stall_effective);
+    wire backend_decode_enable = frontend_common_enable &&
+                                 !bp_decode_stall_effective;
+
+    reg [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        bp_dispatch_payload_view_r;
+    integer bp_dispatch_payload_lane;
+    always @* begin
+        bp_dispatch_payload_view_r = bp_dispatch_payload_q;
+        for (bp_dispatch_payload_lane = 0;
+             bp_dispatch_payload_lane < 3;
+             bp_dispatch_payload_lane = bp_dispatch_payload_lane + 1) begin
+            if (bp_dispatch_control_select_q[bp_dispatch_payload_lane])
+                bp_dispatch_payload_view_r[
+                    bp_dispatch_payload_lane*
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_PREDICTED_TAKEN_BIT] =
+                        bp_prediction_taken_effective;
+        end
+    end
+    wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        backend_decode_payload = BP_REGISTERED_LOOKUP ?
+            bp_dispatch_payload_view_r : frontend_decode_payload;
+    wire [2:0] backend_decode_uses_rs1 = BP_REGISTERED_LOOKUP ?
+        bp_dispatch_uses_rs1_q : decode_uses_rs1;
+    wire [2:0] backend_decode_uses_rs2 = BP_REGISTERED_LOOKUP ?
+        bp_dispatch_uses_rs2_q : decode_uses_rs2;
+    wire [2:0] backend_decode_valid = BP_REGISTERED_LOOKUP ?
+        (bp_dispatch_valid_q & {3{backend_decode_enable}}) :
+        (fetch_decode_valid & frontend_prefix_allow &
+         {3{frontend_decode_enable}});
+    wire [2:0] backend_decode_fire = backend_decode_valid &
+                                     backend_decode_ready;
+    wire [1:0] backend_decode_count =
+        {1'b0, backend_decode_fire[0]} +
+        {1'b0, backend_decode_fire[1]} +
+        {1'b0, backend_decode_fire[2]};
+    assign bp_stage_output_count = BP_REGISTERED_LOOKUP ?
+                                   backend_decode_count : 2'd0;
+    wire bp_stage_all_consumed = (|bp_dispatch_valid_q) &&
+        ((backend_decode_fire & bp_dispatch_valid_q) ==
+         bp_dispatch_valid_q);
+    assign bp_stage_can_accept = !BP_REGISTERED_LOOKUP ||
+                                 !(|bp_dispatch_valid_q) ||
+                                 bp_stage_all_consumed;
+    wire [2:0] frontend_decode_fire = BP_REGISTERED_LOOKUP ?
+        (fetch_decode_valid & fetch_decode_ready) : backend_decode_fire;
     wire [1:0] frontend_decode_count =
         {1'b0, frontend_decode_fire[0]} +
         {1'b0, frontend_decode_fire[1]} +
@@ -994,8 +1114,105 @@ module openrv64_rv64_top_3p #(
         {1'b0, fetch_decode_valid[2]};
     wire [1:0] frontend_trace_id_count = fetch3_restart ?
         frontend_presented_count : frontend_decode_count;
-    assign bp_branch_allocate =
+    assign bp_branch_allocate = BP_REGISTERED_LOOKUP ?
+        |(backend_decode_fire & bp_dispatch_control_select_q) :
         |(frontend_decode_fire & frontend_control_select);
+
+    // This is an elastic decode-to-dispatch register only for BP9.  It can be
+    // replaced on the same edge that its complete prefix enters the backend.
+    // Partial backend admission shifts the retained prefix; because admission
+    // stops at the oldest control, a retained control's predictor metadata is
+    // never discarded by such a shift.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            bp_dispatch_valid_q <= 3'b000;
+            bp_dispatch_control_select_q <= 3'b000;
+            bp_dispatch_payload_q <= 0;
+            bp_dispatch_uses_rs1_q <= 3'b000;
+            bp_dispatch_uses_rs2_q <= 3'b000;
+            bp_dispatch_selected_pc_q <= 64'd0;
+            bp_dispatch_selected_instr_q <= 32'd0;
+            bp_dispatch_selected_imm_q <= 64'd0;
+            bp_dispatch_selected_id_q <= 0;
+            bp_dispatch_lookup_branch_q <= 1'b0;
+            bp_dispatch_lookup_jump_q <= 1'b0;
+            bp_dispatch_lookup_indirect_q <= 1'b0;
+        end else if (BP_REGISTERED_LOOKUP != 0) begin
+            if (control_flush || control_redirect || bp_predict_redirect ||
+                halted_q || wfi_sleep_q || translation_barrier_busy) begin
+                bp_dispatch_valid_q <= 3'b000;
+                bp_dispatch_control_select_q <= 3'b000;
+            end else if (bp_stage_can_accept) begin
+                bp_dispatch_valid_q <= frontend_decode_fire;
+                bp_dispatch_control_select_q <=
+                    frontend_control_select & frontend_decode_fire;
+                if (|frontend_decode_fire) begin
+                    bp_dispatch_payload_q <= frontend_decode_payload;
+                    bp_dispatch_uses_rs1_q <= decode_uses_rs1;
+                    bp_dispatch_uses_rs2_q <= decode_uses_rs2;
+                    bp_dispatch_selected_pc_q <= bp_live_pc;
+                    bp_dispatch_selected_instr_q <= bp_live_instr;
+                    bp_dispatch_selected_imm_q <= bp_live_imm;
+                    bp_dispatch_selected_id_q <= bp_live_id;
+                    bp_dispatch_lookup_branch_q <= bp_live_branch;
+                    bp_dispatch_lookup_jump_q <= bp_live_jump;
+                    bp_dispatch_lookup_indirect_q <= bp_live_indirect;
+                end
+            end else if (backend_decode_count != 0) begin
+                case (backend_decode_count)
+                    2'd1: begin
+                        bp_dispatch_valid_q <=
+                            {1'b0, bp_dispatch_valid_q[2:1]};
+                        bp_dispatch_control_select_q <=
+                            {1'b0, bp_dispatch_control_select_q[2:1]};
+                        bp_dispatch_uses_rs1_q <=
+                            {1'b0, bp_dispatch_uses_rs1_q[2:1]};
+                        bp_dispatch_uses_rs2_q <=
+                            {1'b0, bp_dispatch_uses_rs2_q[2:1]};
+                        bp_dispatch_payload_q[
+                            0 +: `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] <=
+                            bp_dispatch_payload_q[
+                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+                        bp_dispatch_payload_q[
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] <=
+                            bp_dispatch_payload_q[
+                                2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+                        bp_dispatch_payload_q[
+                            2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] <= 0;
+                    end
+                    2'd2: begin
+                        bp_dispatch_valid_q <=
+                            {2'b00, bp_dispatch_valid_q[2]};
+                        bp_dispatch_control_select_q <=
+                            {2'b00, bp_dispatch_control_select_q[2]};
+                        bp_dispatch_uses_rs1_q <=
+                            {2'b00, bp_dispatch_uses_rs1_q[2]};
+                        bp_dispatch_uses_rs2_q <=
+                            {2'b00, bp_dispatch_uses_rs2_q[2]};
+                        bp_dispatch_payload_q[
+                            0 +: `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] <=
+                            bp_dispatch_payload_q[
+                                2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+                        bp_dispatch_payload_q[
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                            2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] <= 0;
+                    end
+                    default: begin
+                        bp_dispatch_valid_q <= 3'b000;
+                        bp_dispatch_control_select_q <= 3'b000;
+                    end
+                endcase
+            end
+        end else begin
+            bp_dispatch_valid_q <= 3'b000;
+            bp_dispatch_control_select_q <= 3'b000;
+        end
+    end
     // M-mode may prefetch decoded direct conditional-branch paths without
     // consuming a BTB or RAS target.  Predictor redirects remain separately
     // disabled by bp_redirects_enabled.
@@ -1079,15 +1296,18 @@ module openrv64_rv64_top_3p #(
             end
         end
     end
-    assign fetch_decode_ready[0] = backend_decode_ready[0] &&
-                                   frontend_prefix_allow[0] &&
-                                   frontend_decode_enable;
-    assign fetch_decode_ready[1] = backend_decode_ready[1] &&
-                                   frontend_prefix_allow[1] &&
-                                   frontend_decode_enable;
-    assign fetch_decode_ready[2] = backend_decode_ready[2] &&
-                                   frontend_prefix_allow[2] &&
-                                   frontend_decode_enable;
+    assign fetch_decode_ready[0] = frontend_prefix_allow[0] &&
+        frontend_decode_enable &&
+        (BP_REGISTERED_LOOKUP ? bp_stage_can_accept :
+                                backend_decode_ready[0]);
+    assign fetch_decode_ready[1] = frontend_prefix_allow[1] &&
+        frontend_decode_enable &&
+        (BP_REGISTERED_LOOKUP ? bp_stage_can_accept :
+                                backend_decode_ready[1]);
+    assign fetch_decode_ready[2] = frontend_prefix_allow[2] &&
+        frontend_decode_enable &&
+        (BP_REGISTERED_LOOKUP ? bp_stage_can_accept :
+                                backend_decode_ready[2]);
 
     wire [11:0] backend_csr_addr;
     wire backend_csr_write;
@@ -1095,15 +1315,61 @@ module openrv64_rv64_top_3p #(
     wire [`RV64_FUNCT3_WIDTH-1:0] backend_csr_op;
     wire [63:0] backend_csr_wdata;
     wire csr_write_ready;
-    assign backend_satp_write =
-        backend_csr_write &&
-        csr_write_ready &&
-        (backend_csr_write_addr == `RV64_CSR_SATP);
-    assign backend_pmp_update = backend_csr_write && csr_write_ready &&
+    wire backend_pmp_write = backend_csr_write &&
         ((backend_csr_write_addr == `RV64_CSR_PMPCFG0) ||
          (backend_csr_write_addr == `RV64_CSR_PMPCFG2) ||
          ((backend_csr_write_addr >= `RV64_CSR_PMPADDR0) &&
           (backend_csr_write_addr <= `RV64_CSR_PMPADDR15)));
+    reg backend_pmp_preflush_armed_q;
+    reg [63:0] backend_pmp_preflush_pc_q;
+    wire backend_pmp_preflush_authorized =
+        backend_pmp_preflush_armed_q &&
+        (backend_retire_pc == backend_pmp_preflush_pc_q);
+    assign backend_pmp_preflush = backend_pmp_write &&
+        !backend_pmp_preflush_authorized;
+    // The first presentation is acknowledged only to discard the held
+    // retirement request on the simultaneous pre-write flush.  It is not
+    // presented to the CSR endpoint.  The replay at the same PC is the only
+    // request allowed to mutate PMP state.
+    wire backend_csr_write_to_endpoint = backend_csr_write &&
+        (!backend_pmp_write || backend_pmp_preflush_authorized);
+    wire csr_write_ready_to_backend = backend_pmp_preflush ? 1'b1 :
+        csr_write_ready;
+    assign backend_satp_write =
+        backend_csr_write_to_endpoint &&
+        csr_write_ready &&
+        (backend_csr_write_addr == `RV64_CSR_SATP);
+    wire backend_pmp_update_accept =
+        backend_csr_write_to_endpoint && csr_write_ready &&
+        backend_pmp_write;
+    reg backend_pmp_update_q;
+    assign backend_pmp_update = backend_pmp_update_q;
+
+    // PMP writes deliberately cross two full-flush boundaries.  The first
+    // presentation is suppressed and restarts at the PMP instruction itself.
+    // Its replay may write the endpoint.  CSR endpoint acceptance precedes
+    // architectural retirement by one cycle in the banked wrapper, so the
+    // second pulse is delayed to the retirement edge and restarts after the
+    // instruction.  SATP deliberately keeps its existing acceptance-edge
+    // behavior until a failing case justifies a separate change.
+    always @(posedge backend_clk or negedge rst_n) begin
+        if (!rst_n) begin
+            backend_pmp_preflush_armed_q <= 1'b0;
+            backend_pmp_preflush_pc_q <= 64'd0;
+            backend_pmp_update_q <= 1'b0;
+        end else begin
+            if (control_trap || backend_irq || wfi_irq_take ||
+                backend_mret || backend_sret) begin
+                backend_pmp_preflush_armed_q <= 1'b0;
+            end else if (backend_pmp_preflush) begin
+                backend_pmp_preflush_armed_q <= 1'b1;
+                backend_pmp_preflush_pc_q <= backend_retire_pc;
+            end else if (backend_pmp_update_accept) begin
+                backend_pmp_preflush_armed_q <= 1'b0;
+            end
+            backend_pmp_update_q <= backend_pmp_update_accept;
+        end
+    end
     wire [63:0] csr_rdata;
     wire csr_valid;
     wire csr_writable;
@@ -1220,13 +1486,13 @@ module openrv64_rv64_top_3p #(
         .decode_valid_i(backend_decode_valid),
         .decode_ready_o(backend_decode_ready),
         .decode_payload_i(backend_decode_payload),
-        .decode_uses_rs1_i(decode_uses_rs1),
-        .decode_uses_rs2_i(decode_uses_rs2),
+        .decode_uses_rs1_i(backend_decode_uses_rs1),
+        .decode_uses_rs2_i(backend_decode_uses_rs2),
         .decode_allocation_id_o(backend_decode_allocation_id),
         .decode_allocation_slot_o(backend_decode_allocation_slot),
         .csr_addr_o(backend_csr_addr), .csr_rdata_i(csr_rdata),
         .csr_valid_i(csr_valid), .csr_writable_i(csr_writable),
-        .csr_write_ready_i(csr_write_ready),
+        .csr_write_ready_i(csr_write_ready_to_backend),
         .csr_write_o(backend_csr_write),
         .csr_write_addr_o(backend_csr_write_addr),
         .csr_op_o(backend_csr_op),
@@ -1284,6 +1550,7 @@ module openrv64_rv64_top_3p #(
         .redirect_id_o(backend_redirect_id),
         .redirect_target_o(backend_redirect_target),
         .redirect_memory_replay_o(backend_memory_replay),
+        .redirect_tagged_recovery_o(backend_tagged_recovery),
         .branch_resolved_o(branch_resolved), .branch_taken_o(branch_taken),
         .branch_conditional_o(branch_conditional),
         .branch_id_o(branch_id), .branch_slot_o(branch_slot),
@@ -1411,7 +1678,8 @@ module openrv64_rv64_top_3p #(
     ) u_csrs (
         .clk(clk), .rst_n(rst_n), .csr_addr_i(csr_access_addr),
         .csr_rdata_o(csr_rdata), .csr_valid_o(csr_valid),
-        .csr_writable_o(csr_writable), .csr_write_i(backend_csr_write),
+        .csr_writable_o(csr_writable),
+        .csr_write_i(backend_csr_write_to_endpoint),
         .csr_op_i(backend_csr_op),
         .csr_wdata_i(backend_csr_wdata),
         .csr_write_ready_o(csr_write_ready), .csr_pmp_busy_o(),
@@ -1463,7 +1731,7 @@ module openrv64_rv64_top_3p #(
         .mret_i(backend_mret), .sret_i(backend_sret),
         .restart_i(control_restart), .redirect_i(1'b0),
         .trap_vector_i(csr_trap_vector), .mepc_i(csr_mepc),
-        .sepc_i(csr_sepc), .restart_target_i(backend_retire_next_pc),
+        .sepc_i(csr_sepc), .restart_target_i(control_restart_target),
         .redirect_target_i(64'd0), .vector_valid_o(except_vector_valid),
         .vector_target_o(except_vector_target)
     );
@@ -1738,9 +2006,21 @@ module openrv64_rv64_top_3p #(
 
     wire retire_event = (|backend_retire_arch) || backend_exception ||
                         backend_halt;
+    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        backend_decode_payload0 = backend_decode_payload[
+            0 +: `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+    wire [63:0] backend_decode_trace_id = backend_decode_payload0[
+        `OPENRV64_EXEC_ISSUE_PAYLOAD_TRACE_ID_LSB +: 64];
+    wire [63:0] backend_decode_pc = backend_decode_payload0[
+        `OPENRV64_EXEC_ISSUE_PAYLOAD_PC_LSB +: 64];
+    wire [31:0] backend_decode_instr = backend_decode_payload0[
+        `OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_LSB +: 32];
+    wire trace_decode_valid = BP_REGISTERED_LOOKUP ?
+                              (|bp_dispatch_valid_q) :
+                              (|backend_decode_valid);
     wire [4:0] trace_valid_raw = {
         retire_event, backend_mem_valid, |backend_issue_valid,
-        |backend_decode_valid, |fetch_decode_valid};
+        trace_decode_valid, |fetch_decode_valid};
     wire [4:0] trace_advance_raw = {
         retire_event, backend_mem_valid && backend_mem_ready,
         |backend_issue_valid,
@@ -1781,14 +2061,14 @@ module openrv64_rv64_top_3p #(
         (trace_valid_raw & ~trace_advance_raw & ~trace_flush_raw) : 5'd0;
     assign trace_ids = ENABLE_TRACE ? {
         backend_retire_trace_id, 64'd0, 64'd0,
-        fetch_decode_trace[0 +: 64], fetch_decode_trace[0 +: 64]
+        backend_decode_trace_id, fetch_decode_trace[0 +: 64]
     } : 320'd0;
     assign trace_pcs = ENABLE_TRACE ? {
         backend_retire_pc, backend_mem_effective_addr, 64'd0,
-        decode_pc0, decode_pc0
+        backend_decode_pc, decode_pc0
     } : 320'd0;
     assign trace_instrs = ENABLE_TRACE ? {
-        backend_retire_instr, 32'd0, 32'd0, instr0, instr0
+        backend_retire_instr, 32'd0, 32'd0, backend_decode_instr, instr0
     } : 160'd0;
     assign trace_events = ENABLE_TRACE ? trace_events_raw : 8'd0;
     assign trace_stall_causes = ENABLE_TRACE ?

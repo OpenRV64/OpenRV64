@@ -181,6 +181,7 @@ module tb_backend_3p #(
         .mem_rdata_i(mem_rdata), .irq_pending_i(irq_pending),
         .irq_cause_i(irq_cause), .redirect_valid_o(redirect_valid),
         .redirect_id_o(redirect_id), .redirect_target_o(redirect_target),
+        .redirect_memory_replay_o(), .redirect_tagged_recovery_o(),
         .branch_resolved_o(branch_resolved), .branch_taken_o(branch_taken),
         .branch_retire_age_valid_o(branch_retire_age_valid),
         .branch_retire_age_addr_o(branch_retire_age_addr),

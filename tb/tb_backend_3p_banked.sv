@@ -64,6 +64,7 @@ module tb_backend_3p_banked #(
     reg mem_resp_valid;
     wire mem_resp_ready;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] mem_resp_tag;
+    reg mem_resp_error;
     wire [63:0] mem_addr;
     wire mem_write;
     reg [63:0] mem_rdata;
@@ -81,6 +82,7 @@ module tb_backend_3p_banked #(
     wire redirect_valid;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id;
     wire [63:0] redirect_target;
+    wire redirect_tagged_recovery;
     wire [2:0] retire_arch;
     wire [1:0] retire_count;
     wire exception;
@@ -155,7 +157,7 @@ module tb_backend_3p_banked #(
         .mem_resp_ready_o(mem_resp_ready),
         .mem_resp_tag_i(mem_resp_tag),
         .mem_resp_paddr_i(64'd0),
-        .mem_error_i(1'b0),
+        .mem_error_i(mem_resp_error),
         .mem_page_fault_i(1'b0),
         .mem_store_done_valid_i(mem_store_done_valid),
         .mem_store_done_ready_o(mem_store_done_ready),
@@ -200,6 +202,8 @@ module tb_backend_3p_banked #(
         .redirect_valid_o(redirect_valid),
         .redirect_id_o(redirect_id),
         .redirect_target_o(redirect_target),
+        .redirect_memory_replay_o(),
+        .redirect_tagged_recovery_o(redirect_tagged_recovery),
         .branch_resolved_o(),
         .branch_conditional_o(),
         .branch_taken_o(),
@@ -931,6 +935,8 @@ module tb_backend_3p_banked #(
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] replay_head_load_tag;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] replay_wrong_load_tag;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] replay_store_tag;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] jalr_head_load_tag;
+    reg [`OPENRV64_LSU_TAG_WIDTH-1:0] jalr_wrong_load_tag;
     reg [63:0] replay_watch_count_before;
     reg [63:0] replay_check_count_before;
     reg [63:0] replay_violation_count_before;
@@ -948,6 +954,7 @@ module tb_backend_3p_banked #(
         mem_ready = 1'b0;
         mem_resp_valid = 1'b0;
         mem_resp_tag = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
+        mem_resp_error = 1'b0;
         mem_rdata = 64'd0;
         mem_store_done_valid = 1'b0;
         mem_store_done_tag = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
@@ -1694,6 +1701,110 @@ module tb_backend_3p_banked #(
             memory_probe_active = 1'b0;
         end
 
+        // A predicted-not-taken JALR may leave a cacheable wrong-path load
+        // in flight while the JALR waits on an older load for its target.
+        // Recovery must kill the younger LSQ owner, accept its eventual bus
+        // error, and retire neither the error nor the wrong-path load.  This
+        // is the backend form of an M-mode RET falling through into adjacent
+        // code before its restored return address becomes available.
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            (SPECULATION_WINDOW != 0)) begin
+            memory_probe_active = 1'b1;
+            memory_replay_probe_active = 1'b1;
+            memory_probe_retired = 0;
+            memory_probe_last_rd = 5'd0;
+            memory_probe_last_wdata = 64'd0;
+
+            decode_payload = {3*IW{1'b0}};
+            decode_payload[0 +: IW] =
+                load_packet(43, 0, 31, 64'h180);
+            decode_payload[IW +: IW] =
+                jalr_packet(44, 31, 0, 64'd0);
+            decode_payload[IW + I_PREDICTED] = 1'b0;
+            decode_payload[2*IW +: IW] =
+                load_packet(45, 0, 28, 64'h300);
+            decode_uses_rs1 = 3'b111;
+            decode_uses_rs2 = 3'b000;
+            decode_valid = 3'b111;
+            while (decode_ready != 3'b111)
+                tick();
+            tick();
+            decode_valid = 3'b000;
+            decode_payload = {3*IW{1'b0}};
+            decode_uses_rs1 = 3'b000;
+
+            for (cycles = 0; (cycles < 80) && !mem_valid;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_valid || !mem_physical || mem_write ||
+                (mem_addr != 64'h180))
+                fail("JALR recovery probe did not launch target load");
+            jalr_head_load_tag = mem_tag;
+            mem_ready = 1'b1;
+            tick();
+            mem_ready = 1'b0;
+
+            for (cycles = 0;
+                 (cycles < 80) && !mem_valid && !redirect_valid;
+                 cycles = cycles + 1)
+                tick();
+            if (redirect_valid)
+                fail("JALR resolved before younger wrong-path load issued");
+            if (!mem_valid || !mem_physical || mem_write ||
+                (mem_addr != 64'h300))
+                fail("cacheable load did not speculate past blocked JALR");
+            jalr_wrong_load_tag = mem_tag;
+            mem_ready = 1'b1;
+            tick();
+            mem_ready = 1'b0;
+
+            mem_resp_tag = jalr_head_load_tag;
+            mem_rdata = 64'h200;
+            mem_resp_valid = 1'b1;
+            while (!mem_resp_ready)
+                tick();
+            tick();
+            mem_resp_valid = 1'b0;
+
+            for (cycles = 0; (cycles < 80) && !redirect_valid;
+                 cycles = cycles + 1)
+                tick();
+            if (!redirect_valid || (redirect_target != 64'h200))
+                fail("predicted-not-taken JALR did not redirect");
+            squash = 1'b1;
+            tick();
+            squash = 1'b0;
+
+            mem_resp_tag = jalr_wrong_load_tag;
+            mem_rdata = 64'd0;
+            mem_resp_error = 1'b1;
+            mem_resp_valid = 1'b1;
+            for (cycles = 0; (cycles < 40) && !mem_resp_ready;
+                 cycles = cycles + 1)
+                tick();
+            if (!mem_resp_ready)
+                fail("squashed wrong-path load did not drain bus error");
+            tick();
+            mem_resp_valid = 1'b0;
+            mem_resp_error = 1'b0;
+
+            for (cycles = 0;
+                 (cycles < 120) &&
+                 ((memory_probe_retired < 2) ||
+                  (dispatch_occupancy != 0) ||
+                  (retire_occupancy != 0));
+                 cycles = cycles + 1)
+                tick();
+            repeat (2) tick();
+            if (memory_probe_retired != 2)
+                fail("wrong-path load or error reached retirement");
+            if ((dispatch_occupancy != 0) || (retire_occupancy != 0) ||
+                (write_busy != 0) || barrier_active)
+                fail("JALR wrong-path load recovery did not drain cleanly");
+            memory_replay_probe_active = 1'b0;
+            memory_probe_active = 1'b0;
+        end
+
         // Let a younger load pass an older store whose address is still
         // waiting on an outstanding load.  The younger load deliberately
         // consumes stale data.  When the store's base wakes and translation
@@ -2118,6 +2229,102 @@ module tb_backend_3p_banked #(
                 fail("misaligned replay probe did not drain cleanly");
             memory_replay_probe_active = 1'b0;
             memory_probe_active = 1'b0;
+        end
+
+        // Ordered-issue replay may bypass an older incomplete control to
+        // break MEM-input age inversion.  If that control redirects in the
+        // replay cycle, the replay is visible first and the older one-shot
+        // redirect must be retained for the following cycle.
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            (SPECULATION_WINDOW != 0)) begin
+            memory_replay_probe_active = 1'b1;
+            dut.memory_replay_pending_q = 1'b1;
+            dut.memory_replay_ordered_issue_q = 1'b1;
+            dut.memory_replay_id_q = `OPENRV64_INSTR_ID_WIDTH'(100);
+            dut.memory_replay_slot_q = SLOT_WIDTH'(10);
+            dut.memory_replay_target_q = 64'h0000_0000_0000_1900;
+            force dut.exec_redirect_valid = 1'b1;
+            force dut.exec_redirect_id =
+                `OPENRV64_INSTR_ID_WIDTH'(90);
+            force dut.exec_redirect_slot = SLOT_WIDTH'(9);
+            force dut.exec_redirect_target = 64'h0000_0000_0000_1800;
+            #1;
+            if (!redirect_valid ||
+                !dut.redirect_memory_replay_o ||
+                !redirect_tagged_recovery ||
+                (redirect_id != `OPENRV64_INSTR_ID_WIDTH'(100)) ||
+                (redirect_target != 64'h0000_0000_0000_1900))
+                fail("ordered replay did not own initial redirect cycle");
+            squash = 1'b1;
+            tick();
+            squash = 1'b0;
+            release dut.exec_redirect_valid;
+            release dut.exec_redirect_id;
+            release dut.exec_redirect_slot;
+            release dut.exec_redirect_target;
+            #1;
+            if (!redirect_valid ||
+                dut.redirect_memory_replay_o ||
+                !redirect_tagged_recovery ||
+                (redirect_id != `OPENRV64_INSTR_ID_WIDTH'(90)) ||
+                (redirect_target != 64'h0000_0000_0000_1800) ||
+                !dut.memory_replay_deferred_redirect_valid_q)
+                fail("older EX redirect was lost behind ordered replay");
+            // A younger ordered-input report can still be present while the
+            // saved older cut is published.  It belongs to the discarded
+            // suffix and must not seed another replay after this redirect.
+            force dut.exec_ordered_issue_replay_valid = 1'b1;
+            force dut.exec_ordered_issue_replay_id =
+                `OPENRV64_INSTR_ID_WIDTH'(110);
+            force dut.exec_ordered_issue_replay_slot = SLOT_WIDTH'(11);
+            force dut.exec_ordered_issue_replay_pc =
+                64'h0000_0000_0000_1a00;
+            squash = 1'b1;
+            tick();
+            squash = 1'b0;
+            release dut.exec_ordered_issue_replay_valid;
+            release dut.exec_ordered_issue_replay_id;
+            release dut.exec_ordered_issue_replay_slot;
+            release dut.exec_ordered_issue_replay_pc;
+            #1;
+            if (dut.memory_replay_deferred_redirect_valid_q)
+                fail("saved EX redirect did not drain after publication");
+            if (dut.memory_replay_pending_q)
+                fail("saved EX redirect retained a younger ordered replay");
+
+            // A normal collision replay waits behind an older unresolved
+            // control.  That pending state must not suppress retirement of
+            // the older prefix, which is what eventually resolves the wait.
+            dut.memory_replay_pending_q = 1'b1;
+            dut.memory_replay_ordered_issue_q = 1'b0;
+            dut.memory_replay_id_q = `OPENRV64_INSTR_ID_WIDTH'(120);
+            dut.memory_control_watch_valid_q[0] = 1'b1;
+            dut.memory_control_watch_id_q[0] =
+                `OPENRV64_INSTR_ID_WIDTH'(115);
+            force dut.queue_retire_valid = 3'b111;
+            force dut.queue_retire_id = {
+                `OPENRV64_INSTR_ID_WIDTH'(112),
+                `OPENRV64_INSTR_ID_WIDTH'(111),
+                `OPENRV64_INSTR_ID_WIDTH'(110)
+            };
+            #1;
+            if (dut.memory_replay_valid)
+                fail("normal replay ignored older unresolved control");
+            if (dut.retire_queue_valid != 3'b111)
+                fail("pending replay blocked retirement of older prefix");
+            force dut.queue_retire_id = {
+                `OPENRV64_INSTR_ID_WIDTH'(120),
+                `OPENRV64_INSTR_ID_WIDTH'(119),
+                `OPENRV64_INSTR_ID_WIDTH'(110)
+            };
+            #1;
+            if (dut.retire_queue_valid != 3'b011)
+                fail("pending replay retired its cut or younger suffix");
+            release dut.queue_retire_valid;
+            release dut.queue_retire_id;
+            dut.memory_replay_pending_q = 1'b0;
+            dut.memory_control_watch_valid_q[0] = 1'b0;
+            memory_replay_probe_active = 1'b0;
         end
 
         if ((RENAME_MODE == 0) &&

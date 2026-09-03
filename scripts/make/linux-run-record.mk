@@ -68,6 +68,7 @@ OPENRV64_LINUX_SMP_RUN_INPUTS := $(sort \
 	$(CLINT_SRCS) \
 	$(PLIC_SRCS) \
 	$(UART_SRCS) \
+	$(OPENSBI_4H_HELD_HARNESS_SOURCE) \
 	tb/tb_4h_3p.sv \
 	tb/verilator_4h_checkpoint_main.cpp \
 	tools/build-opensbi.sh \

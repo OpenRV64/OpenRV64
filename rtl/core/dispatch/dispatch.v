@@ -129,6 +129,7 @@ module openrv64_dispatch #(
     // of the 1P and 3P contracts because operand capture, queue allocation,
     // and completion identity do not fit the old scalar port list.
     input  wire                         squash_frontend_3p_i,
+    input  wire                         squash_inclusive_3p_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_3p_i,
     input  wire [RETIRE_SLOT_WIDTH_3P-1:0] squash_slot_3p_i,
     input  wire                         translation_bypass_3p_i,
@@ -481,6 +482,7 @@ module openrv64_dispatch #(
             ) u_window (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
                 .squash_frontend_i(squash_frontend_3p_i),
+                .squash_inclusive_i(squash_inclusive_3p_i),
                 .squash_id_i(squash_id_3p_i),
                 .translation_bypass_i(translation_bypass_3p_i),
                 .decode_valid_i((ENABLE_ISSUE_WINDOW_3P != 0) &&
@@ -810,6 +812,7 @@ module openrv64_dispatch #(
             ) u_tomasulo_window (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
                 .squash_frontend_i(squash_frontend_3p_i),
+                .squash_inclusive_i(squash_inclusive_3p_i),
                 .squash_id_i(squash_id_3p_i),
                 .translation_bypass_i(translation_bypass_3p_i),
                 .decode_valid_i(use_tomasulo_window ?

@@ -94,6 +94,9 @@ module openrv64_exec_bp #(
     output wire update_overflow_o,
     output wire fetch_stall_o,
     output wire decode_stall_o,
+    output wire background_stall_o,
+    output wire capacity_stall_o,
+    output wire unresolved_target_stall_o,
     output wire inhibit_load_speculation_o
 );
 
@@ -167,6 +170,7 @@ module openrv64_exec_bp #(
     wire [`RV64_XLEN-1:0] tage_prediction_target;
     wire tage_target_mispredict;
     wire tage_allocation_stall;
+    wire tage_capacity_stall;
     wire tage_update_overflow;
     wire [2:0] tage_lookup_provider;
     wire [2:0] tage_lookup_alternate;
@@ -292,6 +296,7 @@ module openrv64_exec_bp #(
                 .prediction_target_o(tage_prediction_target),
                 .target_mispredict_o(tage_target_mispredict),
                 .allocation_stall_o(tage_allocation_stall),
+                .capacity_stall_o(tage_capacity_stall),
                 .update_overflow_o(tage_update_overflow),
                 .diag_lookup_provider_o(tage_lookup_provider),
                 .diag_lookup_alternate_o(tage_lookup_alternate),
@@ -309,6 +314,7 @@ module openrv64_exec_bp #(
             assign tage_prediction_target = {`RV64_XLEN{1'b0}};
             assign tage_target_mispredict = 1'b0;
             assign tage_allocation_stall = 1'b0;
+            assign tage_capacity_stall = 1'b0;
             assign tage_update_overflow = 1'b0;
             assign tage_lookup_provider = 3'd0;
             assign tage_lookup_alternate = 3'd0;
@@ -500,6 +506,14 @@ module openrv64_exec_bp #(
     assign fetch_stall_o = effective_lookup_requires_stall || unresolved_q ||
                            selected_allocation_stall;
     assign decode_stall_o = unresolved_q || selected_allocation_stall;
+    // Unlike the synchronous lookup-response wait, these conditions remain
+    // architectural backpressure when a caller prelaunches a lookup into an
+    // elastic dispatch register.
+    assign capacity_stall_o = use_tage ? tage_capacity_stall :
+                                        selected_allocation_stall;
+    assign unresolved_target_stall_o = unresolved_q;
+    assign background_stall_o = unresolved_target_stall_o ||
+                                capacity_stall_o;
 
     // Simulation-visible target-predictor events.  These deliberately remain
     // internal wires rather than architectural counters or public RTL ports.

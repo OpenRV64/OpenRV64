@@ -16,6 +16,10 @@
 module openrv64_lsq #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
     parameter integer META_WIDTH = `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH,
+    parameter integer META_INSTR_LSB =
+        `OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_LSB,
+    parameter integer META_PC_LSB =
+        `OPENRV64_EXEC_ISSUE_PAYLOAD_PC_LSB,
     parameter integer LOAD_QUEUE_DEPTH = 4,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer TAG_WIDTH = `OPENRV64_LSU_TAG_WIDTH,
@@ -1783,6 +1787,7 @@ module openrv64_lsq #(
     end
 
     integer timeout_index;
+    integer timeout_dump_index;
     integer slot_timeout_age_q [0:DEPTH-1];
     initial begin
         if (LOAD_QUEUE_DEPTH < 1)
@@ -1816,7 +1821,38 @@ module openrv64_lsq #(
                 else begin
                     slot_timeout_age_q[timeout_index] <=
                         slot_timeout_age_q[timeout_index] + 1;
-                    if (slot_timeout_age_q[timeout_index] >= TIMEOUT_CYCLES)
+                    if (slot_timeout_age_q[timeout_index] >= TIMEOUT_CYCLES) begin
+                        for (timeout_dump_index = 0;
+                             timeout_dump_index < DEPTH;
+                             timeout_dump_index = timeout_dump_index + 1)
+                            if (slot_valid_q[timeout_dump_index])
+                                $display(
+                                    "LSQ_TIMEOUT_ENTRY slot=%0d age=%0d id=%0d retire=%0d pc=%016h instr=%08h store=%b atomic=%b killed=%b vaddr=%016h paddr=%016h size=%0d xlate_sent=%b xlate_done=%b xlate_fault=%b access=%b result=%b done=%b cacheable=%b block=%b order=%b",
+                                    timeout_dump_index,
+                                    slot_timeout_age_q[timeout_dump_index],
+                                    slot_id_q[timeout_dump_index],
+                                    slot_retire_q[timeout_dump_index],
+                                    slot_meta_q[timeout_dump_index][
+                                        META_PC_LSB +: `RV64_XLEN],
+                                    slot_meta_q[timeout_dump_index][
+                                        META_INSTR_LSB +:
+                                        `RV64_INSTR_WIDTH],
+                                    slot_store_q[timeout_dump_index],
+                                    slot_atomic_q[timeout_dump_index],
+                                    slot_killed_q[timeout_dump_index],
+                                    slot_vaddr_q[timeout_dump_index],
+                                    slot_paddr_q[timeout_dump_index],
+                                    slot_size_q[timeout_dump_index],
+                                    slot_xlate_sent_q[timeout_dump_index],
+                                    slot_xlate_done_q[timeout_dump_index],
+                                    slot_xlate_fault[timeout_dump_index],
+                                    slot_access_sent_q[timeout_dump_index],
+                                    slot_store_result_sent_q[
+                                        timeout_dump_index],
+                                    slot_access_done_q[timeout_dump_index],
+                                    slot_cacheable[timeout_dump_index],
+                                    load_block_r[timeout_dump_index],
+                                    slot_order_match[timeout_dump_index]);
                         $fatal(1,
                             "LSQ state %0d timed out id=%0d retire=%0d store=%b killed=%b xlate_sent=%b xlate_done=%b access=%b result=%b done=%b cacheable=%b block=%b order=%b head_valid=%b head_id=%0d head_slot=%0d squash=%b squash_id=%0d",
                             timeout_index, slot_id_q[timeout_index],
@@ -1834,6 +1870,7 @@ module openrv64_lsq #(
                             ordered_head_valid_i, ordered_head_id_i,
                             ordered_head_slot_i, squash_younger_i,
                             squash_id_i);
+                    end
                 end
             end
         end

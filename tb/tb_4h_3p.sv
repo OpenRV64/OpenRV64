@@ -27,8 +27,18 @@
 module tb_4h_3p #(
     parameter integer CORE_INSTANCES = 4,
     parameter integer RETIRE_DEPTH = 16,
+    parameter integer ISSUE_WINDOW_DEPTH = RETIRE_DEPTH,
+    parameter integer PHYS_REG_COUNT = 31,
+    parameter integer RENAME_MODE = `OPENRV64_RENAME_IDENTITY,
     parameter integer BANKED_GPR = 0,
     parameter integer FPGA_GPR_LUTRAM = 0,
+    parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
+    parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK =
+        (BANKED_GPR != 0) ? 3'b000 : 3'b001,
+    parameter integer RELAX_WAW = (BANKED_GPR != 0) ? 0 : 1,
+    parameter integer ENABLE_ISSUE_WINDOW = (BANKED_GPR != 0) ? 0 : 1,
+    parameter integer ENABLE_SPECULATION_WINDOW =
+        (BANKED_GPR != 0) ? 0 : 1,
     parameter integer MEMORY_LATENCY = 8,
     parameter integer L1I_CACHE_BYTES = 16 * 1024,
     parameter integer L1D_CACHE_BYTES = 16 * 1024,
@@ -73,6 +83,10 @@ module tb_4h_3p #(
     localparam [63:0] VIRTUAL_BASE = 64'h0000_0000_4000_0000;
     localparam [63:0] PREFIX_STRIDE = 64'h0000_0000_0010_0000;
     localparam integer MEMORY_WORDS = MEMORY_BYTES / 64;
+`ifdef OPENRV64_TOMASULO_HARNESS
+    localparam integer PHYS_REG_ADDR_WIDTH =
+        (PHYS_REG_COUNT < 1) ? 1 : $clog2(PHYS_REG_COUNT + 1);
+`endif
     localparam integer RETIRE_RESULT_INSTR_LSB = 233;
     localparam integer RETIRE_RESULT_PC_LSB = 329;
     localparam [63:0] ROM_BASE = 64'h0000_0000_0000_1000;
@@ -131,6 +145,11 @@ module tb_4h_3p #(
     integer require_smp_threads;
     integer pc_trace_fd;
     integer pc_trace_mask;
+`ifdef OPENRV64_TOMASULO_HARNESS
+    integer tomasulo_debug;
+    integer tomasulo_debug_start;
+    integer tomasulo_timeout_scan;
+`endif
     string pc_trace_path;
     logic [NUM_HARTS-1:0] opensbi_active_hart_mask;
     logic [63:0] opensbi_hsm_wfi_pc;
@@ -324,6 +343,9 @@ module tb_4h_3p #(
         (bus_req_wstrb ==
          ((((64'd1 << (64'd1 << bus_req_size)) - 1'b1)) <<
           bus_req_addr[5:0]));
+    wire dram_request_out_of_range =
+        (bus_req_addr < PHYSICAL_BASE) ||
+        (bus_req_addr >= PHYSICAL_BASE + MEMORY_BYTES);
     wire [63:0] device_wdata;
     wire [7:0] device_wstrb;
     wire [63:0] clint_rdata;
@@ -682,16 +704,19 @@ module tb_4h_3p #(
                 .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
                 .BANKED_GPR(BANKED_GPR),
                 .FPGA_GPR_LUTRAM(FPGA_GPR_LUTRAM),
+                .COMPLETION_FORWARD_MASK(COMPLETION_FORWARD_MASK),
                 .BRANCH_COMPLETION_FORWARD_MASK(
-                    (BANKED_GPR != 0) ? 3'b000 : 3'b001),
-                .RELAX_WAW((BANKED_GPR != 0) ? 0 : 1),
+                    BRANCH_COMPLETION_FORWARD_MASK),
+                .RELAX_WAW(RELAX_WAW),
                 .ENABLE_WFI_SLEEP(ENABLE_WFI_SLEEP),
                 .ENABLE_WFI_CLOCK_GATING(ENABLE_WFI_CLOCK_GATING),
-                .ENABLE_ISSUE_WINDOW((BANKED_GPR != 0) ? 0 : 1),
-                .ENABLE_SPECULATION_WINDOW((BANKED_GPR != 0) ? 0 : 1),
+                .ENABLE_ISSUE_WINDOW(ENABLE_ISSUE_WINDOW),
+                .ENABLE_SPECULATION_WINDOW(ENABLE_SPECULATION_WINDOW),
                 .ENABLE_POSTED_STORES(1),
                 .RETIRE_DEPTH(RETIRE_DEPTH),
-                .PHYS_REG_COUNT(31),
+                .ISSUE_WINDOW_DEPTH(ISSUE_WINDOW_DEPTH),
+                .PHYS_REG_COUNT(PHYS_REG_COUNT),
+                .RENAME_MODE(RENAME_MODE),
                 .ENABLE_FETCH_CAROUSEL(FETCH_CAROUSEL),
                 .ENABLE_FETCH_ALT_LOOKASIDE(FETCH_ALT_LOOKASIDE),
                 .ENABLE_FETCH_ALT_CONFIDENCE_GATE(
@@ -1265,6 +1290,360 @@ module tb_4h_3p #(
             end
         end
     endgenerate
+
+`ifdef OPENRV64_TOMASULO_HARNESS
+    // Opt-in bring-up trace for the Tomasulo register-load path. Keep this
+    // narrow enough to leave long Linux runs usable.  The current range is
+    // the Linux qspinlock LR/SC loop reached by the checkpoint reproducer.
+    integer tomasulo_debug_pipe;
+    integer tomasulo_debug_complete;
+    integer tomasulo_debug_retire;
+    always @(posedge clk) begin
+        if (rst_n && (tomasulo_debug != 0) &&
+            (cycles >= tomasulo_debug_start)) begin
+            if (g_hart[0].u_core.u_backend.squash_frontend_i)
+                $display(
+                    "TOMASULO_DEBUG_REDIRECT cycle=%0d id=%0d target=%016h replay=%0b",
+                    cycles,
+                    g_hart[0].u_core.u_backend.redirect_id_o,
+                    g_hart[0].u_core.u_backend.redirect_target_o,
+                    g_hart[0].u_core.u_backend.redirect_memory_replay_o);
+
+            for (tomasulo_debug_pipe = 0;
+                 tomasulo_debug_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+                 tomasulo_debug_pipe = tomasulo_debug_pipe + 1) begin
+                if (g_hart[0].u_core.u_backend.
+                        banked_independent_accept[tomasulo_debug_pipe] &&
+                    (g_hart[0].u_core.u_backend.dispatch_pipe_payload[
+                         tomasulo_debug_pipe*
+                         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64] >=
+                     64'hffff_ffff_8007_4180) &&
+                    (g_hart[0].u_core.u_backend.dispatch_pipe_payload[
+                         tomasulo_debug_pipe*
+                         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64] <
+                     64'hffff_ffff_8007_4210))
+                    $display(
+                        "TOMASULO_DEBUG_ACCEPT cycle=%0d pipe=%0d id=%0d pc=%016h instr=%08h psrc1=%0d psrc2=%0d prod1=%0b:%0d prod2=%0b:%0d squashed=%0b",
+                        cycles, tomasulo_debug_pipe,
+                        g_hart[0].u_core.u_backend.dispatch_pipe_id[
+                            tomasulo_debug_pipe*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH],
+                        g_hart[0].u_core.u_backend.dispatch_pipe_payload[
+                            tomasulo_debug_pipe*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64],
+                        g_hart[0].u_core.u_backend.dispatch_pipe_payload[
+                            tomasulo_debug_pipe*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 242 +: 32],
+                        g_hart[0].u_core.u_backend.dispatch_pipe_src1_phys[
+                            tomasulo_debug_pipe*PHYS_REG_ADDR_WIDTH +:
+                            PHYS_REG_ADDR_WIDTH],
+                        g_hart[0].u_core.u_backend.dispatch_pipe_src2_phys[
+                            tomasulo_debug_pipe*PHYS_REG_ADDR_WIDTH +:
+                            PHYS_REG_ADDR_WIDTH],
+                        g_hart[0].u_core.u_backend.
+                            dispatch_pipe_src1_producer_valid[
+                                tomasulo_debug_pipe],
+                        g_hart[0].u_core.u_backend.
+                            dispatch_pipe_src1_producer_id[
+                                tomasulo_debug_pipe*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH],
+                        g_hart[0].u_core.u_backend.
+                            dispatch_pipe_src2_producer_valid[
+                                tomasulo_debug_pipe],
+                        g_hart[0].u_core.u_backend.
+                            dispatch_pipe_src2_producer_id[
+                                tomasulo_debug_pipe*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH],
+                        g_hart[0].u_core.u_backend.dispatch_pipe_squashed[
+                            tomasulo_debug_pipe]);
+
+                if (g_hart[0].u_core.u_backend.pipe_valid[
+                        tomasulo_debug_pipe] &&
+                    g_hart[0].u_core.u_backend.pipe_ready[
+                        tomasulo_debug_pipe] &&
+                    (g_hart[0].u_core.u_backend.pipe_payload[
+                         tomasulo_debug_pipe*
+                         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64] >=
+                     64'hffff_ffff_8007_4180) &&
+                    (g_hart[0].u_core.u_backend.pipe_payload[
+                         tomasulo_debug_pipe*
+                         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64] <
+                     64'hffff_ffff_8007_4210))
+                    $display(
+                        "TOMASULO_DEBUG_ISSUE cycle=%0d pipe=%0d id=%0d pc=%016h instr=%08h rs1=%016h rs2=%016h",
+                        cycles, tomasulo_debug_pipe,
+                        g_hart[0].u_core.u_backend.pipe_id[
+                            tomasulo_debug_pipe*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH],
+                        g_hart[0].u_core.u_backend.pipe_payload[
+                            tomasulo_debug_pipe*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 274 +: 64],
+                        g_hart[0].u_core.u_backend.pipe_payload[
+                            tomasulo_debug_pipe*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 242 +: 32],
+                        g_hart[0].u_core.u_backend.pipe_payload[
+                            tomasulo_debug_pipe*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 168 +: 64],
+                        g_hart[0].u_core.u_backend.pipe_payload[
+                            tomasulo_debug_pipe*
+                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 104 +: 64]);
+            end
+
+            if (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    load_issue_valid_i &&
+                g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    load_issue_ready_o &&
+                (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                     load_issue_payload_i[274 +: 64] >=
+                 64'hffff_ffff_8007_4180) &&
+                (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                     load_issue_payload_i[274 +: 64] <
+                 64'hffff_ffff_8007_4210))
+                $display(
+                    "TOMASULO_DEBUG_LOAD cycle=%0d id=%0d pc=%016h instr=%08h base=%016h imm=%016h addr=%016h squashed=%0b cut=%0d",
+                    cycles,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_issue_id_i,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_issue_payload_i[274 +: 64],
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_issue_payload_i[242 +: 32],
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_rs1_data,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_imm,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_bus_addr,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_issue_squashed,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        squash_id_i);
+
+            if (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    store_issue_valid_i &&
+                g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    store_issue_ready_o &&
+                (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                     store_issue_payload_i[274 +: 64] >=
+                 64'hffff_ffff_8007_4180) &&
+                (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                     store_issue_payload_i[274 +: 64] <
+                 64'hffff_ffff_8007_4210))
+                $display(
+                    "TOMASULO_DEBUG_STORE cycle=%0d id=%0d pc=%016h instr=%08h base=%016h data=%016h imm=%016h addr=%016h squashed=%0b cut=%0d",
+                    cycles,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_id_i,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_payload_i[274 +: 64],
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_payload_i[242 +: 32],
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_rs1_data,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_rs2_data,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_imm,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_bus_addr,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_squashed,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        squash_id_i);
+
+            // In M-mode the OpenSBI image runs bare.  Any live LSU address at
+            // or above 4 GiB is outside this platform and must be caught at
+            // issue, before translation/cache queues obscure its producer.
+            if (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    load_issue_valid_i &&
+                g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    load_issue_ready_o &&
+                !g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    load_issue_squashed &&
+                (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                     load_issue_payload_i[2 +: `RV64_PRIV_WIDTH] ==
+                 `RV64_PRIV_M) &&
+                (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                     load_bus_addr >= 64'h0000_0001_0000_0000))
+                $display(
+                    "TOMASULO_DEBUG_BAD_LOAD cycle=%0d id=%0d pc=%016h instr=%08h base=%016h imm=%016h addr=%016h cut=%0d",
+                    cycles,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_issue_id_i,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_issue_payload_i[274 +: 64],
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_issue_payload_i[242 +: 32],
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_rs1_data,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_imm,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        load_bus_addr,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        squash_id_i);
+
+            if (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    store_issue_valid_i &&
+                g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    store_issue_ready_o &&
+                !g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                    store_issue_squashed &&
+                (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                     store_issue_payload_i[2 +: `RV64_PRIV_WIDTH] ==
+                 `RV64_PRIV_M) &&
+                (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                     store_bus_addr >= 64'h0000_0001_0000_0000))
+                $display(
+                    "TOMASULO_DEBUG_BAD_STORE cycle=%0d id=%0d pc=%016h instr=%08h base=%016h data=%016h imm=%016h addr=%016h cut=%0d",
+                    cycles,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_id_i,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_payload_i[274 +: 64],
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_issue_payload_i[242 +: 32],
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_rs1_data,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_rs2_data,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_imm,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        store_bus_addr,
+                    g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        squash_id_i);
+
+            for (tomasulo_debug_complete = 0;
+                 tomasulo_debug_complete < 3;
+                 tomasulo_debug_complete = tomasulo_debug_complete + 1)
+                if (g_hart[0].u_core.u_backend.complete_valid[
+                        tomasulo_debug_complete] &&
+                    (g_hart[0].u_core.u_backend.complete_payload[
+                         tomasulo_debug_complete*
+                         `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 329 +: 64] >=
+                     64'hffff_ffff_8007_4180) &&
+                    (g_hart[0].u_core.u_backend.complete_payload[
+                         tomasulo_debug_complete*
+                         `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 329 +: 64] <
+                     64'hffff_ffff_8007_4210))
+                    $display(
+                        "TOMASULO_DEBUG_COMPLETE cycle=%0d port=%0d id=%0d slot=%0d match=%b storage_ready=%b fire=%b pc=%016h instr=%08h rd=%0d data=%016h",
+                        cycles, tomasulo_debug_complete,
+                        g_hart[0].u_core.u_backend.complete_id[
+                            tomasulo_debug_complete*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH],
+                        g_hart[0].u_core.u_backend.complete_slot[
+                            tomasulo_debug_complete*$clog2(RETIRE_DEPTH) +:
+                            $clog2(RETIRE_DEPTH)],
+                        g_hart[0].u_core.u_backend.queue_complete_match[
+                            tomasulo_debug_complete],
+                        g_hart[0].u_core.u_backend.completion_storage_ready[
+                            tomasulo_debug_complete],
+                        g_hart[0].u_core.u_backend.completion_fire[
+                            tomasulo_debug_complete],
+                        g_hart[0].u_core.u_backend.complete_payload[
+                            tomasulo_debug_complete*
+                            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 329 +: 64],
+                        g_hart[0].u_core.u_backend.complete_payload[
+                            tomasulo_debug_complete*
+                            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 233 +: 32],
+                        g_hart[0].u_core.u_backend.complete_payload[
+                            tomasulo_debug_complete*
+                            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 154 +: 5],
+                        g_hart[0].u_core.u_backend.complete_payload[
+                            tomasulo_debug_complete*
+                            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 169 +: 64]);
+
+            for (tomasulo_debug_retire = 0;
+                 tomasulo_debug_retire < 3;
+                 tomasulo_debug_retire = tomasulo_debug_retire + 1)
+                if (g_hart[0].u_core.u_debug.backend_retire_arch[
+                        tomasulo_debug_retire] &&
+                    (g_hart[0].u_core.u_debug.queue_retire_result[
+                         tomasulo_debug_retire*
+                         `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 329 +: 64] >=
+                         64'hffff_ffff_8007_4180) &&
+                    (g_hart[0].u_core.u_debug.queue_retire_result[
+                         tomasulo_debug_retire*
+                         `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 329 +: 64] <
+                     64'hffff_ffff_8007_4210))
+                    $display(
+                        "TOMASULO_DEBUG_RETIRE cycle=%0d lane=%0d id=%0d pc=%016h instr=%08h rd=%0d data=%016h",
+                        cycles, tomasulo_debug_retire,
+                        g_hart[0].u_core.u_backend.queue_retire_id[
+                            tomasulo_debug_retire*
+                            `OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH],
+                        g_hart[0].u_core.u_debug.queue_retire_result[
+                            tomasulo_debug_retire*
+                            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 329 +: 64],
+                        g_hart[0].u_core.u_debug.queue_retire_result[
+                            tomasulo_debug_retire*
+                            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 233 +: 32],
+                        g_hart[0].u_core.u_debug.queue_retire_result[
+                            tomasulo_debug_retire*
+                            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 154 +: 5],
+                        g_hart[0].u_core.u_debug.queue_retire_result[
+                            tomasulo_debug_retire*
+                            `OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH + 169 +: 64]);
+        end
+    end
+
+    // Print the ROB head one cycle before the LSQ's simulation watchdog
+    // terminates the run.  The LSQ dump owns transaction-local state; this
+    // companion record identifies the older architectural instruction which
+    // prevented an ordered access from becoming eligible.
+    always @(posedge clk) begin
+        if (rst_n) begin
+            for (tomasulo_timeout_scan = 0;
+                 tomasulo_timeout_scan < 8;
+                 tomasulo_timeout_scan = tomasulo_timeout_scan + 1) begin
+                if (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                        u_lsq.slot_valid_q[tomasulo_timeout_scan] &&
+                    (g_hart[0].u_core.u_backend.u_exec.g_3p.u_exec.u_lsu.
+                         u_lsq.slot_timeout_age_q[tomasulo_timeout_scan] ==
+                     9999)) begin
+                    $display(
+                        "TOMASULO_LSQ_TIMEOUT_HEAD cycle=%0d trigger_slot=%0d id=%0d slot=%0d valid=%b complete=%b retire_valid=%b retire_accept=%b occupancy=%0d dispatch=%0d pc=%016h instr=%08h mem_read=%b mem_write=%b hard=%b pipe_valid=%b completion=%b flush=%b squash=%b squash_id=%0d",
+                        cycles, tomasulo_timeout_scan,
+                        g_hart[0].u_core.u_backend.next_retire_id,
+                        g_hart[0].u_core.u_backend.next_retire_slot,
+                        g_hart[0].u_core.u_backend.u_retire_queue.valid_q[
+                            g_hart[0].u_core.u_backend.next_retire_slot],
+                        g_hart[0].u_core.u_backend.u_retire_queue.complete_q[
+                            g_hart[0].u_core.u_backend.next_retire_slot],
+                        g_hart[0].u_core.u_backend.queue_retire_valid,
+                        g_hart[0].u_core.u_backend.queue_retire_accept,
+                        g_hart[0].u_core.u_backend.retire_occupancy_o,
+                        g_hart[0].u_core.u_backend.dispatch_occupancy_o,
+                        g_hart[0].u_core.u_backend.queue_retire_record[
+                            `OPENRV64_RETIRE_ALLOC_PC_LSB +: `RV64_XLEN],
+                        g_hart[0].u_core.u_backend.queue_retire_record[
+                            `OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
+                            `RV64_INSTR_WIDTH],
+                        g_hart[0].u_core.u_backend.queue_retire_record[
+                            `OPENRV64_RETIRE_ALLOC_MEM_READ_BIT],
+                        g_hart[0].u_core.u_backend.queue_retire_record[
+                            `OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT],
+                        g_hart[0].u_core.u_backend.queue_retire_record[
+                            `OPENRV64_RETIRE_ALLOC_HARD_BIT],
+                        g_hart[0].u_core.u_backend.pipe_valid,
+                        g_hart[0].u_core.u_backend.completion_fire,
+                        g_hart[0].u_core.u_backend.flush_i,
+                        g_hart[0].u_core.u_backend.squash_frontend_i,
+                        g_hart[0].u_core.u_backend.redirect_id_o);
+                end
+            end
+        end
+    end
+
+`endif
 
     openrv64_icx_line_crossbar #(
         .NUM_HARTS(NUM_HARTS),
@@ -1842,6 +2221,16 @@ module tb_4h_3p #(
                     ipi_send_requests[l2_req_hart_id] + 1;
             end
             if (icx_request_fire) begin
+`ifdef OPENRV64_TOMASULO_HARNESS
+                if ((tomasulo_debug != 0) &&
+                    (cycles >= tomasulo_debug_start) &&
+                    (icx_req_addr >= 64'h0000_0001_0000_0000))
+                    $display(
+                        "TOMASULO_DEBUG_BAD_ICX cycle=%0d hart=%0d source=%0d txn=%0d op=%0d size=%0d addr=%016h",
+                        cycles, icx_req_hart_id, icx_req_source_id,
+                        icx_req_txn_id, icx_req_op, icx_req_size,
+                        icx_req_addr);
+`endif
                 if (icx_req_identity >= HOME_IDENTITIES)
                     $fatal(1,
                         "coherence home accepted invalid identity hart=%0d source=%0d txn=%0d",
@@ -1992,22 +2381,50 @@ module tb_4h_3p #(
                 end else begin
                     if (!(dram_line_request_shape ||
                           dram_scalar_write_shape) ||
-                        !bus_req_cacheable ||
-                        (bus_req_addr < PHYSICAL_BASE) ||
-                        (bus_req_addr >= PHYSICAL_BASE + MEMORY_BYTES))
+                        !bus_req_cacheable)
                         $fatal(1,
-                            "malformed/out-of-range L2 request addr=%h size=%0d write=%0b cacheable=%0b wstrb=%h",
+                            "malformed L2 request addr=%h size=%0d write=%0b cacheable=%0b wstrb=%h mshr=%0d action=%0d source=%0d",
+                            bus_req_addr, bus_req_size, bus_req_write,
+                            bus_req_cacheable, bus_req_wstrb,
+                            u_l2.u_debug.bus_candidate_mshr_r,
+                            u_l2.u_debug.bus_candidate_action_r,
+                            u_l2.u_debug.waiter_source_id_q[
+                                u_l2.u_debug.bus_candidate_mshr_r * 4]);
+`ifndef OPENRV64_TOMASULO_HARNESS
+                    if (dram_request_out_of_range)
+                        $fatal(1,
+                            "out-of-range L2 request addr=%h size=%0d write=%0b cacheable=%0b wstrb=%h",
                             bus_req_addr, bus_req_size, bus_req_write,
                             bus_req_cacheable, bus_req_wstrb);
-                    if (DDR3_ENABLE == 0) begin
+`endif
+                    // A Tomasulo wrong-path load may legally reach the
+                    // normal-memory PMA aperture before its older control
+                    // resolves.  Installed RAM is smaller than that aperture.
+                    // The DDR3 model returns DECERR for the absent range; the
+                    // selective squash must consume it without retiring a
+                    // fault.  The untimed local model needs the equivalent
+                    // response synthesized here to avoid indexing past its
+                    // storage array.
+                    if ((DDR3_ENABLE == 0) &&
+                        !dram_request_out_of_range) begin
                         memory_pending <= 1'b1;
                         memory_pending_write <= bus_req_write;
                         memory_pending_addr <= bus_req_addr;
                         memory_delay <= MEMORY_LATENCY - 1;
                     end
+`ifdef OPENRV64_TOMASULO_HARNESS
+                    else if ((DDR3_ENABLE == 0) &&
+                             dram_request_out_of_range) begin
+                        local_resp_valid <= 1'b1;
+                        local_resp_error <= 1'b1;
+                        local_resp_rdata <=
+                            {`OPENRV64_ICX_LINE_DATA_WIDTH{1'b0}};
+                    end
+`endif
                     if (bus_req_write) begin
                         memory_writes <= memory_writes + 1;
-                        if (DDR3_ENABLE == 0) begin
+                        if ((DDR3_ENABLE == 0) &&
+                            !dram_request_out_of_range) begin
                             for (memory_byte = 0;
                                  memory_byte <
                                      `OPENRV64_ICX_LINE_STRB_WIDTH;
@@ -2505,6 +2922,12 @@ module tb_4h_3p #(
             $test$plusargs("require_smp_threads");
         pc_trace_fd = 0;
         pc_trace_mask = (1 << NUM_HARTS) - 1;
+`ifdef OPENRV64_TOMASULO_HARNESS
+        tomasulo_debug = $test$plusargs("tomasulo_debug");
+        tomasulo_debug_start = 0;
+        void'($value$plusargs(
+            "tomasulo_debug_start=%d", tomasulo_debug_start));
+`endif
         pc_trace_path = "";
         void'($value$plusargs("pc_trace_mask=%h", pc_trace_mask));
         if ($value$plusargs("pc_trace=%s", pc_trace_path)) begin
@@ -3229,6 +3652,31 @@ module tb_4h_3p #(
         end
     endtask
 
+    task automatic dump_opensbi_trace;
+        input string name;
+        integer trace_dump;
+        integer trace_slot;
+        begin
+            $display("OPENSBI_4H_TRACE_BEGIN name=%0s count=%0d",
+                name, opensbi_trace_count);
+            for (trace_dump = 0;
+                 trace_dump < opensbi_trace_count;
+                 trace_dump = trace_dump + 1) begin
+                trace_slot =
+                    (opensbi_trace_write - opensbi_trace_count +
+                     trace_dump + OPENSBI_TRACE_DEPTH) %
+                    OPENSBI_TRACE_DEPTH;
+                $display(
+                    "OPENSBI_4H_TRACE pc=%016h instr=%08h exception=%0b cause=%0d",
+                    opensbi_trace_pc[trace_slot],
+                    opensbi_trace_instr[trace_slot],
+                    opensbi_trace_exception[trace_slot],
+                    opensbi_trace_cause[trace_slot]);
+            end
+            $display("OPENSBI_4H_TRACE_END name=%0s", name);
+        end
+    endtask
+
     task automatic report_cache_mshr_snoop_counters;
         input string name;
         begin
@@ -3922,25 +4370,7 @@ module tb_4h_3p #(
                         g_hart[0].u_core.u_debug.csr_mepc,
                         g_hart[0].u_core.u_debug.csr_mstatus,
                         g_hart[0].u_core.u_debug.csr_priv_mode);
-                    for (opensbi_trace_dump = 0;
-                         opensbi_trace_dump < opensbi_trace_count;
-                         opensbi_trace_dump =
-                             opensbi_trace_dump + 1) begin
-                        opensbi_trace_slot =
-                            (opensbi_trace_write -
-                             opensbi_trace_count +
-                             opensbi_trace_dump +
-                             OPENSBI_TRACE_DEPTH) %
-                            OPENSBI_TRACE_DEPTH;
-                        $display(
-                            "OPENSBI_4H_TRACE pc=%016h instr=%08h exception=%0b cause=%0d",
-                            opensbi_trace_pc[opensbi_trace_slot],
-                            opensbi_trace_instr[opensbi_trace_slot],
-                            opensbi_trace_exception[
-                                opensbi_trace_slot],
-                            opensbi_trace_cause[
-                                opensbi_trace_slot]);
-                    end
+                    dump_opensbi_trace("start-hang");
                     $fatal(1,
                         "OpenSBI hart 0 parked in _start_hang before payload completion");
                 end
@@ -4770,6 +5200,7 @@ module tb_4h_3p #(
 
             if ((linux_mode != 0) && linux_panic_seen) begin
                 report_cache_mshr_snoop_counters("panic");
+                dump_opensbi_trace("linux-panic");
                 $fatal(1,
                     "Linux kernel panic on coherent OpenSBI rig active_harts=%0d",
                     opensbi_active_harts);

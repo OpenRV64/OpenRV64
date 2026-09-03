@@ -52,7 +52,8 @@ def main() -> int:
         fieldnames = set(rows.fieldnames or ())
         if RESIDENT_TRACE_HEADER.issubset(fieldnames):
             for row in rows:
-                if (row["schema"] == "openrv64-pipeline-state-v1" and
+                if (row["schema"] in {"openrv64-pipeline-state-v1",
+                                      "openrv64-pipeline-state-v2"} and
                         int(row["stage"]) == 9 and
                         int(row["state"]) == 4):
                     retired.append(

@@ -16,6 +16,7 @@
 `define OPENRV64_TTRACE_STAGE_LSQ         8'd7
 `define OPENRV64_TTRACE_STAGE_ROB         8'd8
 `define OPENRV64_TTRACE_STAGE_RETIRE      8'd9
+`define OPENRV64_TTRACE_STAGE_DISPATCH    8'd10
 
 // Component-local state.
 `define OPENRV64_TTRACE_STATE_PRESENT     8'd1
@@ -72,6 +73,9 @@
 `define OPENRV64_TTRACE_REASON_HALT_OR_WFI             8'd35
 `define OPENRV64_TTRACE_REASON_RESULT_ARBITRATION      8'd36
 `define OPENRV64_TTRACE_REASON_ATOMIC_UNIT             8'd37
+`define OPENRV64_TTRACE_REASON_BP_LOOKUP               8'd38
+`define OPENRV64_TTRACE_REASON_BP_CAPACITY             8'd39
+`define OPENRV64_TTRACE_REASON_BP_TARGET               8'd40
 `define OPENRV64_TTRACE_REASON_UNKNOWN                 8'd255
 
 // Physical execution pipe.  NONE is used for records which are not assigned

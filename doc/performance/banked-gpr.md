@@ -2501,3 +2501,39 @@ physical validation establishes the area or timing cost.  The experiment is
 retained but default-off pending improvements elsewhere in issue and memory
 completion throughput.  The underlying bank interfaces were not widened to
 8R4W as part of this experiment.
+
+#### Redirect recovery with issue-side squash filtering
+
+Tomasulo redirect recovery now keeps the scheduler issue side live while
+retirement and new decode/rename admission remain frozen. Scheduler candidates
+younger than the active redirect cut carry an explicit squashed indication;
+the banked register-load stage consumes those candidates without reading the
+register file or presenting them to execution. Older candidates can continue
+through the issue path during recovery.
+
+The LSU requires an additional same-edge filter. A wrong-path load or store can
+already occupy a backend output latch when a redirect arrives, before the
+resident LSQ-entry squash logic can observe it. Such an issue now handshakes and
+is discarded before misaligned handling, LSQ allocation, or load-assignment
+allocation. Retirement remains inhibited on the live redirect edge.
+
+| Configuration | Cycles | Retired | IPC | Delta vs prior control |
+|---|---:|---:|---:|---:|
+| Prior default-off control | 40,816 | 52,589 | 1.2884 | -- |
+| Redirect squash filter | 40,803 | 52,589 | 1.2889 | -13 (-0.03%) |
+
+The untraced run is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-20260902T232207Z`.
+The matching pipeline trace is
+`coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-trace-20260902T232625Z`;
+it contains 1,983,029 rows over cycles 80 through 40,803 and passed the trace
+consistency check. The final-source ACT4 run
+`compliance-act4-platform-3p-tomasulo-ddr3-20260902T232344Z` passed 93/93
+preserved RV64IMA platform tests. Focused banked backend, retirement-freeze,
+same-edge LSU-discard, register-access, and Tomasulo-stream tests also passed in
+`3p-banked-tomasulo-window-stream-20260902T231919Z`,
+`3p-banked-directed-20260902T231936Z`, and
+`ret-load-inhibit-focused-20260902T231936Z`.
+
+This is functional simulation evidence only. It does not establish synthesis
+area, critical-path timing, routed timing, or physical behavior.

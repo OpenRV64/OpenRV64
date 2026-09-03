@@ -142,6 +142,7 @@ module openrv64_backend_3p #(
     output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id_o,
     output wire [`RV64_XLEN-1:0]        redirect_target_o,
     output wire                         redirect_memory_replay_o,
+    output wire                         redirect_tagged_recovery_o,
     output wire                         branch_resolved_o,
     output wire                         branch_conditional_o,
     output wire                         branch_taken_o,
@@ -362,6 +363,11 @@ module openrv64_backend_3p #(
     wire exec_store_address_compressed;
     wire [`RV64_XLEN-1:0] exec_store_address_paddr;
     wire exec_store_address_cacheable;
+    wire exec_ordered_issue_replay_valid;
+    wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        exec_ordered_issue_replay_id;
+    wire [SLOT_WIDTH-1:0] exec_ordered_issue_replay_slot;
+    wire [`RV64_XLEN-1:0] exec_ordered_issue_replay_pc;
     wire async_store_fault;
     wire async_store_page_fault;
     wire [`RV64_XLEN-1:0] async_store_fault_pc;
@@ -1024,9 +1030,19 @@ module openrv64_backend_3p #(
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
         memory_control_watch_id_q [0:MEMORY_WATCH_DEPTH-1];
     reg memory_replay_pending_q;
+    reg memory_replay_ordered_issue_q;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] memory_replay_id_q;
     reg [SLOT_WIDTH-1:0] memory_replay_slot_q;
     reg [`RV64_XLEN-1:0] memory_replay_target_q;
+    // An ordered replay is allowed to bypass older incomplete controls to
+    // break a MEM-input age inversion.  If such a control redirects in the
+    // replay cycle, preserve its one-shot redirect and publish it one cycle
+    // later.  The older cut then supersedes the already-issued younger replay.
+    reg memory_replay_deferred_redirect_valid_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        memory_replay_deferred_redirect_id_q;
+    reg [SLOT_WIDTH-1:0] memory_replay_deferred_redirect_slot_q;
+    reg [`RV64_XLEN-1:0] memory_replay_deferred_redirect_target_q;
     reg memory_replay_older_control_pending_r;
     integer memory_control_scan;
     always @* begin
@@ -1040,9 +1056,53 @@ module openrv64_backend_3p #(
                     memory_control_watch_id_q[memory_control_scan]))
                 memory_replay_older_control_pending_r = 1'b1;
     end
-    wire memory_replay_valid = memory_disambiguation_enabled &&
+    wire memory_replay_candidate = memory_disambiguation_enabled &&
         memory_replay_pending_q &&
-        !memory_replay_older_control_pending_r;
+        (memory_replay_ordered_issue_q ||
+         !memory_replay_older_control_pending_r);
+    // A saved older branch redirect owns this cycle.  Keep the replay pending
+    // so it can be emitted after the older redirect rather than silently
+    // consuming both one-shot events in one arbitration slot.
+    wire memory_replay_valid = memory_replay_candidate &&
+        !memory_replay_deferred_redirect_valid_q;
+    wire memory_replay_collides_with_older_exec_redirect =
+        memory_replay_valid && exec_redirect_valid &&
+        memory_id_is_younger(memory_replay_id_q, exec_redirect_id);
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n || !memory_disambiguation_enabled) begin
+            memory_replay_deferred_redirect_valid_q <= 1'b0;
+            memory_replay_deferred_redirect_id_q <=
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            memory_replay_deferred_redirect_slot_q <=
+                {SLOT_WIDTH{1'b0}};
+            memory_replay_deferred_redirect_target_q <=
+                {`RV64_XLEN{1'b0}};
+        end else if (flush_i) begin
+            memory_replay_deferred_redirect_valid_q <= 1'b0;
+        end else if (memory_replay_deferred_redirect_valid_q) begin
+            // The saved redirect is emitted this cycle.  A still older live
+            // redirect monotonically replaces it for the following cycle;
+            // equal or younger redirects are subsumed by the saved cut.
+            if (exec_redirect_valid &&
+                memory_id_is_younger(
+                    memory_replay_deferred_redirect_id_q,
+                    exec_redirect_id)) begin
+                memory_replay_deferred_redirect_valid_q <= 1'b1;
+                memory_replay_deferred_redirect_id_q <= exec_redirect_id;
+                memory_replay_deferred_redirect_slot_q <= exec_redirect_slot;
+                memory_replay_deferred_redirect_target_q <=
+                    exec_redirect_target;
+            end else begin
+                memory_replay_deferred_redirect_valid_q <= 1'b0;
+            end
+        end else if (memory_replay_collides_with_older_exec_redirect) begin
+            memory_replay_deferred_redirect_valid_q <= 1'b1;
+            memory_replay_deferred_redirect_id_q <= exec_redirect_id;
+            memory_replay_deferred_redirect_slot_q <= exec_redirect_slot;
+            memory_replay_deferred_redirect_target_q <= exec_redirect_target;
+        end
+    end
     integer memory_watch_scan;
     integer memory_watch_state_scan;
     integer memory_watch_lane;
@@ -1144,6 +1204,11 @@ module openrv64_backend_3p #(
     reg [63:0] perf_memory_store_collisions_q;
     reg [63:0] perf_memory_store_device_replays_q;
     reg [63:0] perf_memory_replays_q;
+    reg [63:0] perf_memory_ordered_issue_replays_q;
+    reg [63:0] perf_memory_replay_exec_redirect_collisions_q;
+    reg [63:0] perf_memory_replay_older_exec_redirect_collisions_q;
+    reg [63:0] perf_memory_replay_free_redirect_collisions_q;
+    reg [63:0] perf_memory_replay_older_free_redirect_collisions_q;
     reg [63:0] perf_memory_replay_preserved_entries_q;
     reg [63:0] perf_memory_replay_distance_1_q;
     reg [63:0] perf_memory_replay_distance_2_q;
@@ -1155,6 +1220,7 @@ module openrv64_backend_3p #(
         if (!rst_n || !memory_disambiguation_enabled) begin
             memory_load_watch_valid_q <= {MEMORY_WATCH_DEPTH{1'b0}};
             memory_replay_pending_q <= 1'b0;
+            memory_replay_ordered_issue_q <= 1'b0;
             memory_replay_id_q <=
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             memory_replay_slot_q <= {SLOT_WIDTH{1'b0}};
@@ -1165,6 +1231,11 @@ module openrv64_backend_3p #(
             perf_memory_store_collisions_q <= 64'd0;
             perf_memory_store_device_replays_q <= 64'd0;
             perf_memory_replays_q <= 64'd0;
+            perf_memory_ordered_issue_replays_q <= 64'd0;
+            perf_memory_replay_exec_redirect_collisions_q <= 64'd0;
+            perf_memory_replay_older_exec_redirect_collisions_q <= 64'd0;
+            perf_memory_replay_free_redirect_collisions_q <= 64'd0;
+            perf_memory_replay_older_free_redirect_collisions_q <= 64'd0;
             perf_memory_replay_preserved_entries_q <= 64'd0;
             perf_memory_replay_distance_1_q <= 64'd0;
             perf_memory_replay_distance_2_q <= 64'd0;
@@ -1185,14 +1256,39 @@ module openrv64_backend_3p #(
         end else if (flush_i) begin
             memory_load_watch_valid_q <= {MEMORY_WATCH_DEPTH{1'b0}};
             memory_replay_pending_q <= 1'b0;
+            memory_replay_ordered_issue_q <= 1'b0;
         end else begin
             if (memory_replay_pending_q &&
+                !memory_replay_ordered_issue_q &&
                 memory_replay_older_control_pending_r)
                 perf_memory_replay_control_wait_cycles_q <=
                     perf_memory_replay_control_wait_cycles_q + 1'b1;
             if (memory_replay_valid) begin
                 memory_replay_pending_q <= 1'b0;
+                memory_replay_ordered_issue_q <= 1'b0;
                 perf_memory_replays_q <= perf_memory_replays_q + 1'b1;
+                if (exec_redirect_valid) begin
+                    perf_memory_replay_exec_redirect_collisions_q <=
+                        perf_memory_replay_exec_redirect_collisions_q + 1'b1;
+                    if (memory_id_is_younger(memory_replay_id_q,
+                                             exec_redirect_id))
+                        perf_memory_replay_older_exec_redirect_collisions_q <=
+                            perf_memory_replay_older_exec_redirect_collisions_q +
+                            1'b1;
+                end
+                if (free_branch_mispredict) begin
+                    perf_memory_replay_free_redirect_collisions_q <=
+                        perf_memory_replay_free_redirect_collisions_q + 1'b1;
+                    if (memory_id_is_younger(
+                            memory_replay_id_q,
+                            allocation_id[
+                                free_mispredict_lane*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH]))
+                        perf_memory_replay_older_free_redirect_collisions_q <=
+                            perf_memory_replay_older_free_redirect_collisions_q +
+                            1'b1;
+                end
             end
 
             for (memory_watch_lane = 0; memory_watch_lane < 3;
@@ -1224,8 +1320,37 @@ module openrv64_backend_3p #(
                             1'b0;
                 if (memory_replay_pending_q &&
                     memory_id_is_younger(memory_replay_id_q,
-                                         redirect_id_o))
+                                         redirect_id_o)) begin
                     memory_replay_pending_q <= 1'b0;
+                    memory_replay_ordered_issue_q <= 1'b0;
+                end
+            end
+
+            // The pipelined register-load stage releases its scheduler entry
+            // at the RF address handshake.  A younger naturally misaligned
+            // access can therefore reach an execution input before an older
+            // instruction and wait there for ordered-head status.  Replay
+            // that access inclusively; otherwise its retained input packet
+            // prevents the older head from ever reaching the LSU.  Unlike a
+            // store-collision replay, this recovery must not wait for every
+            // older control to resolve: one of those controls can itself be
+            // data-dependent on the blocked older load.
+            if (exec_ordered_issue_replay_valid &&
+                (!squash_frontend_i ||
+                 (!(memory_replay_valid &&
+                    (exec_ordered_issue_replay_id == redirect_id_o)) &&
+                  !memory_id_is_younger(exec_ordered_issue_replay_id,
+                                        redirect_id_o))) &&
+                (!memory_replay_pending_q || memory_replay_valid ||
+                 memory_id_is_younger(memory_replay_id_q,
+                     exec_ordered_issue_replay_id))) begin
+                memory_replay_pending_q <= 1'b1;
+                memory_replay_ordered_issue_q <= 1'b1;
+                memory_replay_id_q <= exec_ordered_issue_replay_id;
+                memory_replay_slot_q <= exec_ordered_issue_replay_slot;
+                memory_replay_target_q <= exec_ordered_issue_replay_pc;
+                perf_memory_ordered_issue_replays_q <=
+                    perf_memory_ordered_issue_replays_q + 1'b1;
             end
 
             if (exec_load_access_valid &&
@@ -1256,6 +1381,7 @@ module openrv64_backend_3p #(
                         memory_id_is_younger(memory_replay_id_q,
                                              memory_violation_load_id_r)) begin
                         memory_replay_pending_q <= 1'b1;
+                        memory_replay_ordered_issue_q <= 1'b0;
                         memory_replay_id_q <= memory_violation_load_id_r;
                         memory_replay_slot_q <= memory_violation_load_slot_r;
                         memory_replay_target_q <= memory_violation_load_pc_r;
@@ -1371,12 +1497,15 @@ module openrv64_backend_3p #(
 
     wire speculative_window = (ENABLE_ISSUE_WINDOW != 0) &&
                               (ENABLE_SPECULATION_WINDOW != 0);
-    assign redirect_valid_o = memory_replay_valid ? 1'b1 :
+    assign redirect_valid_o = memory_replay_deferred_redirect_valid_q ? 1'b1 :
+        memory_replay_valid ? 1'b1 :
         free_branch_mispredict ? 1'b1 :
         speculative_window ? exec_redirect_valid :
         (ENABLE_ISSUE_WINDOW != 0) ? window_direction_mispredict :
                                      exec_redirect_valid;
-    assign redirect_id_o = memory_replay_valid ? memory_replay_id_q :
+    assign redirect_id_o = memory_replay_deferred_redirect_valid_q ?
+        memory_replay_deferred_redirect_id_q :
+        memory_replay_valid ? memory_replay_id_q :
         free_branch_mispredict ?
         allocation_id[
             free_mispredict_lane*`OPENRV64_INSTR_ID_WIDTH +:
@@ -1386,13 +1515,21 @@ module openrv64_backend_3p #(
             queue_retire_id[
                 window_resolve_lane*`OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH] : exec_redirect_id;
-    assign redirect_target_o = memory_replay_valid ? memory_replay_target_q :
+    assign redirect_target_o = memory_replay_deferred_redirect_valid_q ?
+        memory_replay_deferred_redirect_target_q :
+        memory_replay_valid ? memory_replay_target_q :
         free_branch_mispredict ?
         free_mispredict_result[COMPLETE_RESULT_NEXT_PC +: `RV64_XLEN] :
         speculative_window ? exec_redirect_target :
         (ENABLE_ISSUE_WINDOW != 0) ? window_branch_next_pc :
                                      exec_redirect_target;
     assign redirect_memory_replay_o = memory_replay_valid;
+    // A memory replay and a delayed execution redirect both carry an explicit
+    // instruction-ID cut.  The predictor's ordinary squash path derives its
+    // cut from the simultaneous branch-resolution pulse, which is no longer
+    // present when a saved redirect is published one cycle later.
+    assign redirect_tagged_recovery_o = memory_replay_valid ||
+        memory_replay_deferred_redirect_valid_q;
     assign branch_resolved_o = free_branch_resolved ? 1'b1 :
         speculative_window ? exec_branch_resolved :
         (ENABLE_ISSUE_WINDOW != 0) ? window_branch_resolved :
@@ -1424,7 +1561,9 @@ module openrv64_backend_3p #(
             queue_retire_id[
                 window_resolve_lane*`OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH] : exec_redirect_id;
-    assign branch_slot_o = memory_replay_valid ? memory_replay_slot_q :
+    assign branch_slot_o = memory_replay_deferred_redirect_valid_q ?
+        memory_replay_deferred_redirect_slot_q :
+        memory_replay_valid ? memory_replay_slot_q :
         free_branch_resolved ?
         allocation_slot[free_branch_lane*SLOT_WIDTH +: SLOT_WIDTH] :
         speculative_window ? exec_redirect_slot :
@@ -5011,6 +5150,7 @@ module openrv64_backend_3p #(
         .retire_rs2_addr_i(5'd0), .retire_reg_write_i(1'b0),
         .retire_rd_addr_i(5'd0), .decode_trace_id_i(64'd0),
         .squash_frontend_3p_i(squash_frontend_i),
+        .squash_inclusive_3p_i(memory_replay_valid),
         .squash_id_3p_i(redirect_id_o),
         .squash_slot_3p_i(branch_slot_o),
         .translation_bypass_3p_i(translation_bypass_i),
@@ -5279,6 +5419,12 @@ module openrv64_backend_3p #(
             exec_store_address_compressed),
         .store_address_paddr_3p_o(exec_store_address_paddr),
         .store_address_cacheable_3p_o(exec_store_address_cacheable),
+        .ordered_issue_replay_valid_3p_o(
+            exec_ordered_issue_replay_valid),
+        .ordered_issue_replay_id_3p_o(exec_ordered_issue_replay_id),
+        .ordered_issue_replay_slot_3p_o(
+            exec_ordered_issue_replay_slot),
+        .ordered_issue_replay_pc_3p_o(exec_ordered_issue_replay_pc),
         .redirect_valid_o(exec_redirect_valid),
         .redirect_id_3p_o(exec_redirect_id),
         .redirect_slot_3p_o(exec_redirect_slot),
@@ -5472,14 +5618,31 @@ module openrv64_backend_3p #(
     // imprecise abort.
     //
     // A replaying store may be the first lane of a wider completed retirement
-    // group.  Hold the group for the registered replay cycle so no younger
-    // load commits on the same edge that it is being squashed.
+    // group.  Hold the group on the redirect edge so no younger load commits
+    // while the replay cut is applied.  A pending replay may wait for an older
+    // control, so let the strictly older ROB prefix keep retiring.  The replay
+    // target and its younger suffix must remain uncommitted until the cut is
+    // applied; otherwise recovery can discard already-committed state.
     // A redirect first invalidates the younger ROB suffix.  Hold retirement
     // on that edge so no architectural commit races the cut; already-issued
     // work may finish, but its ID/slot no longer matches a live ROB entry.
+    wire [2:0] memory_replay_retire_prefix = {
+        !memory_replay_pending_q ||
+            memory_id_is_younger(memory_replay_id_q,
+                queue_retire_id[2*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH]),
+        !memory_replay_pending_q ||
+            memory_id_is_younger(memory_replay_id_q,
+                queue_retire_id[1*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH]),
+        !memory_replay_pending_q ||
+            memory_id_is_younger(memory_replay_id_q,
+                queue_retire_id[0*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH])
+    };
     wire [2:0] retire_queue_valid =
-        (async_store_fault_pending_q || memory_replay_pending_q ||
-         squash_frontend_i) ? 3'b000 : queue_retire_valid;
+        (async_store_fault_pending_q || squash_frontend_i) ?
+        3'b000 : queue_retire_valid & memory_replay_retire_prefix;
     generate
         if (BANKED_GPR != 0) begin : g_banked_retire
             wire [1:0] banked_gpr_write;

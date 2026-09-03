@@ -51,6 +51,10 @@
 // Operands are values captured when dispatch accepts the instruction.  The
 // execution cluster never reads the architectural register file directly.
 `define OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH 402
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_PREDICTED_TAKEN_BIT 12
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_LSB 242
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_PC_LSB 274
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_TRACE_ID_LSB 338
 
 // Fixed-width portion of a completion packet, packed as:
 //

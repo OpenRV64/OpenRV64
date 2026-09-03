@@ -340,6 +340,9 @@ sim-top-3p: $(TOP_3P_SIM_BUILD)
 sim-top-3p-banked: $(TOP_3P_BANKED_SIM_BUILD)
 	vvp $(TOP_3P_BANKED_SIM_BUILD)
 
+sim-top-3p-tomasulo-pmp: $(TOP_3P_TOMASULO_PMP_SIM_BUILD)
+	vvp $(TOP_3P_TOMASULO_PMP_SIM_BUILD)
+
 sim-top-4pf: $(TOP_4PF_SIM_BUILD) $(FP_DAXPY_MEMH)
 	vvp $(TOP_4PF_SIM_BUILD)
 

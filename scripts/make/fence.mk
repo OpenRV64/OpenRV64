@@ -45,7 +45,38 @@ ATOMIC_SV39_DISASM := $(FENCE_BUILD_DIR)/atomic-sv39.disasm
 ATOMIC_SV39_DONE = $(shell $(RISCV_NM) -n $(ATOMIC_SV39_ELF) | \
 	awk '$$3 == "openrv64_runtime_done" { print $$1 }')
 
-.PHONY: sw-fence-sv39 sw-atomic-sv39 sim-fence-sv39-order \
+LRSC_REDIRECT_STRESS_ITERS ?= 4096
+LRSC_REDIRECT_STRESS_ELF := \
+	$(FENCE_BUILD_DIR)/lrsc-redirect-stress-sv39.elf
+LRSC_REDIRECT_STRESS_BIN := \
+	$(FENCE_BUILD_DIR)/lrsc-redirect-stress-sv39.bin
+LRSC_REDIRECT_STRESS_MEMH := \
+	$(FENCE_BUILD_DIR)/lrsc-redirect-stress-sv39.memh
+LRSC_REDIRECT_STRESS_MAP := \
+	$(FENCE_BUILD_DIR)/lrsc-redirect-stress-sv39.map
+LRSC_REDIRECT_STRESS_DISASM := \
+	$(FENCE_BUILD_DIR)/lrsc-redirect-stress-sv39.disasm
+LRSC_REDIRECT_STRESS_DONE = $(shell $(RISCV_NM) -n \
+	$(LRSC_REDIRECT_STRESS_ELF) 2>/dev/null | \
+	awk '$$3 == "openrv64_runtime_done" { print $$1 }')
+
+MISALIGNED_ORDER_REPLAY_ELF := \
+	$(FENCE_BUILD_DIR)/misaligned-order-replay-sv39.elf
+MISALIGNED_ORDER_REPLAY_BIN := \
+	$(FENCE_BUILD_DIR)/misaligned-order-replay-sv39.bin
+MISALIGNED_ORDER_REPLAY_MEMH := \
+	$(FENCE_BUILD_DIR)/misaligned-order-replay-sv39.memh
+MISALIGNED_ORDER_REPLAY_MAP := \
+	$(FENCE_BUILD_DIR)/misaligned-order-replay-sv39.map
+MISALIGNED_ORDER_REPLAY_DISASM := \
+	$(FENCE_BUILD_DIR)/misaligned-order-replay-sv39.disasm
+MISALIGNED_ORDER_REPLAY_DONE = $(shell $(RISCV_NM) -n \
+	$(MISALIGNED_ORDER_REPLAY_ELF) 2>/dev/null | \
+	awk '$$3 == "openrv64_runtime_done" { print $$1 }')
+
+.PHONY: sw-fence-sv39 sw-atomic-sv39 sw-lrsc-redirect-stress-sv39 \
+	sw-misaligned-order-replay-sv39 \
+	sim-fence-sv39-order \
 	sim-fence-sv39-case \
 	sim-atomic-sv39 check-fence-sv39 bench-fence-sv39 \
 	fence-sv39-suite
@@ -84,6 +115,27 @@ $(ATOMIC_SV39_ELF): $(OPENRV64_MAKEFILES) \
 		-T sw/runtime/openrv64-sv39.ld -o $@ \
 		sw/runtime/sv39.S sw/atomic/atomic.S
 
+$(LRSC_REDIRECT_STRESS_ELF): $(OPENRV64_MAKEFILES) \
+		sw/runtime/sv39.S sw/runtime/c_start.inc \
+		sw/runtime/openrv64-sv39.ld \
+		sw/atomic/lrsc_redirect_stress.S
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(FENCE_ASFLAGS) \
+		-DOPENRV64_LRSC_REDIRECT_STRESS_ITERS=$(LRSC_REDIRECT_STRESS_ITERS) \
+		-Wl,--build-id=none,-Map,$(LRSC_REDIRECT_STRESS_MAP) \
+		-T sw/runtime/openrv64-sv39.ld -o $@ \
+		sw/runtime/sv39.S sw/atomic/lrsc_redirect_stress.S
+
+$(MISALIGNED_ORDER_REPLAY_ELF): $(OPENRV64_MAKEFILES) \
+		sw/runtime/sv39.S sw/runtime/c_start.inc \
+		sw/runtime/openrv64-sv39.ld \
+		sw/memory/misaligned_order_replay.S
+	mkdir -p $(dir $@)
+	$(RISCV_CC) $(FENCE_ASFLAGS) \
+		-Wl,--build-id=none,-Map,$(MISALIGNED_ORDER_REPLAY_MAP) \
+		-T sw/runtime/openrv64-sv39.ld -o $@ \
+		sw/runtime/sv39.S sw/memory/misaligned_order_replay.S
+
 $(FENCE_CORRECT_BIN): $(FENCE_CORRECT_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
 
@@ -94,6 +146,12 @@ $(FENCE_CASE_BIN): $(FENCE_CASE_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
 
 $(ATOMIC_SV39_BIN): $(ATOMIC_SV39_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(LRSC_REDIRECT_STRESS_BIN): $(LRSC_REDIRECT_STRESS_ELF)
+	$(RISCV_OBJCOPY) -O binary $< $@
+
+$(MISALIGNED_ORDER_REPLAY_BIN): $(MISALIGNED_ORDER_REPLAY_ELF)
 	$(RISCV_OBJCOPY) -O binary $< $@
 
 $(FENCE_CORRECT_MEMH): $(FENCE_CORRECT_BIN) tools/bin2mem.py
@@ -112,6 +170,15 @@ $(ATOMIC_SV39_MEMH): $(ATOMIC_SV39_BIN) tools/bin2mem.py
 	$(PYTHON) tools/bin2mem.py $< $@ \
 		--size $(FENCE_MEMH_BYTES) --word-bytes 32
 
+$(LRSC_REDIRECT_STRESS_MEMH): $(LRSC_REDIRECT_STRESS_BIN) tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(FENCE_MEMH_BYTES) --word-bytes 32
+
+$(MISALIGNED_ORDER_REPLAY_MEMH): $(MISALIGNED_ORDER_REPLAY_BIN) \
+		tools/bin2mem.py
+	$(PYTHON) tools/bin2mem.py $< $@ \
+		--size $(FENCE_MEMH_BYTES) --word-bytes 32
+
 $(FENCE_CORRECT_DISASM): $(FENCE_CORRECT_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
@@ -124,6 +191,12 @@ $(FENCE_CASE_DISASM): $(FENCE_CASE_ELF)
 $(ATOMIC_SV39_DISASM): $(ATOMIC_SV39_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
+$(LRSC_REDIRECT_STRESS_DISASM): $(LRSC_REDIRECT_STRESS_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
+$(MISALIGNED_ORDER_REPLAY_DISASM): $(MISALIGNED_ORDER_REPLAY_ELF)
+	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
+
 sw-fence-sv39: $(FENCE_CORRECT_ELF) $(FENCE_CORRECT_BIN) \
 	$(FENCE_CORRECT_MEMH) $(FENCE_CORRECT_DISASM) \
 	$(FENCE_BENCH_ELF) $(FENCE_BENCH_BIN) \
@@ -131,6 +204,14 @@ sw-fence-sv39: $(FENCE_CORRECT_ELF) $(FENCE_CORRECT_BIN) \
 
 sw-atomic-sv39: $(ATOMIC_SV39_ELF) $(ATOMIC_SV39_BIN) \
 	$(ATOMIC_SV39_MEMH) $(ATOMIC_SV39_DISASM)
+
+sw-lrsc-redirect-stress-sv39: $(LRSC_REDIRECT_STRESS_ELF) \
+	$(LRSC_REDIRECT_STRESS_BIN) $(LRSC_REDIRECT_STRESS_MEMH) \
+	$(LRSC_REDIRECT_STRESS_DISASM)
+
+sw-misaligned-order-replay-sv39: $(MISALIGNED_ORDER_REPLAY_ELF) \
+	$(MISALIGNED_ORDER_REPLAY_BIN) $(MISALIGNED_ORDER_REPLAY_MEMH) \
+	$(MISALIGNED_ORDER_REPLAY_DISASM)
 
 sim-fence-sv39-order: $(FENCE_CORRECT_MEMH)
 	test -n "$(FENCE_CORRECT_DONE)"

@@ -48,7 +48,8 @@ endmodule
 // the provider and the next match (or base) is the alternate.
 //
 // Direction payloads use synchronous inferred RAMs.  A conditional lookup
-// therefore holds decode for one cycle while the RAM outputs are registered.
+// therefore requires its caller to retain the lookup record for one cycle
+// while the RAM outputs are registered.
 // Valid and useful bits are small sidecars: valid bits need architectural reset
 // semantics, while useful bits need an incremental aging write independent of
 // the tag/counter RAM write port.  The indirect BTB and external RAS retain the
@@ -120,6 +121,7 @@ module openrv64_exec_bp_tage_btb #(
     output wire [`RV64_XLEN-1:0]        prediction_target_o,
     output wire                         target_mispredict_o,
     output wire                         allocation_stall_o,
+    output wire                         capacity_stall_o,
     output wire                         update_overflow_o,
 
     output wire [2:0]                   diag_lookup_provider_o,
@@ -1095,6 +1097,7 @@ module openrv64_exec_bp_tage_btb #(
         (queue_full || (lookup_branch_i && !lookup_response_match) ||
          (lookup_indirect_i && !lookup_return &&
           !lookup_btb_response_match));
+    assign capacity_stall_o = queue_full;
     assign update_overflow_o = update_overflow_q;
     assign diag_lookup_provider_o = lookup_response_match ?
                                     lookup_provider : PROVIDER_BASE;

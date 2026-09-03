@@ -25,6 +25,7 @@ module openrv64_dispatch_3p_tomasulo #(
     input  wire rst_n,
     input  wire flush_i,
     input  wire squash_frontend_i,
+    input  wire squash_inclusive_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_i,
     input  wire translation_bypass_i,
     input  wire [2:0] decode_valid_i,
@@ -113,6 +114,7 @@ module openrv64_dispatch_3p_tomasulo #(
     ) u_window (
         .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
         .squash_frontend_i(squash_frontend_i),
+        .squash_inclusive_i(squash_inclusive_i),
         .squash_id_i(squash_id_i),
         .translation_bypass_i(translation_bypass_i),
         .decode_valid_i(decode_valid_i & allocation_ready_i),

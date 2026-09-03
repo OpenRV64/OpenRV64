@@ -1004,7 +1004,10 @@ module openrv64_rv64_top #(
         .target_mispredict_o(bp_target_mispredict),
         .update_overflow_o(bp_update_overflow),
         .fetch_stall_o(bp_fetch_stall),
-        .decode_stall_o(bp_decode_stall)
+        .decode_stall_o(bp_decode_stall),
+        .background_stall_o(),
+        .capacity_stall_o(),
+        .unresolved_target_stall_o()
     );
 
     openrv64_rv64i_gpr_1p #(
@@ -1261,6 +1264,7 @@ module openrv64_rv64_top #(
         .waw_hazard_o(dispatch_waw_hazard),
         .scoreboard_stall_o(dispatch_scoreboard_stall),
         .squash_frontend_3p_i(1'b0),
+        .squash_inclusive_3p_i(1'b0),
         .squash_id_3p_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .squash_slot_3p_i(3'd0),
         .translation_bypass_3p_i(1'b0),

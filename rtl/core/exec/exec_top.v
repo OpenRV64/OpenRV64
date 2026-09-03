@@ -262,6 +262,12 @@ module openrv64_exec_top #(
     output wire                         store_address_compressed_3p_o,
     output wire [`RV64_XLEN-1:0]        store_address_paddr_3p_o,
     output wire                         store_address_cacheable_3p_o,
+    output wire                         ordered_issue_replay_valid_3p_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        ordered_issue_replay_id_3p_o,
+    output wire [RETIRE_SLOT_WIDTH_3P-1:0]
+                                        ordered_issue_replay_slot_3p_o,
+    output wire [`RV64_XLEN-1:0]        ordered_issue_replay_pc_3p_o,
     output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id_3p_o,
     output wire [RETIRE_SLOT_WIDTH_3P-1:0] redirect_slot_3p_o
 );
@@ -346,6 +352,12 @@ module openrv64_exec_top #(
             assign store_address_compressed_3p_o = 1'b0;
             assign store_address_paddr_3p_o = {`RV64_XLEN{1'b0}};
             assign store_address_cacheable_3p_o = 1'b0;
+            assign ordered_issue_replay_valid_3p_o = 1'b0;
+            assign ordered_issue_replay_id_3p_o =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign ordered_issue_replay_slot_3p_o =
+                {RETIRE_SLOT_WIDTH_3P{1'b0}};
+            assign ordered_issue_replay_pc_3p_o = {`RV64_XLEN{1'b0}};
             assign store_barrier_request_3p_o = 1'b0;
         end else if (BACKEND_CONFIG == `OPENRV64_BACKEND_3P) begin : g_3p
             openrv64_exec_top_3p #(
@@ -431,6 +443,14 @@ module openrv64_exec_top #(
                 .store_address_paddr_o(store_address_paddr_3p_o),
                 .store_address_cacheable_o(
                     store_address_cacheable_3p_o),
+                .ordered_issue_replay_valid_o(
+                    ordered_issue_replay_valid_3p_o),
+                .ordered_issue_replay_id_o(
+                    ordered_issue_replay_id_3p_o),
+                .ordered_issue_replay_slot_o(
+                    ordered_issue_replay_slot_3p_o),
+                .ordered_issue_replay_pc_o(
+                    ordered_issue_replay_pc_3p_o),
                 .redirect_valid_o(redirect_valid_o),
                 .redirect_id_o(redirect_id_3p_o),
                 .redirect_slot_o(redirect_slot_3p_o),
@@ -648,6 +668,12 @@ module openrv64_exec_top #(
             assign store_address_compressed_3p_o = 1'b0;
             assign store_address_paddr_3p_o = {`RV64_XLEN{1'b0}};
             assign store_address_cacheable_3p_o = 1'b0;
+            assign ordered_issue_replay_valid_3p_o = 1'b0;
+            assign ordered_issue_replay_id_3p_o =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            assign ordered_issue_replay_slot_3p_o =
+                {RETIRE_SLOT_WIDTH_3P{1'b0}};
+            assign ordered_issue_replay_pc_3p_o = {`RV64_XLEN{1'b0}};
             assign store_barrier_request_3p_o = 1'b0;
         end
     endgenerate

@@ -125,7 +125,18 @@ module openrv64_exec_lsu #(
     output wire [`RV64_XLEN-1:0]        store_address_pc_o,
     output wire                         store_address_compressed_o,
     output wire [`RV64_XLEN-1:0]        store_address_paddr_o,
-    output wire                         store_address_cacheable_o
+    output wire                         store_address_cacheable_o,
+
+    // A naturally misaligned scalar access must execute at the ordered
+    // head.  Report an out-of-order presentation so a speculative backend
+    // can replay it instead of leaving the shared execution-pipe input
+    // occupied ahead of an older instruction.
+    output wire                         ordered_issue_replay_valid_o,
+    output wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        ordered_issue_replay_id_o,
+    output wire [RETIRE_SLOT_WIDTH-1:0]
+                                        ordered_issue_replay_slot_o,
+    output wire [`RV64_XLEN-1:0]        ordered_issue_replay_pc_o
 );
 
     function automatic id_is_younger;
@@ -343,6 +354,22 @@ module openrv64_exec_lsu #(
     wire store_order_match = ordered_head_valid_i &&
         (ordered_head_id_i == store_issue_id_i) &&
         (ordered_head_slot_i == store_issue_slot_i);
+    wire load_order_replay = load_issue_live &&
+        load_requires_misaligned && !load_order_match;
+    wire store_order_replay = store_issue_live &&
+        store_requires_misaligned && !store_order_match;
+    wire select_load_order_replay = load_order_replay &&
+        (!store_order_replay ||
+         id_is_younger(store_issue_id_i, load_issue_id_i));
+    assign ordered_issue_replay_valid_o =
+        load_order_replay || store_order_replay;
+    assign ordered_issue_replay_id_o = select_load_order_replay ?
+        load_issue_id_i : store_issue_id_i;
+    assign ordered_issue_replay_slot_o = select_load_order_replay ?
+        load_issue_slot_i : store_issue_slot_i;
+    assign ordered_issue_replay_pc_o = select_load_order_replay ?
+        load_issue_payload_i[I_PC +: `RV64_XLEN] :
+        store_issue_payload_i[I_PC +: `RV64_XLEN];
     wire lsq_req_valid;
     wire lsq_req_ready;
     wire [LSU_TAG_WIDTH-1:0] lsq_req_tag;
@@ -553,6 +580,8 @@ module openrv64_exec_lsu #(
     openrv64_lsq #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
         .META_WIDTH(LSQ_META_WIDTH),
+        .META_INSTR_LSB(LSQ_M_INSTR),
+        .META_PC_LSB(LSQ_M_PC),
         .LOAD_QUEUE_DEPTH(LOAD_QUEUE_DEPTH),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .TAG_WIDTH(LSU_TAG_WIDTH),

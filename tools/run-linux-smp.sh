@@ -247,20 +247,23 @@ worker() {
     ulimit -c 0
 
     local build_log=${directory}/build.log
-    local run_log=${directory}/run.log
-    local status_file=${directory}/status
+    # These are intentionally process-global.  The EXIT trap runs after Bash
+    # has unwound worker()'s local scope, but this worker already has its own
+    # process and still needs the paths and final state while handling EXIT.
+    run_log=${directory}/run.log
+    status_file=${directory}/status
     local config_file=${directory}/effective-config.txt
     local source_manifest=${directory}/source-inputs.txt
     local source_hashes=${directory}/source-inputs.sha256
     local artifact_hashes=${directory}/artifacts.sha256
     local input_dir=${directory}/inputs
     local checkpoint=${directory}/checkpoint-${checkpoint_cycles}.vls
-    local phase=setup
-    local validation=not-run
-    local sim_result=
-    local monitor_pid=
-    local heartbeat_pid=
-    local host_pc_sampler_pid=
+    phase=setup
+    validation=not-run
+    sim_result=
+    monitor_pid=
+    heartbeat_pid=
+    host_pc_sampler_pid=
     local started_utc
     started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -275,15 +278,15 @@ worker() {
     finish_worker() {
         local result=$?
         trap - EXIT
-        if [[ -n ${monitor_pid} ]]; then
+        if [[ -n ${monitor_pid:-} ]]; then
             kill "${monitor_pid}" 2>/dev/null || true
             wait "${monitor_pid}" 2>/dev/null || true
         fi
-        if [[ -n ${heartbeat_pid} ]]; then
+        if [[ -n ${heartbeat_pid:-} ]]; then
             kill "${heartbeat_pid}" 2>/dev/null || true
             wait "${heartbeat_pid}" 2>/dev/null || true
         fi
-        if [[ -n ${host_pc_sampler_pid} ]]; then
+        if [[ -n ${host_pc_sampler_pid:-} ]]; then
             kill "${host_pc_sampler_pid}" 2>/dev/null || true
             wait "${host_pc_sampler_pid}" 2>/dev/null || true
         fi

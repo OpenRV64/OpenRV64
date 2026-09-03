@@ -52,6 +52,7 @@ module openrv64_dispatch_window_3p #(
     input  wire                         rst_n,
     input  wire                         flush_i,
     input  wire                         squash_frontend_i,
+    input  wire                         squash_inclusive_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_i,
     input  wire                         translation_bypass_i,
 
@@ -233,6 +234,7 @@ module openrv64_dispatch_window_3p #(
     // cut; state discarded by the younger cut would also be discarded by the
     // older one, so the partial recovery never needs to be undone.
     reg recovery_pending_q;
+    reg recovery_inclusive_q;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] recovery_cut_id_q;
 
     always @(posedge clk or negedge rst_n) begin
@@ -364,7 +366,9 @@ module openrv64_dispatch_window_3p #(
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         input [`RV64_XLEN-1:0] issue_rs1_data;
         reg [`RV64_XLEN-1:0] effective_addr;
+        reg [`RV64_INSTR_WIDTH-1:0] payload_instr;
         begin
+            payload_instr = payload[PAYLOAD_INSTR +: `RV64_INSTR_WIDTH];
             effective_addr = issue_rs1_data +
                              payload[PAYLOAD_IMM +: `RV64_XLEN];
             // A virtual address cannot establish PMA/cacheability. Permit an
@@ -373,11 +377,13 @@ module openrv64_dispatch_window_3p #(
             // access until the instruction is the ordered retirement head. In
             // Bare/M-mode the effective address is already physical, so keep
             // non-RAM loads behind the unresolved control at dispatch too.
-            // AMOs assert MEM_WRITE as well as MEM_READ and remain excluded.
+            // LR is read-only at decode, so exclude the full AMO opcode class
+            // rather than relying on the MEM_WRITE bit.
             is_speculative_load_candidate =
                 (ENABLE_SPECULATION != 0) &&
                 payload[PAYLOAD_MEM_READ] &&
                 !payload[PAYLOAD_MEM_WRITE] &&
+                (`RV64_OPCODE(payload_instr) != `RV64_OPCODE_AMO) &&
                 (!translation_bypass_i ||
                  ((CACHEABLE_SIZE != 0) &&
                   ((effective_addr - CACHEABLE_BASE) < CACHEABLE_SIZE)));
@@ -386,17 +392,23 @@ module openrv64_dispatch_window_3p #(
 
     function automatic is_replayable_unissued_store;
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        reg [`RV64_INSTR_WIDTH-1:0] payload_instr;
         begin
+            payload_instr = payload[PAYLOAD_INSTR +: `RV64_INSTR_WIDTH];
             // Only Tomasulo selective recovery can invalidate a completed
             // younger load and its dependent suffix.  AMOs assert both read
-            // and write and are deliberately excluded.  Ordinary stores may
-            // still be waiting for either address or data: their eventual
-            // physical address, including each Zicclsm component, checks the
-            // retained younger-load watches before the store can retire.
+            // and write only for read-modify-write operations; LR is read-only
+            // and SC is write-only at decode.  Exclude the complete AMO opcode
+            // class explicitly.  Ordinary stores may still be waiting for
+            // either address or data: their eventual physical address,
+            // including each Zicclsm component, checks the retained
+            // younger-load watches before the store can retire.
             is_replayable_unissued_store =
                 (PHYSICAL_RENAME != 0) && (ENABLE_SPECULATION != 0) &&
                 payload[PAYLOAD_MEM_WRITE] &&
-                !payload[PAYLOAD_MEM_READ] && !payload[PAYLOAD_ILLEGAL] &&
+                !payload[PAYLOAD_MEM_READ] &&
+                (`RV64_OPCODE(payload_instr) != `RV64_OPCODE_AMO) &&
+                !payload[PAYLOAD_ILLEGAL] &&
                 !payload[PAYLOAD_INSTR_FAULT] &&
                 !payload[PAYLOAD_INSTR_PAGE_FAULT];
         end
@@ -460,6 +472,17 @@ module openrv64_dispatch_window_3p #(
         end
     endfunction
 
+    function automatic id_is_recovery_discarded;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] candidate;
+        input [`OPENRV64_INSTR_ID_WIDTH-1:0] reference;
+        input inclusive;
+        begin
+            id_is_recovery_discarded =
+                id_is_younger(candidate, reference) ||
+                (inclusive && (candidate == reference));
+        end
+    endfunction
+
     // A redirect is selective even when speculative issue is disabled.  The
     // resolving control remains live until retirement, so clearing the entire
     // window here would make its later retirement underflow occupancy.  The
@@ -468,7 +491,10 @@ module openrv64_dispatch_window_3p #(
     // id_is_younger(active, incoming) means the incoming cut is older.
     wire recovery_preempt = recovery_pending_q &&
                             selective_recovery_request &&
-                            id_is_younger(recovery_cut_id_q, squash_id_i);
+                            (id_is_younger(recovery_cut_id_q, squash_id_i) ||
+                             ((recovery_cut_id_q == squash_id_i) &&
+                              squash_inclusive_i &&
+                              !recovery_inclusive_q));
     wire selective_recovery_apply = recovery_pending_q &&
                                     !recovery_preempt;
     wire recovery_inhibit = selective_recovery_request ||
@@ -480,24 +506,32 @@ module openrv64_dispatch_window_3p #(
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] recovery_filter_cut_id =
         (!recovery_pending_q || recovery_preempt) ? squash_id_i :
                                                    recovery_cut_id_q;
+    wire recovery_filter_inclusive =
+        (!recovery_pending_q || recovery_preempt) ? squash_inclusive_i :
+                                                   recovery_inclusive_q;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             recovery_pending_q <= 1'b0;
+            recovery_inclusive_q <= 1'b0;
             recovery_cut_id_q <=
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
         end else if (flush_i) begin
             recovery_pending_q <= 1'b0;
+            recovery_inclusive_q <= 1'b0;
         end else if (!recovery_pending_q) begin
             if (selective_recovery_request) begin
                 recovery_pending_q <= 1'b1;
+                recovery_inclusive_q <= squash_inclusive_i;
                 recovery_cut_id_q <= squash_id_i;
             end
         end else if (recovery_preempt) begin
             recovery_pending_q <= 1'b1;
+            recovery_inclusive_q <= squash_inclusive_i;
             recovery_cut_id_q <= squash_id_i;
         end else begin
             recovery_pending_q <= 1'b0;
+            recovery_inclusive_q <= 1'b0;
         end
     end
 
@@ -1401,8 +1435,10 @@ module openrv64_dispatch_window_3p #(
                     trace_entry_blocker_id[eligible_idx] =
                         src2_tag_q[eligible_idx];
                 end else if (recovery_filter_active &&
-                             id_is_younger(id_q[eligible_idx],
-                                           recovery_filter_cut_id)) begin
+                             id_is_recovery_discarded(
+                                 id_q[eligible_idx],
+                                 recovery_filter_cut_id,
+                                 recovery_filter_inclusive)) begin
                     trace_entry_gate_reason[eligible_idx] =
                         `OPENRV64_TTRACE_REASON_REDIRECT_SQUASH;
                 end else if (is_persistent_hard(payload_q[eligible_idx]) &&
@@ -2347,11 +2383,12 @@ module openrv64_dispatch_window_3p #(
                  recovery_filter_pipe < `OPENRV64_EXEC_PIPE_COUNT;
                  recovery_filter_pipe = recovery_filter_pipe + 1)
                 if (pipe_candidate_valid_o[recovery_filter_pipe] &&
-                    id_is_younger(
+                    id_is_recovery_discarded(
                         pipe_id_o[
                             recovery_filter_pipe*`OPENRV64_INSTR_ID_WIDTH +:
                             `OPENRV64_INSTR_ID_WIDTH],
-                        recovery_filter_cut_id))
+                        recovery_filter_cut_id,
+                        recovery_filter_inclusive))
                     pipe_squashed_o[recovery_filter_pipe] = 1'b1;
     end
 
@@ -2457,15 +2494,25 @@ module openrv64_dispatch_window_3p #(
         {2'b00, issue_mem_secondary};
     wire [2:0] recovery_survivor_release_count =
         {2'b00, issue_ex0 &&
-         !id_is_younger(id_q[select_ex0], recovery_filter_cut_id)} +
+         !id_is_recovery_discarded(id_q[select_ex0],
+                                   recovery_filter_cut_id,
+                                   recovery_filter_inclusive)} +
         {2'b00, issue_ex1 &&
-         !id_is_younger(id_q[select_ex1], recovery_filter_cut_id)} +
+         !id_is_recovery_discarded(id_q[select_ex1],
+                                   recovery_filter_cut_id,
+                                   recovery_filter_inclusive)} +
         {2'b00, issue_alu2 &&
-         !id_is_younger(id_q[select_alu2], recovery_filter_cut_id)} +
+         !id_is_recovery_discarded(id_q[select_alu2],
+                                   recovery_filter_cut_id,
+                                   recovery_filter_inclusive)} +
         {2'b00, issue_mem_primary &&
-         !id_is_younger(id_q[select_mem], recovery_filter_cut_id)} +
+         !id_is_recovery_discarded(id_q[select_mem],
+                                   recovery_filter_cut_id,
+                                   recovery_filter_inclusive)} +
         {2'b00, issue_mem_secondary &&
-         !id_is_younger(id_q[select_mem2], recovery_filter_cut_id)};
+         !id_is_recovery_discarded(id_q[select_mem2],
+                                   recovery_filter_cut_id,
+                                   recovery_filter_inclusive)};
     wire issue_persistent_ex0 = issue_ex0 && select_ex0_valid &&
         is_persistent_hard(payload_q[select_ex0]);
     wire issue_persistent_ex1 = issue_ex1 && select_ex1_valid &&
@@ -2829,7 +2876,9 @@ module openrv64_dispatch_window_3p #(
                     survivor_retiring = 1'b1;
             end
             if (valid_q[survivor_idx] && !survivor_retiring &&
-                !id_is_younger(id_q[survivor_idx], recovery_cut_id_q)) begin
+                !id_is_recovery_discarded(id_q[survivor_idx],
+                                          recovery_cut_id_q,
+                                          recovery_inclusive_q)) begin
                 survivor_count = survivor_count + 1'b1;
                 survivor_rd = payload_q[survivor_idx][
                     PAYLOAD_RD +: `RV64_REG_ADDR_WIDTH];
@@ -2946,7 +2995,9 @@ module openrv64_dispatch_window_3p #(
                         recover_retiring = 1'b1;
                 end
                 if (!valid_q[entry_idx] || recover_retiring ||
-                    id_is_younger(id_q[entry_idx], recovery_cut_id_q)) begin
+                    id_is_recovery_discarded(id_q[entry_idx],
+                                             recovery_cut_id_q,
+                                             recovery_inclusive_q)) begin
                     valid_q[entry_idx] <= 1'b0;
                     issued_q[entry_idx] <= 1'b0;
                     result_ready_q[entry_idx] <= 1'b0;
@@ -3124,19 +3175,29 @@ module openrv64_dispatch_window_3p #(
                 end
             end else begin
                 if (issue_ex0 &&
-                    !id_is_younger(id_q[select_ex0], recovery_cut_id_q))
+                    !id_is_recovery_discarded(id_q[select_ex0],
+                                              recovery_cut_id_q,
+                                              recovery_inclusive_q))
                     issued_q[select_ex0] <= 1'b1;
                 if (issue_ex1 &&
-                    !id_is_younger(id_q[select_ex1], recovery_cut_id_q))
+                    !id_is_recovery_discarded(id_q[select_ex1],
+                                              recovery_cut_id_q,
+                                              recovery_inclusive_q))
                     issued_q[select_ex1] <= 1'b1;
                 if (issue_alu2 &&
-                    !id_is_younger(id_q[select_alu2], recovery_cut_id_q))
+                    !id_is_recovery_discarded(id_q[select_alu2],
+                                              recovery_cut_id_q,
+                                              recovery_inclusive_q))
                     issued_q[select_alu2] <= 1'b1;
                 if (issue_mem_primary &&
-                    !id_is_younger(id_q[select_mem], recovery_cut_id_q))
+                    !id_is_recovery_discarded(id_q[select_mem],
+                                              recovery_cut_id_q,
+                                              recovery_inclusive_q))
                     issued_q[select_mem] <= 1'b1;
                 if (issue_mem_secondary &&
-                    !id_is_younger(id_q[select_mem2], recovery_cut_id_q))
+                    !id_is_recovery_discarded(id_q[select_mem2],
+                                              recovery_cut_id_q,
+                                              recovery_inclusive_q))
                     issued_q[select_mem2] <= 1'b1;
             end
         end else begin
