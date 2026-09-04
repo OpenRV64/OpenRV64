@@ -424,6 +424,10 @@ module openrv64_rv64_top_3p #(
     wire inhibit_load_speculation;
     wire bp_predict_redirect;
     wire [63:0] bp_predict_target;
+    wire bp_preliminary_redirect;
+    wire bp_tage_resteer;
+    reg bp_deferred_predict_redirect_q;
+    reg [63:0] bp_deferred_predict_target_q;
     wire [63:0] bp_direct_target;
     wire bp_fetch_stall;
     wire bp_decode_stall;
@@ -432,7 +436,7 @@ module openrv64_rv64_top_3p #(
     wire bp_unresolved_target_stall;
     localparam bit BP_REGISTERED_LOOKUP =
         BP_TYPE == `OPENRV64_BP_TAGE_BTB;
-    wire bp_registered_prelaunch;
+    localparam integer RETIRE_SLOT_WIDTH = $clog2(RETIRE_DEPTH);
     wire [1:0] bp_stage_output_count;
     wire l1i_speculation_sv39 =
         (csr_priv_mode != `RV64_PRIV_M) &&
@@ -463,6 +467,16 @@ module openrv64_rv64_top_3p #(
     // predicted not-taken.  Gating only the fetch redirect is incorrect;
     // branch resolution must see the same effective prediction.
     wire bp_oracle_mode = SIM_BRANCH_ORACLE != 0;
+    wire bp_delayed_lookup = BP_REGISTERED_LOOKUP && !bp_oracle_mode;
+    // A synchronous BP lookup need not register the whole decode bundle.  In
+    // Tomasulo mode the branch may allocate immediately, then receive its
+    // prediction through an ID/ROB-slot sideband before it becomes eligible
+    // to issue.  Keep the branch-holding fallback for configurations whose
+    // dispatch queue cannot accept that metadata update (and for free
+    // branches, which resolve at allocation rather than issue).
+    wire bp_sideband_lookup = bp_delayed_lookup &&
+        (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+        (FREE_BRANCHES == 0);
     wire bp_oracle_match;
     wire bp_redirects_enabled = bp_oracle_match ||
                                 (csr_priv_mode != `RV64_PRIV_M);
@@ -479,14 +493,15 @@ module openrv64_rv64_top_3p #(
     // so filling the real predictor's finite resolution queue would measure
     // that queue rather than the cost of imperfect prediction.  This matches
     // the historical oracle experiment, which forced both stalls low.
-    // A TAGE request launched while an elastic dispatch register is being
-    // filled may assert the synchronous-response wait internally.  That wait
-    // belongs to the register, not to fetch/decode.  Queue capacity and an
-    // unresolved targetless indirect remain real frontend backpressure.
+    // TAGE lookup latency is carried by branch-only metadata below.
+    // An unresolved targetless indirect still blocks the frontend globally;
+    // predictor queue capacity blocks only capture of the next control.
     wire bp_fetch_stall_effective = bp_oracle_mode ? 1'b0 :
-        (bp_registered_prelaunch ? bp_background_stall : bp_fetch_stall);
+        (BP_REGISTERED_LOOKUP ? bp_unresolved_target_stall :
+                                bp_fetch_stall);
     wire bp_decode_stall_effective = bp_oracle_mode ? 1'b0 :
-        (bp_registered_prelaunch ? bp_background_stall : bp_decode_stall);
+        (BP_REGISTERED_LOOKUP ? bp_unresolved_target_stall :
+                                bp_decode_stall);
     wire control_redirect = backend_redirect ||
                             bp_target_mispredict_effective;
 
@@ -840,31 +855,32 @@ module openrv64_rv64_top_3p #(
     wire bp_live_indirect = bp_live_predecode ?
         1'b0 : decode_br_indirect[bp_live_lane];
 
-    // BP9 uses an elastic register at the dispatch boundary.  The BRAM read
-    // launches from the incoming bundle; on the following cycle these fields
-    // name the retained bundle while its prediction is applied and allocated.
-    reg [2:0] bp_dispatch_valid_q;
-    reg [2:0] bp_dispatch_control_select_q;
-    reg [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
-        bp_dispatch_payload_q;
-    reg [2:0] bp_dispatch_uses_rs1_q;
-    reg [2:0] bp_dispatch_uses_rs2_q;
+    // BP9 retains compact metadata for the oldest decoded control while its
+    // synchronous RAM lookup completes.  If Tomasulo admits the branch on the
+    // lookup edge, the response patches its scheduler and ROB records by
+    // ID/ROB slot.  If admission is blocked, the returned prediction is held
+    // until that same branch is admitted.  The complete payload is retained
+    // only for fallback configurations that cannot accept the sideband.
+    reg bp_dispatch_valid_q;
+    reg [1:0] bp_dispatch_lane_q;
+    reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] bp_dispatch_payload_q;
+    reg bp_dispatch_uses_rs1_q;
+    reg bp_dispatch_uses_rs2_q;
     reg [63:0] bp_dispatch_selected_pc_q;
     reg [31:0] bp_dispatch_selected_instr_q;
     reg [63:0] bp_dispatch_selected_imm_q;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] bp_dispatch_selected_id_q;
+    reg [RETIRE_SLOT_WIDTH-1:0] bp_dispatch_selected_slot_q;
+    reg bp_dispatch_allocated_q;
     reg bp_dispatch_lookup_branch_q;
     reg bp_dispatch_lookup_jump_q;
     reg bp_dispatch_lookup_indirect_q;
-    wire bp_dispatch_has_control = |bp_dispatch_control_select_q;
-    wire [1:0] bp_dispatch_lane =
-        bp_dispatch_control_select_q[0] ? 2'd0 :
-        (bp_dispatch_control_select_q[1] ? 2'd1 : 2'd2);
+    reg bp_dispatch_preliminary_taken_q;
     wire bp_lookup_from_dispatch = BP_REGISTERED_LOOKUP &&
-                                   bp_dispatch_has_control;
-    wire [1:0] bp_lane = bp_lookup_from_dispatch ? bp_dispatch_lane :
+                                   bp_dispatch_valid_q;
+    wire [1:0] bp_lane = bp_lookup_from_dispatch ? bp_dispatch_lane_q :
                                                         bp_live_lane;
-    wire bp_stage_can_accept;
+    wire bp_live_control_fire;
 
     wire [63:0] bp_selected_pc = bp_lookup_from_dispatch ?
         bp_dispatch_selected_pc_q : bp_live_pc;
@@ -884,36 +900,41 @@ module openrv64_rv64_top_3p #(
         (`RV64_RD(bp_selected_instr) == 5'd1) ||
         (`RV64_RD(bp_selected_instr) == 5'd5);
 
-    assign bp_registered_prelaunch = BP_REGISTERED_LOOKUP &&
-        !bp_lookup_from_dispatch && bp_stage_can_accept &&
-        (|frontend_control_select) && !control_flush &&
-        !control_redirect && !halted_q && !wfi_sleep_q &&
-        !translation_barrier_busy && !bp_background_stall;
-    assign bp_branch_present = use_icx_bus &&
-                               (bp_lookup_from_dispatch ?
-                                    bp_dispatch_has_control :
-                                    ((|frontend_control_select) &&
-                                     (!BP_REGISTERED_LOOKUP ||
-                                      (bp_stage_can_accept &&
-                                       !bp_background_stall)))) &&
-                               !control_flush && !control_redirect &&
-                               !halted_q && !wfi_sleep_q;
     // Unexpected speculative controls retain the real predictor behavior and
     // do not consume the architectural oracle tape.  This matters during
     // M-mode setup and after non-branch replays.
     assign bp_oracle_match = bp_oracle_mode && bp_branch_present &&
                              (bp_selected_pc == sim_branch_oracle_pc_i);
-    assign bp_predict_redirect = bp_branch_allocate &&
-                                 bp_prediction_taken_effective;
+    // A branch already resident in the backend may correct the provisional
+    // BTFNT path directly from the synchronous response.  If a decode-launched
+    // lookup completed while that branch was still waiting for admission,
+    // attach the response during admission and pulse a taken redirect from a
+    // register on the following cycle.  That avoids a ready/fire -> redirect
+    // -> fetch-ready loop.
+    wire bp_resident_prediction_accept;
+    wire bp_pending_prediction_accept;
+    wire bp_response_predict_redirect = bp_sideband_lookup ?
+        bp_tage_resteer :
+        (bp_prediction_taken_effective && bp_branch_allocate);
+    assign bp_predict_redirect = bp_preliminary_redirect ||
+                                 bp_response_predict_redirect ||
+                                 bp_deferred_predict_redirect_q;
 
     openrv64_prefix_addsub u_bp_target (
         .a_i(bp_selected_pc), .b_i(bp_selected_imm), .sub_i(1'b0),
         .result_o(bp_direct_target)
     );
-    assign bp_predict_target = bp_oracle_match ?
+    wire [63:0] bp_response_predict_target = bp_oracle_match ?
         sim_branch_oracle_target_i :
         (bp_prediction_target_valid ? bp_prediction_target :
                                       bp_direct_target);
+    wire [63:0] bp_response_fallthrough_target =
+        bp_selected_pc + 64'd4;
+    assign bp_predict_target = bp_deferred_predict_redirect_q ?
+        bp_deferred_predict_target_q :
+        bp_preliminary_redirect ? bp_direct_target :
+        (bp_tage_resteer && !bp_prediction_taken_effective) ?
+            bp_response_fallthrough_target : bp_response_predict_target;
 
     openrv64_exec_bp #(
         .BP_TYPE(BP_TYPE),
@@ -979,8 +1000,13 @@ module openrv64_rv64_top_3p #(
         .inhibit_load_speculation_o(inhibit_load_speculation)
     );
 
-    wire bp_packet_prediction = BP_REGISTERED_LOOKUP ? 1'b0 :
-                                bp_prediction_taken_effective;
+    wire bp_pending_live_match;
+    wire bp_pending_response_attach = bp_sideband_lookup &&
+        bp_dispatch_valid_q && !bp_dispatch_allocated_q &&
+        bp_pending_live_match && !bp_decode_stall;
+    wire bp_packet_prediction = bp_delayed_lookup ?
+        (bp_pending_response_attach ? bp_prediction_taken_effective : 1'b0) :
+        bp_prediction_taken_effective;
     wire [2:0] bp_lane_prediction = frontend_control_select &
                                     {3{bp_packet_prediction}};
 
@@ -1050,55 +1076,133 @@ module openrv64_rv64_top_3p #(
                                   !halted_q && !wfi_sleep_q &&
                                   !translation_barrier_busy;
     wire frontend_decode_enable = frontend_common_enable &&
-        (BP_REGISTERED_LOOKUP ?
-            (!bp_fetch_stall_effective && !bp_predict_redirect) :
+        (bp_delayed_lookup ?
+            (!bp_fetch_stall_effective &&
+             (bp_sideband_lookup || !bp_predict_redirect)) :
             !bp_decode_stall_effective);
     wire backend_decode_enable = frontend_common_enable &&
                                  !bp_decode_stall_effective;
 
-    reg [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+    reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
         bp_dispatch_payload_view_r;
-    integer bp_dispatch_payload_lane;
     always @* begin
         bp_dispatch_payload_view_r = bp_dispatch_payload_q;
-        for (bp_dispatch_payload_lane = 0;
-             bp_dispatch_payload_lane < 3;
-             bp_dispatch_payload_lane = bp_dispatch_payload_lane + 1) begin
-            if (bp_dispatch_control_select_q[bp_dispatch_payload_lane])
-                bp_dispatch_payload_view_r[
-                    bp_dispatch_payload_lane*
-                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
-                    `OPENRV64_EXEC_ISSUE_PAYLOAD_PREDICTED_TAKEN_BIT] =
-                        bp_prediction_taken_effective;
-        end
+        bp_dispatch_payload_view_r[
+            `OPENRV64_EXEC_ISSUE_PAYLOAD_PREDICTED_TAKEN_BIT] =
+                bp_prediction_taken_effective;
     end
     wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
-        backend_decode_payload = BP_REGISTERED_LOOKUP ?
-            bp_dispatch_payload_view_r : frontend_decode_payload;
-    wire [2:0] backend_decode_uses_rs1 = BP_REGISTERED_LOOKUP ?
-        bp_dispatch_uses_rs1_q : decode_uses_rs1;
-    wire [2:0] backend_decode_uses_rs2 = BP_REGISTERED_LOOKUP ?
-        bp_dispatch_uses_rs2_q : decode_uses_rs2;
-    wire [2:0] backend_decode_valid = BP_REGISTERED_LOOKUP ?
-        (bp_dispatch_valid_q & {3{backend_decode_enable}}) :
-        (fetch_decode_valid & frontend_prefix_allow &
-         {3{frontend_decode_enable}});
+        backend_decode_payload =
+            (bp_delayed_lookup && !bp_sideband_lookup &&
+             bp_dispatch_valid_q) ?
+                {frontend_decode_payload[
+                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH],
+                 frontend_decode_payload[
+                     0 +: `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH],
+                 bp_dispatch_payload_view_r} : frontend_decode_payload;
+    wire [2:0] backend_decode_uses_rs1 =
+        (bp_delayed_lookup && !bp_sideband_lookup &&
+         bp_dispatch_valid_q) ?
+            {decode_uses_rs1[1:0], bp_dispatch_uses_rs1_q} :
+            decode_uses_rs1;
+    wire [2:0] backend_decode_uses_rs2 =
+        (bp_delayed_lookup && !bp_sideband_lookup &&
+         bp_dispatch_valid_q) ?
+            {decode_uses_rs2[1:0], bp_dispatch_uses_rs2_q} :
+            decode_uses_rs2;
+    wire bp_sideband_port_available = bp_sideband_lookup &&
+        !bp_dispatch_valid_q && frontend_common_enable &&
+        !bp_fetch_stall_effective && !bp_capacity_stall;
+    assign bp_branch_present = use_icx_bus &&
+        (bp_delayed_lookup ?
+            (bp_lookup_from_dispatch ||
+             (bp_sideband_lookup ?
+              ((|frontend_control_select) &&
+               bp_sideband_port_available) :
+              bp_live_control_fire)) :
+            (|frontend_control_select)) &&
+        !control_flush &&
+        (bp_lookup_from_dispatch || !control_redirect) &&
+        !halted_q && !wfi_sleep_q;
+    assign bp_pending_live_match = (|frontend_control_select) &&
+        (bp_live_id == bp_dispatch_selected_id_q) &&
+        (bp_live_pc == bp_dispatch_selected_pc_q) &&
+        (bp_live_instr == bp_dispatch_selected_instr_q);
+    wire bp_sideband_control_allow = !bp_dispatch_valid_q ?
+        bp_sideband_port_available :
+        (!bp_dispatch_allocated_q && bp_pending_live_match &&
+         !bp_decode_stall);
+    wire bp_sideband_frontend_redirect = bp_sideband_lookup &&
+        (bp_tage_resteer || bp_deferred_predict_redirect_q);
+    wire [2:0] bp_live_lane_allow = bp_sideband_lookup ?
+        ((~frontend_control_select |
+          {3{bp_sideband_control_allow}}) &
+         {3{!bp_sideband_frontend_redirect}}) :
+        (bp_delayed_lookup ? ~frontend_control_select : 3'b111);
+    wire [2:0] live_backend_decode_valid = fetch_decode_valid &
+        frontend_prefix_allow & bp_live_lane_allow &
+        {3{frontend_decode_enable && backend_decode_enable}};
+    wire staged_branch_decode_valid = bp_delayed_lookup &&
+        !bp_sideband_lookup &&
+        bp_dispatch_valid_q && backend_decode_enable && !bp_decode_stall;
+    // The retained branch occupies lane 0.  On a not-taken response, fill the
+    // remaining backend width from the following frontend prefix, stopping at
+    // the next control because the scalar predictor port is still consuming
+    // the retained branch's response this cycle.
+    wire staged_branch_pack_enable = staged_branch_decode_valid &&
+        !bp_prediction_taken_effective;
+    wire staged_live0_valid = staged_branch_pack_enable &&
+        fetch_decode_valid[0] && !frontend_control_select[0];
+    wire staged_live1_valid = staged_live0_valid && fetch_decode_valid[1] &&
+        !frontend_control_select[1];
+    wire [2:0] backend_decode_valid =
+        (bp_delayed_lookup && !bp_sideband_lookup &&
+         bp_dispatch_valid_q) ?
+            {staged_live1_valid, staged_live0_valid,
+             staged_branch_decode_valid} :
+            live_backend_decode_valid;
     wire [2:0] backend_decode_fire = backend_decode_valid &
                                      backend_decode_ready;
-    wire [1:0] backend_decode_count =
-        {1'b0, backend_decode_fire[0]} +
-        {1'b0, backend_decode_fire[1]} +
-        {1'b0, backend_decode_fire[2]};
-    assign bp_stage_output_count = BP_REGISTERED_LOOKUP ?
-                                   backend_decode_count : 2'd0;
-    wire bp_stage_all_consumed = (|bp_dispatch_valid_q) &&
-        ((backend_decode_fire & bp_dispatch_valid_q) ==
-         bp_dispatch_valid_q);
-    assign bp_stage_can_accept = !BP_REGISTERED_LOOKUP ||
-                                 !(|bp_dispatch_valid_q) ||
-                                 bp_stage_all_consumed;
-    wire [2:0] frontend_decode_fire = BP_REGISTERED_LOOKUP ?
-        (fetch_decode_valid & fetch_decode_ready) : backend_decode_fire;
+    assign bp_stage_output_count =
+        (bp_delayed_lookup && !bp_sideband_lookup &&
+         bp_dispatch_valid_q) ? 2'd1 : 2'd0;
+    wire bp_stage_capture_enable = bp_delayed_lookup &&
+        !bp_dispatch_valid_q && frontend_common_enable &&
+        !bp_fetch_stall_effective && !bp_capacity_stall;
+    wire bp_capture_lane0 = bp_stage_capture_enable &&
+        frontend_control_select[0] && fetch_decode_valid[0];
+    wire bp_capture_lane1 = bp_stage_capture_enable &&
+        frontend_control_select[1] && fetch_decode_valid[1] &&
+        (!fetch_decode_valid[0] || backend_decode_fire[0]);
+    wire bp_capture_lane2 = bp_stage_capture_enable &&
+        frontend_control_select[2] && fetch_decode_valid[2] &&
+        (!fetch_decode_valid[0] || backend_decode_fire[0]) &&
+        (!fetch_decode_valid[1] || backend_decode_fire[1]);
+    wire [2:0] bp_control_capture =
+        {bp_capture_lane2, bp_capture_lane1, bp_capture_lane0};
+    assign bp_live_control_fire = |bp_control_capture;
+    // Direct conditional targets are available in decode.  Launch BP9's BRAM
+    // lookup and, when the branch is admitted on the same edge, immediately
+    // follow BTFNT for conditionals or the known target for direct jumps.
+    // An unadmitted branch must remain at the frontend boundary, so it cannot
+    // redirect until its retained payload has been admitted.
+    wire bp_live_preliminary_taken = bp_redirects_enabled &&
+        ((bp_live_branch && bp_live_imm[63]) ||
+         (bp_live_jump && !bp_live_indirect));
+    assign bp_preliminary_redirect = bp_sideband_lookup &&
+        bp_live_control_fire && backend_decode_fire[bp_live_lane] &&
+        bp_live_preliminary_taken;
+    wire bp_pending_control_fire = bp_sideband_lookup &&
+        bp_dispatch_valid_q && !bp_dispatch_allocated_q &&
+        bp_pending_live_match &&
+        backend_decode_fire[bp_live_lane];
+    wire [2:0] frontend_decode_fire = bp_sideband_lookup ?
+        backend_decode_fire : bp_delayed_lookup ?
+        (bp_dispatch_valid_q ?
+         {1'b0, backend_decode_fire[2], backend_decode_fire[1]} :
+         (backend_decode_fire | bp_control_capture)) :
+        backend_decode_fire;
     wire [1:0] frontend_decode_count =
         {1'b0, frontend_decode_fire[0]} +
         {1'b0, frontend_decode_fire[1]} +
@@ -1116,104 +1220,117 @@ module openrv64_rv64_top_3p #(
         {1'b0, fetch_decode_valid[2]};
     wire [1:0] frontend_trace_id_count = fetch3_restart ?
         frontend_presented_count : frontend_decode_count;
-    assign bp_branch_allocate = BP_REGISTERED_LOOKUP ?
-        |(backend_decode_fire & bp_dispatch_control_select_q) :
+    wire bp_sideband_response_ready = bp_sideband_lookup &&
+        bp_dispatch_valid_q && !bp_decode_stall &&
+        !control_flush && !control_redirect;
+    assign bp_resident_prediction_accept = bp_sideband_response_ready &&
+        bp_dispatch_allocated_q;
+    assign bp_pending_prediction_accept = bp_sideband_response_ready &&
+        !bp_dispatch_allocated_q && bp_pending_control_fire;
+    assign bp_branch_allocate = bp_sideband_lookup ?
+        (bp_resident_prediction_accept || bp_pending_prediction_accept) :
+        bp_delayed_lookup ?
+        (bp_dispatch_valid_q && backend_decode_fire[0]) :
         |(frontend_decode_fire & frontend_control_select);
+    // The provisional path is fallthrough unless an early redirect actually
+    // fired.  A disagreement is a frontend-only correction: the branch is
+    // already resident and receives the final TAGE bit through the sideband,
+    // while every currently decoded younger instruction is inhibited above
+    // and discarded by fetch3_restart.
+    assign bp_tage_resteer = bp_sideband_lookup &&
+        bp_resident_prediction_accept &&
+        (bp_prediction_taken_effective !=
+         bp_dispatch_preliminary_taken_q);
 
-    // This is an elastic decode-to-dispatch register only for BP9.  It can be
-    // replaced on the same edge that its complete prefix enters the backend.
-    // Partial backend admission shifts the retained prefix; because admission
-    // stops at the oldest control, a retained control's predictor metadata is
-    // never discarded by such a shift.  A translation/store barrier stalls
-    // admission but does not invalidate this already accepted prefix.
+`ifndef SYNTHESIS
+    always @(posedge clk) begin
+        if (rst_n && bp_tage_resteer && (|backend_decode_fire))
+            $error("BP9 TAGE resteer admitted younger decode lanes");
+        if (rst_n && bp_preliminary_redirect &&
+            !backend_decode_fire[bp_live_lane])
+            $error("BP9 preliminary redirect lost its control allocation");
+    end
+`endif
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            bp_dispatch_valid_q <= 3'b000;
-            bp_dispatch_control_select_q <= 3'b000;
+            bp_deferred_predict_redirect_q <= 1'b0;
+            bp_deferred_predict_target_q <= 64'd0;
+        end else if (control_flush || control_redirect || halted_q ||
+                     wfi_sleep_q) begin
+            bp_deferred_predict_redirect_q <= 1'b0;
+        end else begin
+            bp_deferred_predict_redirect_q <= 1'b0;
+            if (bp_pending_prediction_accept &&
+                bp_prediction_taken_effective) begin
+                bp_deferred_predict_redirect_q <= 1'b1;
+                bp_deferred_predict_target_q <= bp_response_predict_target;
+            end
+        end
+    end
+
+    // Retain one control's lookup metadata, not the complete fetch bundle.
+    // In Tomasulo sideband mode this does not retain or delay the instruction;
+    // in the fallback path the saved payload is admitted on the response.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            bp_dispatch_valid_q <= 1'b0;
+            bp_dispatch_lane_q <= 2'd0;
             bp_dispatch_payload_q <= 0;
-            bp_dispatch_uses_rs1_q <= 3'b000;
-            bp_dispatch_uses_rs2_q <= 3'b000;
+            bp_dispatch_uses_rs1_q <= 1'b0;
+            bp_dispatch_uses_rs2_q <= 1'b0;
             bp_dispatch_selected_pc_q <= 64'd0;
             bp_dispatch_selected_instr_q <= 32'd0;
             bp_dispatch_selected_imm_q <= 64'd0;
             bp_dispatch_selected_id_q <= 0;
+            bp_dispatch_selected_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
+            bp_dispatch_allocated_q <= 1'b0;
             bp_dispatch_lookup_branch_q <= 1'b0;
             bp_dispatch_lookup_jump_q <= 1'b0;
             bp_dispatch_lookup_indirect_q <= 1'b0;
-        end else if (BP_REGISTERED_LOOKUP != 0) begin
-            if (control_flush || control_redirect || bp_predict_redirect ||
-                halted_q || wfi_sleep_q) begin
-                bp_dispatch_valid_q <= 3'b000;
-                bp_dispatch_control_select_q <= 3'b000;
-            end else if (bp_stage_can_accept) begin
-                bp_dispatch_valid_q <= frontend_decode_fire;
-                bp_dispatch_control_select_q <=
-                    frontend_control_select & frontend_decode_fire;
-                if (|frontend_decode_fire) begin
-                    bp_dispatch_payload_q <= frontend_decode_payload;
-                    bp_dispatch_uses_rs1_q <= decode_uses_rs1;
-                    bp_dispatch_uses_rs2_q <= decode_uses_rs2;
+            bp_dispatch_preliminary_taken_q <= 1'b0;
+        end else if (bp_delayed_lookup) begin
+            if (control_flush || control_redirect || halted_q ||
+                wfi_sleep_q) begin
+                bp_dispatch_valid_q <= 1'b0;
+                bp_dispatch_allocated_q <= 1'b0;
+                bp_dispatch_preliminary_taken_q <= 1'b0;
+            end else begin
+                if (bp_branch_allocate) begin
+                    bp_dispatch_valid_q <= 1'b0;
+                    bp_dispatch_allocated_q <= 1'b0;
+                    bp_dispatch_preliminary_taken_q <= 1'b0;
+                end
+                if (bp_live_control_fire) begin
+                    bp_dispatch_valid_q <= 1'b1;
+                    bp_dispatch_lane_q <= bp_live_lane;
+                    bp_dispatch_payload_q <= frontend_decode_payload[
+                        bp_live_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                        `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+                    bp_dispatch_uses_rs1_q <= decode_uses_rs1[bp_live_lane];
+                    bp_dispatch_uses_rs2_q <= decode_uses_rs2[bp_live_lane];
                     bp_dispatch_selected_pc_q <= bp_live_pc;
                     bp_dispatch_selected_instr_q <= bp_live_instr;
                     bp_dispatch_selected_imm_q <= bp_live_imm;
                     bp_dispatch_selected_id_q <= bp_live_id;
+                    bp_dispatch_selected_slot_q <=
+                        backend_decode_allocation_slot[
+                            bp_live_lane*RETIRE_SLOT_WIDTH +:
+                            RETIRE_SLOT_WIDTH];
+                    bp_dispatch_allocated_q <=
+                        backend_decode_fire[bp_live_lane];
                     bp_dispatch_lookup_branch_q <= bp_live_branch;
                     bp_dispatch_lookup_jump_q <= bp_live_jump;
                     bp_dispatch_lookup_indirect_q <= bp_live_indirect;
+                    bp_dispatch_preliminary_taken_q <=
+                        backend_decode_fire[bp_live_lane] &&
+                        bp_live_preliminary_taken;
                 end
-            end else if (backend_decode_count != 0) begin
-                case (backend_decode_count)
-                    2'd1: begin
-                        bp_dispatch_valid_q <=
-                            {1'b0, bp_dispatch_valid_q[2:1]};
-                        bp_dispatch_control_select_q <=
-                            {1'b0, bp_dispatch_control_select_q[2:1]};
-                        bp_dispatch_uses_rs1_q <=
-                            {1'b0, bp_dispatch_uses_rs1_q[2:1]};
-                        bp_dispatch_uses_rs2_q <=
-                            {1'b0, bp_dispatch_uses_rs2_q[2:1]};
-                        bp_dispatch_payload_q[
-                            0 +: `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] <=
-                            bp_dispatch_payload_q[
-                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
-                        bp_dispatch_payload_q[
-                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] <=
-                            bp_dispatch_payload_q[
-                                2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
-                        bp_dispatch_payload_q[
-                            2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] <= 0;
-                    end
-                    2'd2: begin
-                        bp_dispatch_valid_q <=
-                            {2'b00, bp_dispatch_valid_q[2]};
-                        bp_dispatch_control_select_q <=
-                            {2'b00, bp_dispatch_control_select_q[2]};
-                        bp_dispatch_uses_rs1_q <=
-                            {2'b00, bp_dispatch_uses_rs1_q[2]};
-                        bp_dispatch_uses_rs2_q <=
-                            {2'b00, bp_dispatch_uses_rs2_q[2]};
-                        bp_dispatch_payload_q[
-                            0 +: `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] <=
-                            bp_dispatch_payload_q[
-                                2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                                `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
-                        bp_dispatch_payload_q[
-                            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
-                            2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] <= 0;
-                    end
-                    default: begin
-                        bp_dispatch_valid_q <= 3'b000;
-                        bp_dispatch_control_select_q <= 3'b000;
-                    end
-                endcase
             end
         end else begin
-            bp_dispatch_valid_q <= 3'b000;
-            bp_dispatch_control_select_q <= 3'b000;
+            bp_dispatch_valid_q <= 1'b0;
+            bp_dispatch_allocated_q <= 1'b0;
+            bp_dispatch_preliminary_taken_q <= 1'b0;
         end
     end
     // M-mode may prefetch decoded direct conditional-branch paths without
@@ -1299,18 +1416,49 @@ module openrv64_rv64_top_3p #(
             end
         end
     end
-    assign fetch_decode_ready[0] = frontend_prefix_allow[0] &&
-        frontend_decode_enable &&
-        (BP_REGISTERED_LOOKUP ? bp_stage_can_accept :
-                                backend_decode_ready[0]);
-    assign fetch_decode_ready[1] = frontend_prefix_allow[1] &&
-        frontend_decode_enable &&
-        (BP_REGISTERED_LOOKUP ? bp_stage_can_accept :
-                                backend_decode_ready[1]);
-    assign fetch_decode_ready[2] = frontend_prefix_allow[2] &&
-        frontend_decode_enable &&
-        (BP_REGISTERED_LOOKUP ? bp_stage_can_accept :
-                                backend_decode_ready[2]);
+    assign fetch_decode_ready[0] = bp_sideband_lookup ?
+        (frontend_prefix_allow[0] && frontend_decode_enable &&
+         backend_decode_enable && bp_live_lane_allow[0] &&
+         backend_decode_ready[0]) : bp_delayed_lookup ?
+        (bp_dispatch_valid_q ?
+         (staged_branch_pack_enable && backend_decode_fire[0] &&
+          !frontend_control_select[0] && backend_decode_ready[1]) :
+         (frontend_prefix_allow[0] &&
+          (frontend_control_select[0] ? bp_stage_capture_enable :
+           (frontend_decode_enable && backend_decode_enable &&
+            backend_decode_ready[0])))) :
+        (frontend_prefix_allow[0] && frontend_decode_enable &&
+         backend_decode_enable && backend_decode_ready[0]);
+    assign fetch_decode_ready[1] = bp_sideband_lookup ?
+        (frontend_prefix_allow[1] && frontend_decode_enable &&
+         backend_decode_enable && bp_live_lane_allow[1] &&
+         backend_decode_ready[1]) : bp_delayed_lookup ?
+        (bp_dispatch_valid_q ?
+         (staged_branch_pack_enable && backend_decode_fire[0] &&
+          backend_decode_fire[1] && !frontend_control_select[1] &&
+          backend_decode_ready[2]) :
+         (frontend_prefix_allow[1] &&
+          (frontend_control_select[1] ?
+           (bp_stage_capture_enable &&
+            (!fetch_decode_valid[0] || backend_decode_fire[0])) :
+           (frontend_decode_enable && backend_decode_enable &&
+            backend_decode_ready[1])))) :
+        (frontend_prefix_allow[1] && frontend_decode_enable &&
+         backend_decode_enable && backend_decode_ready[1]);
+    assign fetch_decode_ready[2] = bp_sideband_lookup ?
+        (frontend_prefix_allow[2] && frontend_decode_enable &&
+         backend_decode_enable && bp_live_lane_allow[2] &&
+         backend_decode_ready[2]) : bp_delayed_lookup ?
+        (bp_dispatch_valid_q ? 1'b0 :
+         (frontend_prefix_allow[2] &&
+          (frontend_control_select[2] ?
+           (bp_stage_capture_enable &&
+            (!fetch_decode_valid[0] || backend_decode_fire[0]) &&
+            (!fetch_decode_valid[1] || backend_decode_fire[1])) :
+           (frontend_decode_enable && backend_decode_enable &&
+            backend_decode_ready[2])))) :
+        (frontend_prefix_allow[2] && frontend_decode_enable &&
+         backend_decode_enable && backend_decode_ready[2]);
 
     wire [11:0] backend_csr_addr;
     wire backend_csr_write;
@@ -1443,6 +1591,7 @@ module openrv64_rv64_top_3p #(
          ISSUE_WINDOW_DEPTH : 6) + 1);
     wire [RETIRE_COUNT_WIDTH-1:0] backend_retire_occupancy;
     wire [DISPATCH_COUNT_WIDTH-1:0] backend_dispatch_occupancy;
+    wire bp_prediction_update_valid = bp_resident_prediction_accept;
 
     openrv64_backend_3p #(
         .RETIRE_DEPTH(RETIRE_DEPTH),
@@ -1494,6 +1643,10 @@ module openrv64_rv64_top_3p #(
         .decode_uses_rs2_i(backend_decode_uses_rs2),
         .decode_allocation_id_o(backend_decode_allocation_id),
         .decode_allocation_slot_o(backend_decode_allocation_slot),
+        .prediction_update_valid_i(bp_prediction_update_valid),
+        .prediction_update_id_i(bp_dispatch_selected_id_q),
+        .prediction_update_slot_i(bp_dispatch_selected_slot_q),
+        .prediction_update_taken_i(bp_prediction_taken_effective),
         .csr_addr_o(backend_csr_addr), .csr_rdata_i(csr_rdata),
         .csr_valid_i(csr_valid), .csr_writable_i(csr_writable),
         .csr_write_ready_i(csr_write_ready_to_backend),
@@ -2021,9 +2174,7 @@ module openrv64_rv64_top_3p #(
         `OPENRV64_EXEC_ISSUE_PAYLOAD_PC_LSB +: 64];
     wire [31:0] backend_decode_instr = backend_decode_payload0[
         `OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_LSB +: 32];
-    wire trace_decode_valid = BP_REGISTERED_LOOKUP ?
-                              (|bp_dispatch_valid_q) :
-                              (|backend_decode_valid);
+    wire trace_decode_valid = |backend_decode_valid;
     wire [4:0] trace_valid_raw = {
         retire_event, backend_mem_valid, |backend_issue_valid,
         trace_decode_valid, |fetch_decode_valid};

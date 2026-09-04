@@ -872,6 +872,15 @@ module tb_top_3p_soc #(
     integer bp_tage_alloc_t2;
     integer bp_tage_alloc_t3;
     integer bp_tage_allocation_failures;
+    integer bp_preliminary_redirects;
+    integer bp_btfnt_taken_redirects;
+    integer bp_direct_jump_redirects;
+    integer bp_tage_resteers;
+    integer bp_tage_resteers_taken;
+    integer bp_tage_resteers_fallthrough;
+    integer bp_tage_conditional_resteers;
+    integer bp_tage_indirect_resteers;
+    integer bp_tage_resteer_decode_lanes;
     integer jalr_resolutions;
     integer jalr_direction_corrections;
     integer jalr_target_corrections;
@@ -4827,6 +4836,15 @@ module tb_top_3p_soc #(
         bp_tage_alloc_t2 = 0;
         bp_tage_alloc_t3 = 0;
         bp_tage_allocation_failures = 0;
+        bp_preliminary_redirects = 0;
+        bp_btfnt_taken_redirects = 0;
+        bp_direct_jump_redirects = 0;
+        bp_tage_resteers = 0;
+        bp_tage_resteers_taken = 0;
+        bp_tage_resteers_fallthrough = 0;
+        bp_tage_conditional_resteers = 0;
+        bp_tage_indirect_resteers = 0;
+        bp_tage_resteer_decode_lanes = 0;
         jalr_resolutions = 0;
         jalr_direction_corrections = 0;
         jalr_target_corrections = 0;
@@ -7507,6 +7525,37 @@ module tb_top_3p_soc #(
                     bp_tage_allocation_failures =
                         bp_tage_allocation_failures + 1;
             end
+            if (dut.bp_preliminary_redirect) begin
+                bp_preliminary_redirects = bp_preliminary_redirects + 1;
+                if (dut.bp_live_branch)
+                    bp_btfnt_taken_redirects =
+                        bp_btfnt_taken_redirects + 1;
+                else if (dut.bp_live_jump && !dut.bp_live_indirect)
+                    bp_direct_jump_redirects =
+                        bp_direct_jump_redirects + 1;
+            end
+            if (dut.bp_tage_resteer) begin
+                bp_tage_resteers = bp_tage_resteers + 1;
+                if (dut.bp_prediction_taken_effective)
+                    bp_tage_resteers_taken = bp_tage_resteers_taken + 1;
+                else
+                    bp_tage_resteers_fallthrough =
+                        bp_tage_resteers_fallthrough + 1;
+                if (dut.bp_dispatch_lookup_branch_q)
+                    bp_tage_conditional_resteers =
+                        bp_tage_conditional_resteers + 1;
+                else if (dut.bp_dispatch_lookup_indirect_q)
+                    bp_tage_indirect_resteers =
+                        bp_tage_indirect_resteers + 1;
+                bp_tage_resteer_decode_lanes =
+                    bp_tage_resteer_decode_lanes +
+                    dut.fetch_decode_valid[0] +
+                    dut.fetch_decode_valid[1] +
+                    dut.fetch_decode_valid[2];
+                if (|dut.backend_decode_fire)
+                    $fatal(1,
+                        "BP9 TAGE resteer dispatched squashed decode lanes");
+            end
             if (dut.branch_resolved &&
                 (`RV64_OPCODE(dut.branch_instr) == `RV64_OPCODE_JALR)) begin
                 jalr_resolutions = jalr_resolutions + 1;
@@ -8453,6 +8502,13 @@ module tb_top_3p_soc #(
             bp_tage_train_mispredicts, bp_tage_alloc_t0,
             bp_tage_alloc_t1, bp_tage_alloc_t2,
             bp_tage_alloc_t3, bp_tage_allocation_failures);
+        $display(
+            "PERF_ICX_L2_BP_TAGE_EARLY preliminary_redirects=%0d btfnt_taken_redirects=%0d direct_jump_redirects=%0d resteers=%0d resteers_taken=%0d resteers_fallthrough=%0d conditional_resteers=%0d indirect_resteers=%0d squashed_decode_lanes=%0d",
+            bp_preliminary_redirects, bp_btfnt_taken_redirects,
+            bp_direct_jump_redirects, bp_tage_resteers,
+            bp_tage_resteers_taken, bp_tage_resteers_fallthrough,
+            bp_tage_conditional_resteers, bp_tage_indirect_resteers,
+            bp_tage_resteer_decode_lanes);
         $display(
             "PERF_ICX_L2_JALR_PREDICT resolutions=%0d direction_corrections=%0d target_corrections=%0d btb_lookups=%0d btb_hits=%0d btb_misses=%0d btb_wrong_targets=%0d ras_lookups=%0d ras_hits=%0d ras_misses=%0d ras_wrong_targets=%0d resolve_with_younger_valid=%0d resolve_with_younger_completed=%0d resolve_younger_valid_entries=%0d resolve_younger_completed_entries=%0d",
             jalr_resolutions, jalr_direction_corrections,

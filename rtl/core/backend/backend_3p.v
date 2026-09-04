@@ -71,6 +71,15 @@ module openrv64_backend_3p #(
     output wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
                                         decode_allocation_id_o,
     output wire [3*SLOT_WIDTH-1:0]      decode_allocation_slot_o,
+    // A synchronous branch-predictor response arrives one cycle after the
+    // branch itself allocates.  The scheduler blocks this exact branch while
+    // replacing its provisional not-taken bit; unrelated work remains free
+    // to issue.
+    input  wire                         prediction_update_valid_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        prediction_update_id_i,
+    input  wire [SLOT_WIDTH-1:0]        prediction_update_slot_i,
+    input  wire                         prediction_update_taken_i,
 
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
     input  wire [`RV64_XLEN-1:0]        csr_rdata_i,
@@ -274,6 +283,7 @@ module openrv64_backend_3p #(
     wire [2:0] allocation_complete;
     wire [2:0] allocation_store;
     wire [2:0] allocation_mispredict;
+    wire queue_prediction_update_accept;
     wire [3*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH-1:0]
         allocation_result;
     wire [3*RETIRE_RESULT_WIDTH-1:0] allocation_retire_result;
@@ -330,6 +340,7 @@ module openrv64_backend_3p #(
     reg [`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH-1:0]
         banked_independent_destination_phys_q;
     wire [2*`OPENRV64_EXEC_PIPE_COUNT-1:0] dispatch_pipe_chain_mask;
+    wire [2*`OPENRV64_EXEC_PIPE_COUNT-1:0] dispatch_pipe_chain_select;
     wire [2*`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_chain_mask;
     wire [32*PHYS_REG_ADDR_WIDTH-1:0] rename_committed_map;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_unsupported;
@@ -2199,8 +2210,105 @@ module openrv64_backend_3p #(
                  1*`OPENRV64_INSTR_ID_WIDTH +:
                  `OPENRV64_INSTR_ID_WIDTH])
     };
+    wire dispatch_mem0_is_memory =
+        dispatch_pipe_payload[
+            `OPENRV64_EXEC_PIPE_MEM0*
+            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 16] ||
+        dispatch_pipe_payload[
+            `OPENRV64_EXEC_PIPE_MEM0*
+            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 15];
+    wire dispatch_mem1_is_memory =
+        dispatch_pipe_payload[
+            `OPENRV64_EXEC_PIPE_MEM1*
+            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 16] ||
+        dispatch_pipe_payload[
+            `OPENRV64_EXEC_PIPE_MEM1*
+            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 15];
+    wire [1:0] dispatch_mem0_chain_from_ex0 = {
+        dispatch_mem0_is_memory && alu_chain_producer_valid[0] &&
+            dispatch_pipe_src2_producer_valid[`OPENRV64_EXEC_PIPE_MEM0] &&
+            (dispatch_pipe_src2_producer_id[
+                 `OPENRV64_EXEC_PIPE_MEM0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH]),
+        dispatch_mem0_is_memory && alu_chain_producer_valid[0] &&
+            dispatch_pipe_src1_producer_valid[`OPENRV64_EXEC_PIPE_MEM0] &&
+            (dispatch_pipe_src1_producer_id[
+                 `OPENRV64_EXEC_PIPE_MEM0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH])
+    };
+    wire [1:0] dispatch_mem0_chain_from_ex1 = {
+        dispatch_mem0_is_memory && alu_chain_producer_valid[1] &&
+            dispatch_pipe_src2_producer_valid[`OPENRV64_EXEC_PIPE_MEM0] &&
+            (dispatch_pipe_src2_producer_id[
+                 `OPENRV64_EXEC_PIPE_MEM0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH]),
+        dispatch_mem0_is_memory && alu_chain_producer_valid[1] &&
+            dispatch_pipe_src1_producer_valid[`OPENRV64_EXEC_PIPE_MEM0] &&
+            (dispatch_pipe_src1_producer_id[
+                 `OPENRV64_EXEC_PIPE_MEM0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH])
+    };
+    wire [1:0] dispatch_mem1_chain_from_ex0 = {
+        dispatch_mem1_is_memory && alu_chain_producer_valid[0] &&
+            dispatch_pipe_src2_producer_valid[`OPENRV64_EXEC_PIPE_MEM1] &&
+            (dispatch_pipe_src2_producer_id[
+                 `OPENRV64_EXEC_PIPE_MEM1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH]),
+        dispatch_mem1_is_memory && alu_chain_producer_valid[0] &&
+            dispatch_pipe_src1_producer_valid[`OPENRV64_EXEC_PIPE_MEM1] &&
+            (dispatch_pipe_src1_producer_id[
+                 `OPENRV64_EXEC_PIPE_MEM1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH])
+    };
+    wire [1:0] dispatch_mem1_chain_from_ex1 = {
+        dispatch_mem1_is_memory && alu_chain_producer_valid[1] &&
+            dispatch_pipe_src2_producer_valid[`OPENRV64_EXEC_PIPE_MEM1] &&
+            (dispatch_pipe_src2_producer_id[
+                 `OPENRV64_EXEC_PIPE_MEM1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH]),
+        dispatch_mem1_is_memory && alu_chain_producer_valid[1] &&
+            dispatch_pipe_src1_producer_valid[`OPENRV64_EXEC_PIPE_MEM1] &&
+            (dispatch_pipe_src1_producer_id[
+                 `OPENRV64_EXEC_PIPE_MEM1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH])
+    };
+    wire [1:0] dispatch_mem0_chain_mask =
+        dispatch_mem0_chain_from_ex0 | dispatch_mem0_chain_from_ex1;
+    wire [1:0] dispatch_mem1_chain_mask =
+        dispatch_mem1_chain_from_ex0 | dispatch_mem1_chain_from_ex1;
     assign dispatch_pipe_chain_mask = {
-        4'b0000, dispatch_ex1_chain_mask, dispatch_ex0_chain_mask
+        dispatch_mem1_chain_mask, dispatch_mem0_chain_mask,
+        dispatch_ex1_chain_mask, dispatch_ex0_chain_mask
+    };
+    // One source bit per operand: zero selects EX0, one selects EX1.  The mask
+    // above is the corresponding "forward from EXU" qualifier.
+    assign dispatch_pipe_chain_select = {
+        dispatch_mem1_chain_from_ex1, dispatch_mem0_chain_from_ex1,
+        2'b11, 2'b00
     };
 
     wire [`RV64_INSTR_WIDTH-1:0] completion_forward_instr0 =
@@ -3231,6 +3339,8 @@ module openrv64_backend_3p #(
     reg [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
         banked_independent_chain_mask_q;
     reg [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_chain_select_q;
+    reg [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
         banked_independent_operand_done_q;
     reg [2*`OPENRV64_EXEC_PIPE_COUNT*`RV64_XLEN-1:0]
         banked_independent_operand_data_q;
@@ -3281,6 +3391,60 @@ module openrv64_backend_3p #(
         banked_independent_response_now;
     reg [2*`OPENRV64_EXEC_PIPE_COUNT*`RV64_XLEN-1:0]
         banked_independent_response_data;
+    wire [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_chain_response_valid;
+    wire [2*`OPENRV64_EXEC_PIPE_COUNT*`RV64_XLEN-1:0]
+        banked_independent_chain_response_data;
+    genvar banked_independent_chain_operand;
+    generate
+        for (banked_independent_chain_operand = 0;
+             banked_independent_chain_operand <
+                 2*`OPENRV64_EXEC_PIPE_COUNT;
+             banked_independent_chain_operand =
+                 banked_independent_chain_operand + 1) begin :
+                g_banked_independent_chain_response
+            localparam integer CHAIN_PIPE =
+                banked_independent_chain_operand / 2;
+            localparam integer CHAIN_SOURCE =
+                banked_independent_chain_operand % 2;
+            wire chain_source_valid = (CHAIN_SOURCE == 0) ?
+                banked_independent_src1_producer_valid_q[CHAIN_PIPE] :
+                banked_independent_src2_producer_valid_q[CHAIN_PIPE];
+            wire [`OPENRV64_INSTR_ID_WIDTH-1:0] chain_source_id =
+                (CHAIN_SOURCE == 0) ?
+                banked_independent_src1_producer_id_q[
+                    CHAIN_PIPE*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH] :
+                banked_independent_src2_producer_id_q[
+                    CHAIN_PIPE*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH];
+            wire chain_select_ex1 =
+                banked_independent_chain_select_q[
+                    banked_independent_chain_operand];
+            wire chain_completion_valid = chain_select_ex1 ?
+                completion_forward_valid_raw[1] :
+                completion_forward_valid_raw[0];
+            wire [`OPENRV64_INSTR_ID_WIDTH-1:0] chain_completion_id =
+                chain_select_ex1 ?
+                complete_id[1*`OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH] :
+                complete_id[0*`OPENRV64_INSTR_ID_WIDTH +:
+                            `OPENRV64_INSTR_ID_WIDTH];
+
+            assign banked_independent_chain_response_valid[
+                banked_independent_chain_operand] =
+                banked_independent_valid_q[CHAIN_PIPE] &&
+                banked_independent_chain_mask_q[
+                    banked_independent_chain_operand] &&
+                chain_source_valid && chain_completion_valid &&
+                (chain_source_id == chain_completion_id);
+            assign banked_independent_chain_response_data[
+                banked_independent_chain_operand*`RV64_XLEN +:
+                `RV64_XLEN] = chain_select_ex1 ?
+                completion_forward_data[1*`RV64_XLEN +: `RV64_XLEN] :
+                completion_forward_data[0*`RV64_XLEN +: `RV64_XLEN];
+        end
+    endgenerate
     wire [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
         banked_independent_operand_ready =
             banked_independent_operand_done_q |
@@ -3664,6 +3828,7 @@ module openrv64_backend_3p #(
     integer banked_independent_response_port;
     integer banked_independent_response_pipe;
     integer banked_independent_response_operand;
+    integer banked_independent_chain_response_operand;
     always @* begin
         banked_independent_response_now =
             {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
@@ -3700,6 +3865,25 @@ module openrv64_backend_3p #(
                     banked_independent_response_operand*`RV64_XLEN +:
                     `RV64_XLEN] = gpr_read_data[
                         banked_independent_response_port*`RV64_XLEN +:
+                        `RV64_XLEN];
+            end
+        end
+        // This is a selected point-to-point bypass, not a tag broadcast.  The
+        // scheduler chose one EX lane for each marked source on the preceding
+        // cycle; accept only that lane's exact dynamic completion.
+        for (banked_independent_chain_response_operand = 0;
+             banked_independent_chain_response_operand <
+                 2*`OPENRV64_EXEC_PIPE_COUNT;
+             banked_independent_chain_response_operand =
+                 banked_independent_chain_response_operand + 1) begin
+            if (banked_independent_chain_response_valid[
+                    banked_independent_chain_response_operand]) begin
+                banked_independent_response_now[
+                    banked_independent_chain_response_operand] = 1'b1;
+                banked_independent_response_data[
+                    banked_independent_chain_response_operand*`RV64_XLEN +:
+                    `RV64_XLEN] = banked_independent_chain_response_data[
+                        banked_independent_chain_response_operand*`RV64_XLEN +:
                         `RV64_XLEN];
             end
         end
@@ -3802,6 +3986,8 @@ module openrv64_backend_3p #(
                 {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             banked_independent_chain_mask_q <=
                 {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_independent_chain_select_q <=
+                {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             banked_independent_destination_phys_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH{1'b0}};
             banked_independent_operand_data_q <=
@@ -3813,6 +3999,8 @@ module openrv64_backend_3p #(
             banked_independent_operand_done_q <=
                 {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             banked_independent_chain_mask_q <=
+                {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_independent_chain_select_q <=
                 {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             banked_independent_destination_phys_q <=
                 {`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH{1'b0}};
@@ -3839,7 +4027,7 @@ module openrv64_backend_3p #(
                                 banked_independent_state_operand];
                         if (banked_independent_response_now[
                                 banked_independent_state_pipe*2 +
-                                banked_independent_state_operand])
+                                banked_independent_state_operand]) begin
                             banked_independent_operand_data_q[
                                 (banked_independent_state_pipe*2 +
                                  banked_independent_state_operand)*
@@ -3848,8 +4036,18 @@ module openrv64_backend_3p #(
                                     (banked_independent_state_pipe*2 +
                                      banked_independent_state_operand)*
                                     `RV64_XLEN +: `RV64_XLEN];
+                            banked_independent_chain_mask_q[
+                                banked_independent_state_pipe*2 +
+                                banked_independent_state_operand] <= 1'b0;
+                        end
                     end else begin
                         banked_independent_operand_done_q[
+                            banked_independent_state_pipe*2 +
+                            banked_independent_state_operand] <= 1'b0;
+                        banked_independent_chain_mask_q[
+                            banked_independent_state_pipe*2 +
+                            banked_independent_state_operand] <= 1'b0;
+                        banked_independent_chain_select_q[
                             banked_independent_state_pipe*2 +
                             banked_independent_state_operand] <= 1'b0;
                     end
@@ -3890,6 +4088,8 @@ module openrv64_backend_3p #(
                         `RV64_XLEN] <= banked_independent_response_data[
                             banked_independent_state_operand*`RV64_XLEN +:
                             `RV64_XLEN];
+                    banked_independent_chain_mask_q[
+                        banked_independent_state_operand] <= 1'b0;
                 end
             end
 
@@ -3905,6 +4105,8 @@ module openrv64_backend_3p #(
                     banked_independent_operand_done_q[
                         banked_independent_state_pipe*2 +: 2] <= 2'b00;
                     banked_independent_chain_mask_q[
+                        banked_independent_state_pipe*2 +: 2] <= 2'b00;
+                    banked_independent_chain_select_q[
                         banked_independent_state_pipe*2 +: 2] <= 2'b00;
                     banked_independent_destination_phys_q[
                         banked_independent_state_pipe*PHYS_REG_ADDR_WIDTH +:
@@ -3974,6 +4176,10 @@ module openrv64_backend_3p #(
                         banked_independent_state_pipe*2 +: 2] <=
                         dispatch_pipe_chain_mask[
                             banked_independent_state_pipe*2 +: 2];
+                    banked_independent_chain_select_q[
+                        banked_independent_state_pipe*2 +: 2] <=
+                        dispatch_pipe_chain_select[
+                            banked_independent_state_pipe*2 +: 2];
                     banked_independent_destination_phys_q[
                         banked_independent_state_pipe*PHYS_REG_ADDR_WIDTH +:
                         PHYS_REG_ADDR_WIDTH] <=
@@ -4013,6 +4219,11 @@ module openrv64_backend_3p #(
                                 banked_independent_state_pipe] :
                             dispatch_pipe_src2_producer_valid[
                                 banked_independent_state_pipe];
+                        banked_independent_state_source_forwarded =
+                            banked_independent_state_source_forwarded &&
+                            !dispatch_pipe_chain_mask[
+                                banked_independent_state_pipe*2 +
+                                banked_independent_state_operand];
                         banked_independent_operand_done_q[
                             banked_independent_state_pipe*2 +
                             banked_independent_state_operand] <=
@@ -5412,6 +5623,10 @@ module openrv64_backend_3p #(
         .decode_payload_3p_i(decode_payload_i),
         .decode_uses_rs1_3p_i(decode_uses_rs1_i),
         .decode_uses_rs2_3p_i(decode_uses_rs2_i),
+        .prediction_update_valid_3p_i(prediction_update_valid_i),
+        .prediction_update_id_3p_i(prediction_update_id_i),
+        .prediction_update_slot_3p_i(prediction_update_slot_i),
+        .prediction_update_taken_3p_i(prediction_update_taken_i),
         .gpr_read_addr_3p_o(dispatch_gpr_read_addr),
         .gpr_read_ready_3p_o(dispatch_gpr_read_ready),
         .gpr_read_data_3p_i(dispatch_gpr_read_data),
@@ -5775,6 +5990,10 @@ module openrv64_backend_3p #(
         .alloc_complete_i(allocation_complete),
         .alloc_id_o(allocation_id),
         .alloc_slot_o(allocation_slot),
+        .prediction_update_valid_i(prediction_update_valid_i),
+        .prediction_update_id_i(prediction_update_id_i),
+        .prediction_update_slot_i(prediction_update_slot_i),
+        .prediction_update_accept_o(queue_prediction_update_accept),
         .complete_valid_i(completion_fire), .complete_id_i(complete_id),
         .complete_slot_i(complete_slot),
         .complete_match_o(queue_complete_match),
@@ -5807,6 +6026,11 @@ module openrv64_backend_3p #(
     // guarantees that its identity-only completion names a live ROB entry;
     // turn any violation of that contract into an immediate simulation error.
     always @(posedge clk) begin
+        if (rst_n && prediction_update_valid_i &&
+            !queue_prediction_update_accept)
+            $fatal(1,
+                "predictor update missed ROB id=%0d slot=%0d",
+                prediction_update_id_i, prediction_update_slot_i);
         if (rst_n && posted_store_complete_valid &&
             !posted_store_complete_accept)
             $fatal(1,
@@ -5834,6 +6058,9 @@ module openrv64_backend_3p #(
         .alloc_result_valid_i(allocation_complete | allocation_store),
         .alloc_result_i(allocation_retire_result),
         .alloc_trace_i(allocation_trace),
+        .prediction_update_valid_i(queue_prediction_update_accept),
+        .prediction_update_slot_i(prediction_update_slot_i),
+        .prediction_update_taken_i(prediction_update_taken_i),
         .complete_valid_i(queue_complete_accept),
         .complete_slot_i(complete_slot),
         .complete_result_i(complete_retire_result),

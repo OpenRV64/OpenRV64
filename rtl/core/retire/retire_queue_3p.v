@@ -24,6 +24,11 @@ module openrv64_retire_queue_3p #(
     output wire [3*ID_WIDTH-1:0]        alloc_id_o,
     output wire [3*INDEX_WIDTH-1:0]     alloc_slot_o,
 
+    input  wire                         prediction_update_valid_i,
+    input  wire [ID_WIDTH-1:0]          prediction_update_id_i,
+    input  wire [INDEX_WIDTH-1:0]       prediction_update_slot_i,
+    output wire                         prediction_update_accept_o,
+
     input  wire [2:0]                   complete_valid_i,
     input  wire [3*ID_WIDTH-1:0]        complete_id_i,
     input  wire [3*INDEX_WIDTH-1:0]     complete_slot_i,
@@ -95,6 +100,9 @@ module openrv64_retire_queue_3p #(
     assign alloc_ready_o = ({2'd0, free_count} >= alloc_count);
     assign alloc_slot_o = {alloc_slot2, alloc_slot1, alloc_slot0};
     assign alloc_id_o = {alloc_id2, alloc_id1, alloc_id0};
+    assign prediction_update_accept_o = prediction_update_valid_i &&
+        valid_q[prediction_update_slot_i] &&
+        (id_q[prediction_update_slot_i] == prediction_update_id_i);
 
     wire [INDEX_WIDTH-1:0] retire_slot0 = head_q;
     wire [INDEX_WIDTH-1:0] retire_slot1 = index_add(head_q, 2'd1);

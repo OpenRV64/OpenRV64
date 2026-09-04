@@ -13,6 +13,8 @@ module openrv64_retire_records_3p #(
     parameter integer SLOT_WIDTH = (DEPTH <= 1) ? 1 : $clog2(DEPTH),
     parameter integer ALLOC_WIDTH = `OPENRV64_RETIRE_ALLOC_WIDTH,
     parameter integer RESULT_WIDTH = `OPENRV64_RETIRE_RESULT_WIDTH,
+    parameter integer PREDICTED_TAKEN_BIT =
+        `OPENRV64_RETIRE_ALLOC_PREDICTED_TAKEN_BIT,
     parameter integer ENABLE_TRACE = 1
 ) (
     input  wire                         clk,
@@ -27,6 +29,10 @@ module openrv64_retire_records_3p #(
     input  wire [2:0]                   alloc_result_valid_i,
     input  wire [3*RESULT_WIDTH-1:0]    alloc_result_i,
     input  wire [3*64-1:0]              alloc_trace_i,
+
+    input  wire                         prediction_update_valid_i,
+    input  wire [SLOT_WIDTH-1:0]        prediction_update_slot_i,
+    input  wire                         prediction_update_taken_i,
 
     input  wire [2:0]                   complete_valid_i,
     input  wire [3*SLOT_WIDTH-1:0]      complete_slot_i,
@@ -57,8 +63,14 @@ module openrv64_retire_records_3p #(
     integer write_port;
     reg [SLOT_WIDTH-1:0] write_slot;
     always @(posedge clk) begin
-        // Completion writes occur first.  If a retiring slot is reused on this
-        // edge, the younger allocation below owns the final payload.
+        if (prediction_update_valid_i)
+            alloc_q[prediction_update_slot_i][
+                PREDICTED_TAKEN_BIT] <=
+                prediction_update_taken_i;
+
+        // Ordinary completion writes precede allocation writes.  If a
+        // retiring slot is reused on this edge, the younger allocation below
+        // owns the final payload.
         for (write_port = 0; write_port < 3;
              write_port = write_port + 1) begin
             write_slot = complete_slot_i[

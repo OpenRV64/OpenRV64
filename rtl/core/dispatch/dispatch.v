@@ -140,6 +140,12 @@ module openrv64_dispatch #(
                                         decode_payload_3p_i,
     input  wire [2:0]                   decode_uses_rs1_3p_i,
     input  wire [2:0]                   decode_uses_rs2_3p_i,
+    input  wire                         prediction_update_valid_3p_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        prediction_update_id_3p_i,
+    input  wire [RETIRE_SLOT_WIDTH_3P-1:0]
+                                        prediction_update_slot_3p_i,
+    input  wire                         prediction_update_taken_3p_i,
     output wire [6*PHYS_REG_ADDR_WIDTH_3P-1:0]
                                         gpr_read_addr_3p_o,
     output wire [5:0]                   gpr_read_ready_3p_o,
@@ -500,6 +506,12 @@ module openrv64_dispatch #(
                 .decode_payload_i(decode_payload_3p_i),
                 .decode_uses_rs1_i(decode_uses_rs1_3p_i),
                 .decode_uses_rs2_i(decode_uses_rs2_3p_i),
+                .prediction_update_valid_i(1'b0),
+                .prediction_update_id_i(
+                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+                .prediction_update_slot_i(
+                    {RETIRE_SLOT_WIDTH_3P{1'b0}}),
+                .prediction_update_taken_i(1'b0),
                 .gpr_read_addr_o(window_gpr_read_addr),
                 .gpr_read_data_i(gpr_read_data_3p_i),
                 .rename_source_phys_i(
@@ -834,6 +846,11 @@ module openrv64_dispatch #(
                 .decode_payload_i(decode_payload_3p_i),
                 .decode_uses_rs1_i(decode_uses_rs1_3p_i),
                 .decode_uses_rs2_i(decode_uses_rs2_3p_i),
+                .prediction_update_valid_i(
+                    prediction_update_valid_3p_i),
+                .prediction_update_id_i(prediction_update_id_3p_i),
+                .prediction_update_slot_i(prediction_update_slot_3p_i),
+                .prediction_update_taken_i(prediction_update_taken_3p_i),
                 .rename_source_arch_o(tomasulo_rename_source_arch),
                 .rename_source_phys_i(gpr_read_addr_3p_o),
                 .rename_source_ready_i(rename_source_phys_ready),

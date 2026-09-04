@@ -43,6 +43,10 @@ module tb_dispatch_window_3p;
     reg [3*IW-1:0] decode_payload;
     reg [2:0] decode_uses_rs1;
     reg [2:0] decode_uses_rs2;
+    reg prediction_update_valid;
+    reg [IDW-1:0] prediction_update_id;
+    reg [SW-1:0] prediction_update_slot;
+    reg prediction_update_taken;
     wire [6*5-1:0] gpr_read_addr;
     reg [6*64-1:0] gpr_read_data;
     reg allocation_ready;
@@ -94,6 +98,10 @@ module tb_dispatch_window_3p;
         .decode_payload_i(decode_payload),
         .decode_uses_rs1_i(decode_uses_rs1),
         .decode_uses_rs2_i(decode_uses_rs2),
+        .prediction_update_valid_i(prediction_update_valid),
+        .prediction_update_id_i(prediction_update_id),
+        .prediction_update_slot_i(prediction_update_slot),
+        .prediction_update_taken_i(prediction_update_taken),
         .gpr_read_addr_o(gpr_read_addr), .gpr_read_data_i(gpr_read_data),
         .physical_forward_valid_i(3'b000),
         .allocation_ready_i(allocation_ready),
@@ -188,6 +196,10 @@ module tb_dispatch_window_3p;
             decode_payload = {3*IW{1'b0}};
             decode_uses_rs1 = 3'b000;
             decode_uses_rs2 = 3'b000;
+            prediction_update_valid = 1'b0;
+            prediction_update_id = {IDW{1'b0}};
+            prediction_update_slot = {SW{1'b0}};
+            prediction_update_taken = 1'b0;
             completion_valid = 3'b000;
             completion_id = {3*IDW{1'b0}};
             completion_payload = {3*OW{1'b0}};
@@ -923,7 +935,46 @@ module tb_dispatch_window_3p;
             pipe_id[0*IDW +: IDW] != IDW'(90))
             fail("Zbb instruction was not fixed to EX0");
 
-        $display("PASS: dispatch window issue, fixed EX0 Zbb, dual ordered MEM roles, producer tags, and selective recovery");
+        // BP9 dispatches the branch with a provisional not-taken bit.  Its
+        // synchronous response must inhibit that exact branch for one issue
+        // cycle, patch the resident payload, and leave it eligible on the
+        // following cycle with the final prediction.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        pipe_ready = 4'b0000;
+        allocation_id = {IDW'(0), IDW'(0), IDW'(90)};
+        allocation_slot = {4'd0, 4'd0, 4'd3};
+        next_retire_id = IDW'(90);
+        next_retire_slot = 4'd3;
+        p0 = alu_packet(64'd90, 5'd0, 5'd0, 5'd0);
+        p0[I_INSTR +: 32] = 32'h0000_0463;
+        p0[I_IMM +: 64] = 64'd8;
+        p0[I_BR_OP +: `RV64_BR_OP_WIDTH] = `RV64_BR_OP_BEQ;
+        p0[I_BRANCH] = 1'b1;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_valid = 3'b001;
+        tick();
+        clear_inputs();
+        pipe_ready = 4'b1111;
+        prediction_update_valid = 1'b1;
+        prediction_update_id = IDW'(90);
+        prediction_update_slot = 4'd3;
+        prediction_update_taken = 1'b1;
+        #1;
+        if (|pipe_valid)
+            fail("branch issued before synchronous prediction update");
+        tick();
+        clear_inputs();
+        #1;
+        if (!pipe_valid[1] ||
+            (pipe_id[IDW +: IDW] != IDW'(90)) ||
+            !pipe_payload[IW + I_PREDICTED])
+            fail("updated branch did not issue with final prediction");
+        tick();
+        clear_inputs();
+
+        $display("PASS: dispatch window issue, fixed EX0 Zbb, dual ordered MEM roles, producer tags, selective recovery, and prediction update");
         $finish;
     end
 endmodule

@@ -49,6 +49,11 @@ module tb_retire_queue_3p #(
     wire [3*RESULT_WIDTH-1:0] retire_result;
     wire [COUNT_WIDTH-1:0] occupancy;
     wire [ID_WIDTH-1:0] next_retire_id;
+    logic prediction_update_valid;
+    logic [ID_WIDTH-1:0] prediction_update_id;
+    logic [INDEX_WIDTH-1:0] prediction_update_slot;
+    logic prediction_update_taken;
+    wire prediction_update_accept;
 
     logic [ID_WIDTH-1:0] saved_id [0:2];
     logic [INDEX_WIDTH-1:0] saved_slot [0:2];
@@ -76,6 +81,10 @@ module tb_retire_queue_3p #(
         .alloc_complete_i(alloc_complete),
         .alloc_id_o(alloc_id),
         .alloc_slot_o(alloc_slot),
+        .prediction_update_valid_i(prediction_update_valid),
+        .prediction_update_id_i(prediction_update_id),
+        .prediction_update_slot_i(prediction_update_slot),
+        .prediction_update_accept_o(prediction_update_accept),
         .complete_valid_i(complete_valid),
         .complete_id_i(complete_id),
         .complete_slot_i(complete_slot),
@@ -101,7 +110,8 @@ module tb_retire_queue_3p #(
         .DEPTH(DEPTH),
         .SLOT_WIDTH(INDEX_WIDTH),
         .ALLOC_WIDTH(META_WIDTH),
-        .RESULT_WIDTH(RESULT_WIDTH)
+        .RESULT_WIDTH(RESULT_WIDTH),
+        .PREDICTED_TAKEN_BIT(0)
     ) records (
         .clk(clk),
         .alloc_valid_i(alloc_accept),
@@ -111,6 +121,9 @@ module tb_retire_queue_3p #(
         .alloc_result_valid_i(alloc_complete),
         .alloc_result_i(alloc_result),
         .alloc_trace_i(alloc_trace),
+        .prediction_update_valid_i(prediction_update_accept),
+        .prediction_update_slot_i(prediction_update_slot),
+        .prediction_update_taken_i(prediction_update_taken),
         .complete_valid_i(complete_accept),
         .complete_slot_i(complete_slot),
         .complete_result_i(complete_result),
@@ -142,6 +155,10 @@ module tb_retire_queue_3p #(
             posted_store_complete_valid = 1'b0;
             posted_store_complete_id = {ID_WIDTH{1'b0}};
             posted_store_complete_slot = {INDEX_WIDTH{1'b0}};
+            prediction_update_valid = 1'b0;
+            prediction_update_id = {ID_WIDTH{1'b0}};
+            prediction_update_slot = {INDEX_WIDTH{1'b0}};
+            prediction_update_taken = 1'b0;
             retire_accept = 3'b000;
         end
     endtask
@@ -237,6 +254,44 @@ module tb_retire_queue_3p #(
         squash_slot = {INDEX_WIDTH{1'b0}};
         if (occupancy != 0)
             $fatal(1, "flush did not drain full queue");
+
+        // The synchronous predictor response must update only the live ROB
+        // identity.  Records use metadata bit zero as predicted-taken here.
+        @(negedge clk);
+        alloc_valid = 3'b001;
+        alloc_meta[0 +: META_WIDTH] = 8'h00;
+        #1;
+        saved_id[0] = alloc_id[0 +: ID_WIDTH];
+        saved_slot[0] = alloc_slot[0 +: INDEX_WIDTH];
+        @(posedge clk);
+        #1;
+        alloc_valid = 3'b000;
+        @(negedge clk);
+        prediction_update_valid = 1'b1;
+        prediction_update_id = saved_id[0] + 1'b1;
+        prediction_update_slot = saved_slot[0];
+        prediction_update_taken = 1'b1;
+        #1;
+        if (prediction_update_accept)
+            $fatal(1, "prediction update accepted a mismatched ID");
+        prediction_update_id = saved_id[0];
+        #1;
+        if (!prediction_update_accept)
+            $fatal(1, "prediction update rejected a live ROB identity");
+        @(posedge clk);
+        #1;
+        prediction_update_valid = 1'b0;
+        complete_one(saved_id[0], saved_slot[0], 16'hb909);
+        if ((retire_valid !== 3'b001) ||
+            (retire_meta[0 +: META_WIDTH] !== 8'h01))
+            $fatal(1, "prediction response did not update the ROB record");
+        @(negedge clk);
+        retire_accept = 3'b001;
+        @(posedge clk);
+        #1;
+        retire_accept = 3'b000;
+        if (occupancy != 0)
+            $fatal(1, "prediction-updated entry did not drain");
 
         // Allocation-time completion is used by experimental zero-execute
         // operations.  It must preserve normal in-order visibility and its

@@ -101,9 +101,9 @@ Numeric encoding is fixed:
   instruction.  For `BOTH_SOURCES_PENDING`, it names source 1; both internal
   producer tags remain in scheduler `detail0`.
 
-Version 2 adds component code 10 (`DISPATCH`) for the BP9 synchronous lookup
-register.  The reader remains backward-compatible with version 1 traces,
-whose component set ends at code 9.
+Version 2 adds component code 10 (`DISPATCH`) for the BP9 branch-only
+synchronous lookup metadata.  The reader remains backward-compatible with
+version 1 traces, whose component set ends at code 9.
 
 The same `insn_id` must always retain the same PC and instruction encoding.
 The writer rejects zero or overflowing IDs.  The validator also rejects cycle
@@ -122,7 +122,7 @@ regression, unknown codes, changed identity, and duplicate component rows.
 | 7 | `LSQ` | one live load or store transaction | LSQ array slot / 2 load or 3 store |
 | 8 | `ROB` | one live retirement record | ROB slot / `-1` |
 | 9 | `RETIRE` | ordered retirement candidate | ROB slot / retirement lane |
-| 10 | `DISPATCH` | BP9 elastic decode-to-dispatch register | `-1` / dispatch lane |
+| 10 | `DISPATCH` | BP9 response metadata for an allocated branch | `-1` / original dispatch lane |
 
 The scheduler row and matching EXEC `FIRE` row coexist in the issue cycle.
 The scheduler entry disappears after the issue edge in physical-rename mode;
@@ -133,10 +133,21 @@ CoreMark window, so that trace contains no `REGREAD` rows; this is observed
 profile behavior, not proof that the writer cannot emit them.
 The LSU compact metadata retains the trace ID so an LSQ row remains
 self-identifying after a posted store has retired and outlived its ROB entry.
-For BP9, `DECODE` records the combinational candidate entering the elastic
-boundary and `DISPATCH` records the retained bundle presented to rename and
-scheduler allocation.  The synchronous TAGE/BTB read latency is therefore a
-`DISPATCH` residency interval rather than a `DECODE` wait.
+For BP9, ordinary instructions pass from `DECODE` into the scheduler and ROB
+without waiting for predictor RAM.  A control lookup launches when the decoded
+control is captured, independently of backend admission.  If the control also
+allocates that cycle, the frontend immediately follows BTFNT for a conditional
+branch or the decoded target for a direct jump.  The next-cycle `(insn_id, ROB
+slot)` sideband updates its scheduler and ROB prediction bits.  If TAGE
+disagrees with the preliminary direction, that response cycle inhibits all
+decode-to-dispatch transfers before restarting fetch on the final path; none of
+the discarded instructions have allocated backend state.  If backend admission
+was blocked when the lookup launched, the response is instead attached when
+that same control allocates, with a registered taken redirect where required to
+avoid a combinational ready/fire-to-redirect-to-fetch-ready loop.  Simultaneous
+`DISPATCH`, `SCHED`, and `ROB` rows are expected for the first case; a
+pre-allocation `DISPATCH` row may instead overlap the branch's `DECODE` row in
+the second case.
 
 ## State codes
 
@@ -219,7 +230,7 @@ not listed below are zero.
 |---|---|---|---|
 | FETCH | 0 valid, 1 backend-valid, 2 backend-ready, 3 fetch-ready | 0 | 0 |
 | DECODE | 0 fire, 1 valid, 2 ready, 3 fetch-ready | free tags `[15:0]` | ROB occupancy `[15:0]`, scheduler occupancy `[31:16]` |
-| DISPATCH | 0 fire, 1 backend-valid, 2 backend-ready, 3 control | free tags `[15:0]` | ROB occupancy `[15:0]`, scheduler occupancy `[31:16]` |
+| DISPATCH | 0 response applied, 1 lookup stalled, 2 predicted taken, 3 metadata valid, 4 branch already allocated | 0 | 0 |
 | SCHED | 0 valid, 1 issued, 2 eligible, 3/4 source ready, 5/6 source used, 7 result ready, 8 blocker valid | source core IDs `[15:0]`, `[31:16]` | ROB slot `[7:0]`, source physical tags `[15:8]` and `[23:16]`, destination tag `[31:24]` |
 | REGREAD active | 0 group valid, 2:1 lane valid, 6:3 fire mask, 10:7 operand-ready mask | operand-done mask `[3:0]` | response-now mask `[3:0]` |
 | REGREAD pending | 0 group valid, 2:1 lane valid, 6:3 operand-ready mask | operand-done mask `[3:0]` | 0 |

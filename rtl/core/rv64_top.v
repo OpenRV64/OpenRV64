@@ -1272,6 +1272,11 @@ module openrv64_rv64_top #(
         .decode_payload_3p_i({3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}}),
         .decode_uses_rs1_3p_i(3'b000),
         .decode_uses_rs2_3p_i(3'b000),
+        .prediction_update_valid_3p_i(1'b0),
+        .prediction_update_id_3p_i(
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .prediction_update_slot_3p_i(3'd0),
+        .prediction_update_taken_3p_i(1'b0),
         .gpr_read_data_3p_i({6*`RV64_XLEN{1'b0}}),
         .allocation_ready_3p_i(1'b0),
         .rename_free_valid_3p_i(3'b000),
