@@ -513,6 +513,9 @@ module tb_backend_3p_banked #(
     reg saw_alu2_issue;
     reg saw_alu2_zbb_rotate;
     reg saw_alu2_forward;
+    reg saw_ex1_auipc;
+    reg saw_ex1_slt;
+    reg saw_ex1_sltu;
     reg prior_cycle_issued;
     reg memory_probe_active;
     integer memory_probe_retired;
@@ -532,6 +535,9 @@ module tb_backend_3p_banked #(
     reg tomasulo_exu_mem_chain_probe_active;
     reg saw_tomasulo_exu_mem_chain_accept;
     reg saw_tomasulo_exu_mem_chain_issue;
+    reg tomasulo_control_chain_probe_active;
+    reg saw_tomasulo_control_chain_accept;
+    reg saw_tomasulo_control_chain_issue;
     reg tomasulo_load_forward_probe_active;
     reg saw_tomasulo_load_forward_accept;
     reg saw_tomasulo_load_forward_without_writeback;
@@ -539,6 +545,7 @@ module tb_backend_3p_banked #(
     reg saw_memory_replay_store_sideband;
     integer replay_store_component_count;
     integer jalr_probe_pipe;
+    integer ex1_assist_pipe;
     integer forward_probe_pipe;
     integer forward_probe_port;
     integer forward_probe_window;
@@ -549,6 +556,9 @@ module tb_backend_3p_banked #(
     integer exu_mem_producer_lane;
     integer exu_mem_accept_cycle;
     integer exu_mem_issue_cycle;
+    integer control_chain_producer_issue_cycle;
+    integer control_chain_accept_cycle;
+    integer control_chain_issue_cycle;
     integer load_completion_cycle;
     wire [6:0] observed_rename_free_count;
     wire [PHYS_REG_COUNT:0] observed_phys_ready;
@@ -658,6 +668,9 @@ module tb_backend_3p_banked #(
             exu_mem_producer_lane = -1;
             exu_mem_accept_cycle = -1;
             exu_mem_issue_cycle = -1;
+            control_chain_producer_issue_cycle = -1;
+            control_chain_accept_cycle = -1;
+            control_chain_issue_cycle = -1;
             load_completion_cycle = -1;
         end else begin
             monitor_cycle = monitor_cycle + 1;
@@ -668,6 +681,32 @@ module tb_backend_3p_banked #(
                 fail("banked backend exceeded register-load issue width");
             if (issue_count == 2)
                 saw_two_wide_issue = 1'b1;
+            for (ex1_assist_pipe = 0;
+                 ex1_assist_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+                 ex1_assist_pipe = ex1_assist_pipe + 1) begin
+                if (issue_valid[ex1_assist_pipe] &&
+                    (dut.pipe_payload[
+                        ex1_assist_pipe*IW + I_ALU_EXT +: 3] ==
+                     `RV64_ALU_EXT_BASE) &&
+                    ((dut.pipe_payload[
+                          ex1_assist_pipe*IW + I_ALU_OP +: 5] ==
+                      `RV64_ALU_OP_AUIPC) ||
+                     (dut.pipe_payload[
+                          ex1_assist_pipe*IW + I_ALU_OP +: 5] ==
+                      `RV64_ALU_OP_SLT) ||
+                     (dut.pipe_payload[
+                          ex1_assist_pipe*IW + I_ALU_OP +: 5] ==
+                      `RV64_ALU_OP_SLTU))) begin
+                    if (ex1_assist_pipe != `OPENRV64_EXEC_PIPE_EX1)
+                        fail("AUIPC/compare operation issued outside EX1");
+                    case (dut.pipe_payload[
+                              ex1_assist_pipe*IW + I_ALU_OP +: 5])
+                        `RV64_ALU_OP_AUIPC: saw_ex1_auipc = 1'b1;
+                        `RV64_ALU_OP_SLT:   saw_ex1_slt = 1'b1;
+                        `RV64_ALU_OP_SLTU:  saw_ex1_sltu = 1'b1;
+                    endcase
+                end
+            end
             if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
                 issue_valid[`OPENRV64_EXEC_PIPE_MEM0] &&
                 !dut.pipe_payload[
@@ -953,6 +992,73 @@ module tb_backend_3p_banked #(
                 end
             end
 
+            if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+                tomasulo_control_chain_probe_active) begin
+                for (forward_probe_pipe = 0;
+                     forward_probe_pipe < `OPENRV64_EXEC_PIPE_COUNT;
+                     forward_probe_pipe = forward_probe_pipe + 1) begin
+                    if (issue_valid[forward_probe_pipe] &&
+                        dut.pipe_ready[forward_probe_pipe] &&
+                        (dut.pipe_payload[
+                            forward_probe_pipe*IW + I_TRACE +: 64] ==
+                         64'd64)) begin
+                        if (forward_probe_pipe !=
+                            `OPENRV64_EXEC_PIPE_EX1)
+                            fail("AUIPC chain producer did not use EX1");
+                        control_chain_producer_issue_cycle = monitor_cycle;
+                    end
+                    if (dut.dispatch_pipe_valid[forward_probe_pipe] &&
+                        dut.banked_independent_pipe_ready[
+                            forward_probe_pipe] &&
+                        (dut.dispatch_pipe_payload[
+                            forward_probe_pipe*IW + I_TRACE +: 64] ==
+                         64'd65)) begin
+                        if (forward_probe_pipe !=
+                            `OPENRV64_EXEC_PIPE_EX1)
+                            fail("chained JALR was not assigned to EX1");
+                        if (!dut.dispatch_pipe_chain_mask[
+                                forward_probe_pipe*2+0])
+                            fail("AUIPC-to-JALR chain did not mark rs1");
+                        if ((control_chain_producer_issue_cycle < 0) ||
+                            (monitor_cycle !=
+                             control_chain_producer_issue_cycle))
+                            fail("JALR was not scheduled in AUIPC issue cycle");
+                        control_chain_accept_cycle = monitor_cycle;
+                        saw_tomasulo_control_chain_accept = 1'b1;
+                    end
+                    if (issue_valid[forward_probe_pipe] &&
+                        dut.pipe_ready[forward_probe_pipe] &&
+                        (dut.pipe_payload[
+                            forward_probe_pipe*IW + I_TRACE +: 64] ==
+                         64'd65)) begin
+                        if ((forward_probe_pipe !=
+                             `OPENRV64_EXEC_PIPE_EX1) ||
+                            !dut.pipe_chain_mask[
+                                forward_probe_pipe*2+0])
+                            fail("JALR entered EX1 without retained chain");
+                        if (dut.pipe_src1_producer_id[
+                                forward_probe_pipe*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH] !=
+                            dut.complete_id[
+                                forward_probe_pipe*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH])
+                            fail("JALR consumed the wrong EX1 producer");
+                        if ((control_chain_producer_issue_cycle < 0) ||
+                            (monitor_cycle !=
+                             control_chain_producer_issue_cycle + 1))
+                            fail("JALR did not execute one cycle after AUIPC");
+                        if (!dut.exec_branch_resolved ||
+                            !dut.exec_branch_taken ||
+                            (dut.exec_redirect_target != 64'h3100))
+                            fail("chained JALR resolved the wrong target");
+                        control_chain_issue_cycle = monitor_cycle;
+                        saw_tomasulo_control_chain_issue = 1'b1;
+                    end
+                end
+            end
+
             // A load has variable issue-to-result latency.  Its dependent
             // must nevertheless be accepted in the first cycle that MEM0's
             // registered completion is live, even while the PRF write is
@@ -1151,6 +1257,9 @@ module tb_backend_3p_banked #(
         saw_alu2_issue = 1'b0;
         saw_alu2_zbb_rotate = 1'b0;
         saw_alu2_forward = 1'b0;
+        saw_ex1_auipc = 1'b0;
+        saw_ex1_slt = 1'b0;
+        saw_ex1_sltu = 1'b0;
         prior_cycle_issued = 1'b0;
         memory_probe_active = 1'b0;
         memory_probe_retired = 0;
@@ -1170,6 +1279,9 @@ module tb_backend_3p_banked #(
         tomasulo_exu_mem_chain_probe_active = 1'b0;
         saw_tomasulo_exu_mem_chain_accept = 1'b0;
         saw_tomasulo_exu_mem_chain_issue = 1'b0;
+        tomasulo_control_chain_probe_active = 1'b0;
+        saw_tomasulo_control_chain_accept = 1'b0;
+        saw_tomasulo_control_chain_issue = 1'b0;
         tomasulo_load_forward_probe_active = 1'b0;
         saw_tomasulo_load_forward_accept = 1'b0;
         saw_tomasulo_load_forward_without_writeback = 1'b0;
@@ -1608,6 +1720,8 @@ module tb_backend_3p_banked #(
         if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
             !saw_alu2_forward)
             fail("ALU2 never drove the MEM0 forwarding path");
+        if (!saw_ex1_auipc || !saw_ex1_slt || !saw_ex1_sltu)
+            fail("instruction stream missed EX1-only AUIPC/compare issue");
 
         // Without chaining, keep the producer resident on its completion port
         // by denying the PRF write and prove ordinary completion forwarding.
@@ -1778,12 +1892,84 @@ module tb_backend_3p_banked #(
             memory_probe_retired = 0;
         end
 
+        // AUIPC and JALR remain separate dynamic instructions.  Pinning
+        // AUIPC to EX1 lets the scheduler release the dependent JALR in the
+        // producer's issue cycle N; EX1 must consume that exact retained
+        // result and resolve the target in N+1.  Predicted-taken avoids an
+        // unrelated direction-recovery event in this backend-only probe.
+        if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            (ENABLE_ALU_CHAINING != 0) &&
+            (SPECULATION_WINDOW != 0)) begin
+            memory_probe_active = 1'b1;
+            memory_probe_retired = 0;
+            memory_probe_last_rd = 5'd0;
+            memory_probe_last_wdata = 64'd0;
+            tomasulo_control_chain_probe_active = 1'b1;
+            saw_tomasulo_control_chain_accept = 1'b0;
+            saw_tomasulo_control_chain_issue = 1'b0;
+            control_chain_producer_issue_cycle = -1;
+            control_chain_accept_cycle = -1;
+            control_chain_issue_cycle = -1;
+
+            decode_payload = {3*IW{1'b0}};
+            decode_payload[0 +: IW] =
+                upper_packet(64, 27, 64'h2000, 1'b1);
+            decode_payload[IW +: IW] =
+                jalr_packet(65, 27, 0, 64'd0);
+            decode_uses_rs1 = 3'b010;
+            decode_uses_rs2 = 3'b000;
+            decode_valid = 3'b011;
+            while (decode_ready[1:0] != 2'b11)
+                tick();
+            tick();
+            decode_valid = 3'b000;
+            decode_payload = {3*IW{1'b0}};
+            decode_uses_rs1 = 3'b000;
+
+            for (cycles = 0;
+                 (cycles < 30) &&
+                 (!saw_tomasulo_control_chain_accept ||
+                  !saw_tomasulo_control_chain_issue);
+                 cycles = cycles + 1)
+                tick();
+            if (!saw_tomasulo_control_chain_accept)
+                fail("AUIPC-to-JALR was not released with its producer");
+            if (!saw_tomasulo_control_chain_issue)
+                fail("JALR did not issue from the retained AUIPC result");
+            if ((control_chain_accept_cycle !=
+                 control_chain_producer_issue_cycle) ||
+                (control_chain_issue_cycle !=
+                 control_chain_producer_issue_cycle + 1))
+                fail("AUIPC-to-JALR cycle contract was not N then N+1");
+
+            for (cycles = 0;
+                 (cycles < 100) &&
+                 ((memory_probe_retired < 2) ||
+                  (dispatch_occupancy != 0) ||
+                  (retire_occupancy != 0));
+                 cycles = cycles + 1)
+                tick();
+            repeat (2) tick();
+            if (memory_probe_retired != 2)
+                fail("AUIPC-to-JALR chain did not retire both packets");
+            if ((dispatch_occupancy != 0) || (retire_occupancy != 0) ||
+                (observed_rename_free_count != 32))
+                fail("AUIPC-to-JALR chain did not drain cleanly");
+            $display(
+                "CONTROL_CHAIN_CYCLES producer=%0d scheduler=%0d ex1=%0d",
+                control_chain_producer_issue_cycle,
+                control_chain_accept_cycle, control_chain_issue_cycle);
+            tomasulo_control_chain_probe_active = 1'b0;
+            memory_probe_active = 1'b0;
+            memory_probe_retired = 0;
+        end
+
         if (CHAIN_PROBE_ONLY != 0) begin
             if (ENABLE_ALU_CHAINING == 0)
                 fail("chain-only probe requires ALU chaining");
-            $display({"PASS: banked backend ALU and LSU chains released ",
-                      "dependents in producer issue cycle N and consumed ",
-                      "the selected result in N+1"});
+            $display({"PASS: banked backend ALU, LSU, and control chains ",
+                      "released dependents in producer issue cycle N and ",
+                      "consumed the selected result in N+1"});
             $display("PASS: banked 3p issue window processed post-selection register loads, ordered arithmetic, load/use, and held bank retries");
             $finish;
         end

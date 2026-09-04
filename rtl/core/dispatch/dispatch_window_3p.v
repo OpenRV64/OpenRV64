@@ -449,6 +449,32 @@ module openrv64_dispatch_window_3p #(
         end
     endfunction
 
+    function automatic is_ex1_assist_alu;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        reg [`RV64_ALU_OP_WIDTH-1:0] alu_op;
+        begin
+            alu_op = payload[PAYLOAD_ALU_OP +: `RV64_ALU_OP_WIDTH];
+            is_ex1_assist_alu = !is_hard(payload) && !is_mem(payload) &&
+                (payload[PAYLOAD_ALU_EXT +: `RV64_ALU_EXT_WIDTH] ==
+                 `RV64_ALU_EXT_BASE) &&
+                ((alu_op == `RV64_ALU_OP_AUIPC) ||
+                 (alu_op == `RV64_ALU_OP_SLT) ||
+                 (alu_op == `RV64_ALU_OP_SLTU));
+        end
+    endfunction
+
+    function automatic is_ex1_chain_control;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            // These controls already own EX1 and already have selective
+            // recovery.  Chaining changes only when an exact missing source
+            // reaches the operand latch; it does not relax control ordering.
+            is_ex1_chain_control =
+                is_early_conditional_branch(payload) ||
+                is_speculative_jalr(payload);
+        end
+    endfunction
+
     function automatic is_fixed_ex0;
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         begin
@@ -463,7 +489,7 @@ module openrv64_dispatch_window_3p #(
     function automatic is_fixed_ex1;
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         begin
-            is_fixed_ex1 = is_hard(payload);
+            is_fixed_ex1 = is_hard(payload) || is_ex1_assist_alu(payload);
         end
     endfunction
 
@@ -472,7 +498,8 @@ module openrv64_dispatch_window_3p #(
         begin
             is_flexible_alu = !is_hard(payload) && !is_mem(payload) &&
                 (payload[PAYLOAD_ALU_EXT +: `RV64_ALU_EXT_WIDTH] ==
-                 `RV64_ALU_EXT_BASE);
+                 `RV64_ALU_EXT_BASE) &&
+                !is_ex1_assist_alu(payload);
         end
     endfunction
 
@@ -480,6 +507,7 @@ module openrv64_dispatch_window_3p #(
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         begin
             is_alu2_operation = !is_hard(payload) && !is_mem(payload) &&
+                !is_ex1_assist_alu(payload) &&
                 `OPENRV64_ALU2_OP_SUPPORTED(
                     payload[PAYLOAD_ALU_EXT +: `RV64_ALU_EXT_WIDTH],
                     payload[PAYLOAD_ALU_OP +: `RV64_ALU_OP_WIDTH]);
@@ -965,7 +993,8 @@ module openrv64_dispatch_window_3p #(
                     // lose the completion broadcast.
                     if (physical_forward_valid_i[physical_ready_port] &&
                         (is_fixed_ex0(payload_q[ready_idx]) ||
-                         is_flexible_alu(payload_q[ready_idx])) &&
+                         is_flexible_alu(payload_q[ready_idx]) ||
+                         is_ex1_assist_alu(payload_q[ready_idx])) &&
                         !src1_ready_now[ready_idx] &&
                         (src1_phys_q[ready_idx] == physical_ready_tag)) begin
                         src1_ready_now[ready_idx] = 1'b1;
@@ -982,7 +1011,8 @@ module openrv64_dispatch_window_3p #(
                     end
                     if (physical_forward_valid_i[physical_ready_port] &&
                         (is_fixed_ex0(payload_q[ready_idx]) ||
-                         is_flexible_alu(payload_q[ready_idx])) &&
+                         is_flexible_alu(payload_q[ready_idx]) ||
+                         is_ex1_assist_alu(payload_q[ready_idx])) &&
                         !src2_ready_now[ready_idx] &&
                         (src2_phys_q[ready_idx] == physical_ready_tag)) begin
                         src2_ready_now[ready_idx] = 1'b1;
@@ -1391,12 +1421,13 @@ module openrv64_dispatch_window_3p #(
                 !older_persistent_hard &&
                 !prediction_update_match[eligible_idx];
 
-            // Same-lane ALU chaining is a scheduler promise, not a speculative
-            // value broadcast.  Admit a base-ALU consumer when every missing
-            // operand names the exact one-cycle producer currently firing on
-            // that lane.  Other operands must already be ready.  The selected
-            // packet carries the original producer IDs to the downstream
-            // operand latch; EX verifies them against its retained completion.
+            // Same-lane chaining is a scheduler promise, not a speculative
+            // value broadcast.  Admit a base-ALU or recoverable EX1 control
+            // consumer when every missing operand names the exact one-cycle
+            // producer currently firing on that lane.  Other operands must
+            // already be ready.  The selected packet carries the original
+            // producer IDs to the downstream operand latch; EX verifies them
+            // against its retained completion.
             chain_mask_ex0[eligible_idx][0] =
                 (ENABLE_ALU_CHAINING != 0) && PHYSICAL_RENAME &&
                 chain_producer_valid_i[0] && uses_rs1_q[eligible_idx] &&
@@ -1470,13 +1501,18 @@ module openrv64_dispatch_window_3p #(
             chain_eligible_ex1[eligible_idx] =
                 (|chain_mask_ex1[eligible_idx]) &&
                 valid_q[eligible_idx] && !issued_q[eligible_idx] &&
-                is_flexible_alu(payload_q[eligible_idx]) &&
+                (is_flexible_alu(payload_q[eligible_idx]) ||
+                 is_ex1_assist_alu(payload_q[eligible_idx]) ||
+                 is_ex1_chain_control(payload_q[eligible_idx])) &&
                 (src1_ready_now[eligible_idx] ||
                  chain_mask_ex1[eligible_idx][0]) &&
                 (src2_ready_now[eligible_idx] ||
                  chain_mask_ex1[eligible_idx][1]) &&
                 !older_unissued_hard && !older_persistent_hard &&
                 !prediction_update_match[eligible_idx] &&
+                !(is_ex1_chain_control(payload_q[eligible_idx]) &&
+                  (older_unresolved_conditional ||
+                   older_unresolved_jalr)) &&
                 id_is_younger(id_q[eligible_idx], chain_producer_id_i[
                     1*`OPENRV64_INSTR_ID_WIDTH +:
                     `OPENRV64_INSTR_ID_WIDTH]);
@@ -3301,7 +3337,8 @@ module openrv64_dispatch_window_3p #(
                             if (physical_forward_valid_i[
                                     physical_update_port] &&
                                 (is_fixed_ex0(payload_q[entry_idx]) ||
-                                 is_flexible_alu(payload_q[entry_idx])) &&
+                                 is_flexible_alu(payload_q[entry_idx]) ||
+                                 is_ex1_assist_alu(payload_q[entry_idx])) &&
                                 !src1_ready_q[entry_idx] &&
                                 (src1_phys_q[entry_idx] ==
                                  physical_writeback_tag_i[
@@ -3323,7 +3360,8 @@ module openrv64_dispatch_window_3p #(
                             if (physical_forward_valid_i[
                                     physical_update_port] &&
                                 (is_fixed_ex0(payload_q[entry_idx]) ||
-                                 is_flexible_alu(payload_q[entry_idx])) &&
+                                 is_flexible_alu(payload_q[entry_idx]) ||
+                                 is_ex1_assist_alu(payload_q[entry_idx])) &&
                                 !src2_ready_q[entry_idx] &&
                                 (src2_phys_q[entry_idx] ==
                                  physical_writeback_tag_i[
@@ -3515,7 +3553,8 @@ module openrv64_dispatch_window_3p #(
                             if (physical_forward_valid_i[
                                     physical_update_port] &&
                                 (is_fixed_ex0(payload_q[entry_idx]) ||
-                                 is_flexible_alu(payload_q[entry_idx])) &&
+                                 is_flexible_alu(payload_q[entry_idx]) ||
+                                 is_ex1_assist_alu(payload_q[entry_idx])) &&
                                 !src1_ready_q[entry_idx] &&
                                 (src1_phys_q[entry_idx] ==
                                  physical_writeback_tag_i[
@@ -3537,7 +3576,8 @@ module openrv64_dispatch_window_3p #(
                             if (physical_forward_valid_i[
                                     physical_update_port] &&
                                 (is_fixed_ex0(payload_q[entry_idx]) ||
-                                 is_flexible_alu(payload_q[entry_idx])) &&
+                                 is_flexible_alu(payload_q[entry_idx]) ||
+                                 is_ex1_assist_alu(payload_q[entry_idx])) &&
                                 !src2_ready_q[entry_idx] &&
                                 (src2_phys_q[entry_idx] ==
                                  physical_writeback_tag_i[

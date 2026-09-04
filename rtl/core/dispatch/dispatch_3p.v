@@ -319,6 +319,20 @@ module openrv64_dispatch_3p #(
     wire [2:0] candidate_hazard_free;
     wire [2:0] candidate_fire;
 
+    function automatic is_ex1_assist_alu;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        reg [`RV64_ALU_OP_WIDTH-1:0] alu_op;
+        begin
+            alu_op = payload[27 +: `RV64_ALU_OP_WIDTH];
+            is_ex1_assist_alu =
+                (payload[32 +: `RV64_ALU_EXT_WIDTH] ==
+                 `RV64_ALU_EXT_BASE) &&
+                ((alu_op == `RV64_ALU_OP_AUIPC) ||
+                 (alu_op == `RV64_ALU_OP_SLT) ||
+                 (alu_op == `RV64_ALU_OP_SLTU));
+        end
+    endfunction
+
     function automatic [`OPENRV64_EXEC_PIPE_WIDTH-1:0] fixed_pipe;
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         reg [`RV64_INSTR_WIDTH-1:0] payload_instr;
@@ -333,7 +347,8 @@ module openrv64_dispatch_3p #(
                     fixed_pipe = `OPENRV64_EXEC_PIPE_MEM1;
                 else
                     fixed_pipe = `OPENRV64_EXEC_PIPE_MEM0;
-            end else if (payload[10] || payload[9] || payload[8] ||
+            end else if (is_ex1_assist_alu(payload) ||
+                         payload[10] || payload[9] || payload[8] ||
                          payload[7] || payload[6] || payload[5] ||
                          payload[4] || payload[14] || payload[13]) begin
                 fixed_pipe = `OPENRV64_EXEC_PIPE_EX1;
@@ -354,6 +369,7 @@ module openrv64_dispatch_3p #(
                 payload[10] || payload[9] || payload[8] ||
                 payload[7] || payload[6] || payload[5] ||
                 payload[4] || payload[14] || payload[13] ||
+                is_ex1_assist_alu(payload) ||
                 (payload[34:32] == `RV64_ALU_EXT_M) ||
                 (payload[34:32] == `RV64_ALU_EXT_ZBB);
         end

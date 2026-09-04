@@ -355,8 +355,10 @@ module openrv64_exec_pipe_ex1 #(
 `ifndef SYNTHESIS
     always @(posedge clk) begin
         if (rst_n && !flush_i && issue_valid_i && (|chain_mask_i)) begin
-            if (!alu_selected || br_selected || csr_selected)
-                $fatal(1, "EX1 chain requested for non-base operation id=%0d",
+            if (csr_selected ||
+                ((!alu_selected) && (!br_selected)) ||
+                (alu_selected && br_selected))
+                $fatal(1, "EX1 chain requested for unsupported operation id=%0d",
                        issue_id_i);
             if (!chain_sources_ready)
                 $fatal(1,
