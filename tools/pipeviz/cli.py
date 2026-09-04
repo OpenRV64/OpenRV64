@@ -40,6 +40,28 @@ def main(argv=None):
                     help="per-class characterization of stores")
     ap.add_argument("--muldiv", action="store_true",
                     help="per-class characterization of mul/div ops")
+    ap.add_argument("--branches", action="store_true",
+                    help="per-class characterization of conditional "
+                         "branches (fetch->complete is the resolve time)")
+    ap.add_argument("--jumps", action="store_true",
+                    help="per-class characterization of JAL/JALR")
+    ap.add_argument("--hist", action="store_true",
+                    help="add latency histograms to class and control "
+                         "reports (sched->issue, issue->complete, "
+                         "complete->retire, fetch->retire, refetch)")
+    ap.add_argument("--bubbles", action="store_true",
+                    help="unified bubble report: lost issue slots and "
+                         "zero-retire cycles, attributed by reason, "
+                         "blocker PC, and phase of the run")
+    ap.add_argument("--wakeup", action="store_true",
+                    help="wakeup-tax calculator: waited-on dependence "
+                         "edges whose consumer issued exactly one cycle "
+                         "after the producer's completion, by producer "
+                         "class/latency and consumer PC")
+    ap.add_argument("--head", action="store_true",
+                    help="retire-head residency: which instructions sit "
+                         "at the ROB head, tenure by PC and class, split "
+                         "into awaiting-completion vs awaiting-acceptance")
     ap.add_argument("--chains", action="store_true",
                     help="dependency-chain analysis: depth distributions, "
                          "class mix of deep chains, parallelism profile")
@@ -73,7 +95,8 @@ def main(argv=None):
     from .stats import (basic_stats, ssr_report, characterize,
                         issue_blocked_report, retire_blocked_report,
                         control_report, src1_report, chains_report,
-                        health_report)
+                        health_report, bubbles_report, head_report,
+                        wakeup_report)
 
     t0 = time.time()
     progress = None
@@ -96,11 +119,11 @@ def main(argv=None):
     if args.stats:
         print(basic_stats(trace))
         did_something = True
-    for cls in ("loads", "stores", "alu", "muldiv"):
+    for cls in ("loads", "stores", "alu", "muldiv", "branches", "jumps"):
         if getattr(args, cls):
             if did_something:
                 print()
-            print(characterize(trace, cls))
+            print(characterize(trace, cls, hist=args.hist))
             did_something = True
     if args.chains:
         if did_something:
@@ -120,7 +143,22 @@ def main(argv=None):
     if args.control:
         if did_something:
             print()
-        print(control_report(trace))
+        print(control_report(trace, hist=args.hist))
+        did_something = True
+    if args.bubbles:
+        if did_something:
+            print()
+        print(bubbles_report(trace, phases=args.phases))
+        did_something = True
+    if args.head:
+        if did_something:
+            print()
+        print(head_report(trace, hist=args.hist))
+        did_something = True
+    if args.wakeup:
+        if did_something:
+            print()
+        print(wakeup_report(trace))
         did_something = True
     if args.issue_blocked:
         if did_something:

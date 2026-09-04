@@ -591,10 +591,16 @@ retirement**, because a store that has not retired is speculative.
 
 `pipeline-state.csv` is **`sw/coremark_loop.c` with an Sv39 stub loader** --
 `sw/runtime/sv39.S` sets mtvec and PMP, builds a page table, writes SATP and
-`MRET`s into supervisor mode at VA `0x40001000` where the payload runs. Built
-from the `CORE_3P_VM_ELF` recipe it reproduces the trace's instruction stream
-byte for byte, stub and payload alike, so camsim runs the identical image
-rather than something merely similar.
+`MRET`s into supervisor mode at VA `0x40001000` where the payload runs.
+
+**Use the shipped binary: `core/CORE_3P_VM_ELF-coremark-loop-vm.elf`.** Do not
+rebuild it. The make target uses `riscv64-elf-gcc`; building with
+`riscv64-unknown-elf-gcc` and the same flags produces a *different program* --
+297 of 367 common PCs hold different instructions, diverging from
+`0x4000105c`. The prologue matches, which is exactly what makes the mistake
+easy: checking the first ten instructions confirms nothing. Check all of them
+against the trace's own `pc -> instr` map, which takes a minute and is the only
+way to know.
 
 Two things had to exist first. `MRET`/`SRET` now restore the privilege their
 mode-return bits name and redirect to the EPC -- entering a trap is still not
@@ -613,13 +619,15 @@ cycles, which is DRAM. It is **bp9 (TAGE) with DDR3**.
 
 | | camsim | golden |
 |---|---:|---:|
-| span | **40,650** | **40,407** |
-| retired | 52,976 | 52,593 |
-| IPC | **1.303** | **1.302** |
-| squashed | 41.2% | 35.8% |
+| span | **40,620** | **40,407** |
+| retired | **52,588** | **52,593** |
+| IPC | 1.295 | 1.302 |
+| squashed | 40.5% | 35.8% |
 | result | `0x0a27789d` | -- |
 
-**+0.6% on span, IPC within 0.001.** Per-class issue-to-complete:
+**+0.5% on span, and the retired count agrees within five instructions** --
+which is the check that says the two are running the same program at all.
+Per-class issue-to-complete:
 
 | class | camsim p50 / mean | golden p50 / mean | |
 |---|---|---|---|

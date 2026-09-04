@@ -110,6 +110,36 @@ def _lat_line(label, values):
             "p99=%-5d max=%d" % (label, n, lo, mean, p50, p90, p99, hi))
 
 
+def _hist_lines(vals, indent="    ", bar_width=40):
+    """ASCII histogram: exact bins 0..15, coarse ranges above, trimmed
+    to the occupied span (interior zero bins are kept for shape)."""
+    if not vals:
+        return [indent + "(no samples)"]
+    n = len(vals)
+    edges = [(i, i) for i in range(0, 16)] + [
+        (16, 19), (20, 24), (25, 29), (30, 39), (40, 59), (60, 99),
+        (100, None)]
+    rows = []
+    neg = sum(1 for v in vals if v < 0)
+    if neg:
+        rows.append(("<0", neg))
+    for lo, hi in edges:
+        c = sum(1 for v in vals if v >= lo and (hi is None or v <= hi))
+        label = ("%d" % lo if hi == lo else
+                 "%d+" % lo if hi is None else "%d-%d" % (lo, hi))
+        rows.append((label, c))
+    while rows and rows[0][1] == 0:
+        rows.pop(0)
+    while rows and rows[-1][1] == 0:
+        rows.pop()
+    out = []
+    for label, c in rows:
+        bar = "#" * int(round(float(bar_width) * c / n))
+        out.append("%s%-7s %9s  (%5.1f%%)  %s" % (
+            indent, label, "{:,}".format(c), 100.0 * c / n, bar))
+    return out
+
+
 def _reason_table(title, per_reason, affected, population):
     """Format aggregated wait-reason cycles for one component."""
     out = ["  %s:" % title]
@@ -156,11 +186,16 @@ CLASSES = {
     "stores": lambda r: r.is_store,
     "alu": lambda r: _insn_class(r.instr) == "alu",
     "muldiv": lambda r: _insn_class(r.instr) == "muldiv",
+    "branches": lambda r: _insn_class(r.instr) == "branch",
+    "jumps": lambda r: _insn_class(r.instr) == "jump",
 }
 
 
-def characterize(trace, want):
-    """Per-class characterization report.  want: one of CLASSES."""
+def characterize(trace, want, hist=False):
+    """Per-class characterization report.  want: one of CLASSES.
+
+    hist=True adds full latency histograms for the segments where the
+    shape matters (the summary line's p50/p90 hides bimodality)."""
     try:
         pred = CLASSES[want]
     except KeyError:
@@ -207,26 +242,31 @@ def characterize(trace, want):
                 vals.append(y - x)
         return vals
 
+    segments = [
+        ("fetch -> decode", False,
+         seg(lambda r: r.fetch_first_cycle, lambda r: r.decode_cycle)),
+        ("decode -> sched entry", False,
+         seg(lambda r: r.decode_cycle, lambda r: r.sched_enter_cycle)),
+        ("sched entry -> issue", True,
+         seg(lambda r: r.sched_enter_cycle, lambda r: r.issue_cycle)),
+        ("issue -> complete", True,
+         seg(lambda r: r.issue_cycle, lambda r: r.complete_cycle)),
+        ("complete -> retire", True,
+         seg(lambda r: r.complete_cycle, lambda r: r.retire_cycle)),
+        ("fetch -> retire (total)", True,
+         seg(lambda r: r.fetch_first_cycle, lambda r: r.retire_cycle)),
+    ]
     a("")
     a("timing segments, retired %s (cycles):" % want)
-    a(_lat_line("fetch -> decode",
-                seg(lambda r: r.fetch_first_cycle,
-                    lambda r: r.decode_cycle)))
-    a(_lat_line("decode -> sched entry",
-                seg(lambda r: r.decode_cycle,
-                    lambda r: r.sched_enter_cycle)))
-    a(_lat_line("sched entry -> issue",
-                seg(lambda r: r.sched_enter_cycle,
-                    lambda r: r.issue_cycle)))
-    a(_lat_line("issue -> complete",
-                seg(lambda r: r.issue_cycle,
-                    lambda r: r.complete_cycle)))
-    a(_lat_line("complete -> retire",
-                seg(lambda r: r.complete_cycle,
-                    lambda r: r.retire_cycle)))
-    a(_lat_line("fetch -> retire (total)",
-                seg(lambda r: r.fetch_first_cycle,
-                    lambda r: r.retire_cycle)))
+    for label, _, vals in segments:
+        a(_lat_line(label, vals))
+    if hist:
+        for label, wanted, vals in segments:
+            if not wanted:
+                continue
+            a("")
+            a("  %s histogram:" % label)
+            out.extend(_hist_lines(vals))
 
     lat = seg(lambda r: r.issue_cycle, lambda r: r.complete_cycle)
     modes = {}
@@ -402,13 +442,372 @@ def retire_blocked_report(trace):
     return "\n".join(out)
 
 
-def control_report(trace):
+def head_report(trace, hist=False):
+    """Retire-head residency: who sits at the ROB head, and for how long.
+
+    The head is the minimum live uid in the ROB each cycle (uid order is
+    program order).  Tenure counts every cycle an instruction holds the
+    head, split into waiting-for-completion (c <= complete_cycle -- the
+    falling-edge sampling rule: at the COMPLETE FIRE cycle the ROB row
+    still reads INCOMPLETE) and complete-but-not-yet-retired (retire
+    width / acceptance).  Grouped by PC so a hot instruction is named,
+    not just a hot class.
+    """
+    lo, hi = trace.min_cycle, trace.max_cycle
+    span = trace.n_cycles
+    rhc, insns = trace.rob_head_cycles, trace.insns
+
+    per_uid = {}                  # uid -> [incomplete cyc, complete cyc]
+    occupied = 0
+    for c in range(lo, hi + 1):
+        info = rhc.get(c)
+        if info is None:
+            continue
+        occupied += 1
+        uid = info[0]
+        e = per_uid.get(uid)
+        if e is None:
+            e = per_uid[uid] = [0, 0]
+        r = insns.get(uid)
+        if (r is not None and r.complete_cycle is not None
+                and c > r.complete_cycle):
+            e[1] += 1
+        else:
+            e[0] += 1
+
+    def p50(vs):
+        vs = sorted(vs)
+        return vs[len(vs) // 2]
+
+    per_pc = {}       # pc -> [n, cyc, incomplete, tenures, insn]
+    per_cls = {}      # class -> [n, cyc, incomplete, tenures]
+    tenures = []
+    for uid, (inc, comp) in per_uid.items():
+        r = insns.get(uid)
+        if r is None:
+            continue
+        t = inc + comp
+        tenures.append(t)
+        k = _insn_class(r.instr)
+        s = per_cls.setdefault(k, [0, 0, 0, []])
+        s[0] += 1
+        s[1] += t
+        s[2] += inc
+        s[3].append(t)
+        e = per_pc.get(r.pc)
+        if e is None:
+            e = per_pc[r.pc] = [0, 0, 0, [], r]
+        e[0] += 1
+        e[1] += t
+        e[2] += inc
+        e[3].append(t)
+
+    out = []
+    a = out.append
+    a("retire-head residency (span {:,} cycles, head occupied {:,} = "
+      "{:.1f}%):".format(span, occupied, _pct(occupied, span)))
+    a("  {:,} dynamic instructions held the head, mean tenure {:.2f} "
+      "cycles".format(len(tenures),
+                      float(sum(tenures)) / len(tenures) if tenures else 0))
+    a("  (tenure: incomplete = waiting for its own completion; complete = "
+      "waiting to be accepted)")
+    a("")
+    a("by class:")
+    a("  %-8s %8s %10s %7s  %6s %5s %5s  %s" % (
+        "class", "heads", "head-cyc", "of-occ", "mean", "p50", "max",
+        "incomplete%"))
+    for k, (n, cyc, inc, ts) in sorted(per_cls.items(),
+                                       key=lambda kv: -kv[1][1]):
+        a("  %-8s %8s %10s %6.1f%%  %6.2f %5d %5d  %10.1f%%" % (
+            k, "{:,}".format(n), "{:,}".format(cyc), _pct(cyc, occupied),
+            float(cyc) / n, p50(ts), max(ts), _pct(inc, cyc)))
+    a("")
+    a("top instructions by cycles held at the head:")
+    a("  %-10s %-10s %-7s %6s %9s  %6s %4s %5s  %s" % (
+        "pc", "instr", "class", "n", "head-cyc", "mean", "p50", "max",
+        "incomplete%"))
+    for pc, (n, cyc, inc, ts, r) in sorted(per_pc.items(),
+                                           key=lambda kv: -kv[1][1])[:20]:
+        a("  %-10x %08x   %-7s %6s %9s  %6.2f %4d %5d  %10.1f%%" % (
+            pc, r.instr, _insn_class(r.instr), "{:,}".format(n),
+            "{:,}".format(cyc), float(cyc) / n, p50(ts), max(ts),
+            _pct(inc, cyc)))
+
+    if hist:
+        a("")
+        a("head tenure histogram (all dynamic heads, cycles at head):")
+        out.extend(_hist_lines(tenures))
+        for k, (n, cyc, inc, ts) in sorted(per_cls.items(),
+                                           key=lambda kv: -kv[1][1])[:3]:
+            a("")
+            a("%s head tenure histogram:" % k)
+            out.extend(_hist_lines(ts))
+    return "\n".join(out)
+
+
+def wakeup_report(trace, top=12):
+    """Wakeup-tax calculator.
+
+    Architectural last-writer walk over the retired stream (same
+    provenance as --src1).  Every consumer that logged SRC1/SRC2 wait
+    cycles names its producer; the edge's wakeup slack is
+    consumer.issue - producer.complete.
+
+      slack <= 0 : consumer issued at/before the completion event
+                   (value forwarded early) -- no tax
+      slack == 1 : issued exactly one cycle after completion -- the
+                   completion-timed wakeup register.  On a 1-cycle
+                   producer this doubles the hop.
+      slack >= 2 : something else also held the consumer (width, a
+                   port, another source) -- not pure wakeup tax.
+
+    The taxed-edge count is an inventory, not a span prediction: taxed
+    edges on parallel paths compress for free, serial chains pay per
+    hop.  Price the fix by re-execution (camsim/RTL), not from here.
+    """
+    from .model import ROB_D0_REG_WRITE
+    retired = sorted((r.uid, r) for r in trace.insns.values()
+                     if r.retired and r.rob_info is not None)
+    last_writer = [None] * 32
+    per = {}                  # producer key -> [<=0, ==1, ==2, >=3]
+    taxed_consumer = {}
+    taxed_pc = {}
+    for uid, r in retired:
+        d = r.sched_wait_reasons
+        if d and r.issue_cycle is not None:
+            w1 = d.get(1, 0) + d.get(3, 0)
+            w2 = d.get(2, 0) + d.get(3, 0)
+            for w, reg in ((w1, r.rs1), (w2, r.rs2)):
+                if not w or not reg:
+                    continue
+                p = last_writer[reg]
+                if (p is None or p.issue_cycle is None
+                        or p.complete_cycle is None):
+                    continue
+                plat = p.complete_cycle - p.issue_cycle
+                pk = _insn_class(p.instr)
+                if p.exec_worker_cycles:
+                    pk = "muldiv"
+                key = "%s lat=%s" % (pk, plat if plat <= 3 else "4+")
+                slack = r.issue_cycle - p.complete_cycle
+                b = 0 if slack <= 0 else 1 if slack == 1 else \
+                    2 if slack == 2 else 3
+                per.setdefault(key, [0, 0, 0, 0])[b] += 1
+                if slack == 1:
+                    ck = _insn_class(r.instr)
+                    taxed_consumer[ck] = taxed_consumer.get(ck, 0) + 1
+                    t = taxed_pc.setdefault(r.pc, [0, r])
+                    t[0] += 1
+        if (r.rob_info >> ROB_D0_REG_WRITE) & 1 and r.rd:
+            last_writer[r.rd] = r
+
+    out = []
+    a = out.append
+    total = sum(sum(v) for v in per.values())
+    taxed = sum(v[1] for v in per.values())
+    a("wakeup tax (waited-on dependence edges, slack = consumer issue"
+      " - producer complete):")
+    a("  %s edges from consumers that logged SRC waits; %s taxed"
+      " (slack == 1, %.1f%%)" % ("{:,}".format(total),
+                                 "{:,}".format(taxed),
+                                 _pct(taxed, total)))
+    a("")
+    a("  by producer (class, latency):")
+    a("    %-14s %8s  %8s %8s %8s %8s" % (
+        "producer", "edges", "<=0", "==1", "==2", ">=3"))
+    for key, v in sorted(per.items(), key=lambda kv: -kv[1][1]):
+        n = sum(v)
+        a("    %-14s %8s  %7.1f%% %7.1f%% %7.1f%% %7.1f%%" % (
+            key, "{:,}".format(n), _pct(v[0], n), _pct(v[1], n),
+            _pct(v[2], n), _pct(v[3], n)))
+    a("")
+    a("  taxed edges by consumer class:")
+    for k, n in sorted(taxed_consumer.items(), key=lambda kv: -kv[1]):
+        a("    %-8s %8s" % (k, "{:,}".format(n)))
+    a("")
+    a("  top consumer PCs paying the tax:")
+    a("    %-10s %-10s %-7s %8s" % ("pc", "instr", "class", "edges"))
+    for pc, (n, r) in sorted(taxed_pc.items(),
+                             key=lambda kv: -kv[1][0])[:top]:
+        a("    %-10x %08x   %-7s %8s" % (pc, r.instr,
+                                         _insn_class(r.instr),
+                                         "{:,}".format(n)))
+    a("")
+    a("  (slack==1 on a lat=1 producer doubles that hop; on a lat=3")
+    a("   load it adds 33%%.  Serial chains pay per hop; parallel")
+    a("   edges are free.  Price the fix by re-execution, not here.)")
+    return "\n".join(out)
+
+
+def bubbles_report(trace, phases=10, width=3):
+    """Where pipeline width is lost, and why -- one unified view.
+
+    An issue bubble is an unused issue slot (width x span minus EXEC
+    FIREs); a retire bubble is a zero-retire cycle.  Issue attribution
+    is the program-oldest WAITing scheduler entry that cycle, which
+    also names the *instruction* the machine was stuck behind, so the
+    top blockers get a PC.  The phase table says where in the run the
+    bubbles live; the PC table says where in the program.
+    """
+    from .model import NO_UID
+    lo, hi = trace.min_cycle, trace.max_cycle
+    span = trace.n_cycles
+    ic, sc, insns = trace.issue_counts, trace.sched_cycles, trace.insns
+
+    total_slots = width * span
+    used = sum(ic.values())
+    lost_by = {}                   # reason code or label -> slots
+    per_pc = {}                    # pc -> [slots, cycles, {reason: slots}, r]
+    ph_lost = [0] * phases         # lost slots per phase
+    ph_used = [0] * phases
+    ph_reason = [dict() for _ in range(phases)]
+    zero_cycles = partial_cycles = 0
+    for c in range(lo, hi + 1):
+        issued = ic.get(c, 0)
+        p = min((c - lo) * phases // span, phases - 1)
+        ph_used[p] += issued
+        lost = width - issued
+        if lost <= 0:
+            continue
+        if issued == 0:
+            zero_cycles += 1
+        else:
+            partial_cycles += 1
+        info = sc.get(c)
+        if info is None:
+            key = "(scheduler empty)"
+        elif info[0] == NO_UID:
+            key = "(all READY: width/arbitration)"
+        else:
+            key = info[1]
+        lost_by[key] = lost_by.get(key, 0) + lost
+        ph_lost[p] += lost
+        ph_reason[p][key] = ph_reason[p].get(key, 0) + lost
+        if info is not None and info[0] != NO_UID:
+            r = insns.get(info[0])
+            if r is not None:
+                e = per_pc.get(r.pc)
+                if e is None:
+                    e = per_pc[r.pc] = [0, 0, {}, r]
+                e[0] += lost
+                e[1] += 1
+                e[2][info[1]] = e[2].get(info[1], 0) + lost
+
+    def rname(key):
+        return key if isinstance(key, str) else reason_name(key)
+
+    out = []
+    a = out.append
+    a("bubble report (span {:,} cycles, issue width {}):".format(
+        span, width))
+    a("")
+    a("issue slots: {:,} total, {:,} used ({:.1f}%), {:,} lost "
+      "({:,} zero-issue cycles, {:,} partial)".format(
+          total_slots, used, _pct(used, total_slots), total_slots - used,
+          zero_cycles, partial_cycles))
+    a("  lost slots by the oldest waiting entry's reason:")
+    for key, n in sorted(lost_by.items(), key=lambda kv: -kv[1]):
+        a("    %-30s %9s  (%5.1f%%)" % (
+            rname(key), "{:,}".format(n), _pct(n, total_slots - used)))
+    a("")
+    a("  top blocker instructions (the entry the machine was stuck "
+      "behind):")
+    a("    %-10s %-10s %-7s %9s %8s  %s" % (
+        "pc", "instr", "class", "slots", "cycles", "dominant reason"))
+    top = sorted(per_pc.items(), key=lambda kv: -kv[1][0])[:12]
+    for pc, (slots, cycles, reasons, r) in top:
+        dk, dn = max(reasons.items(), key=lambda kv: kv[1])
+        a("    %-10x %08x   %-7s %9s %8s  %s %d%%" % (
+            pc, r.instr, _insn_class(r.instr), "{:,}".format(slots),
+            "{:,}".format(cycles), rname(dk), 100 * dn // slots))
+
+    # -- retire side --------------------------------------------------
+    rc, rhc = trace.retire_counts, trace.rob_head_cycles
+    head_by = {}
+    head_pc = {}
+    zero = 0
+    for c in range(lo, hi + 1):
+        if rc.get(c, 0):
+            continue
+        zero += 1
+        info = rhc.get(c)
+        if info is None:
+            head_by["(ROB empty)"] = head_by.get("(ROB empty)", 0) + 1
+            continue
+        uid, state = info
+        r = insns.get(uid)
+        cls = ("store" if r is not None and r.is_store else
+               "load" if r is not None and r.is_load else
+               "branch" if r is not None and r.is_branch else
+               "jump" if r is not None and r.is_jump else "other")
+        key = ("head %s, %s" % (cls, "incomplete" if state == 10
+                                else "complete (backpressure)"))
+        head_by[key] = head_by.get(key, 0) + 1
+        if state == 10 and r is not None:
+            e = head_pc.get(r.pc)
+            if e is None:
+                e = head_pc[r.pc] = [0, r]
+            e[0] += 1
+    a("")
+    a("retire: {:,} zero-retire cycles ({:.1f}% of span), by ROB head:"
+      .format(zero, _pct(zero, span)))
+    for key, n in sorted(head_by.items(), key=lambda kv: -kv[1]):
+        a("    %-32s %8s  (%5.1f%%)" % (key, "{:,}".format(n),
+                                        _pct(n, zero)))
+    a("  top head instructions (incomplete at the head, zero-retire "
+      "cycles):")
+    for pc, (cycles, r) in sorted(head_pc.items(),
+                                  key=lambda kv: -kv[1][0])[:8]:
+        a("    %-10x %08x   %-7s %8s" % (
+            pc, r.instr, _insn_class(r.instr), "{:,}".format(cycles)))
+
+    # -- frontend delivery --------------------------------------------
+    dc = trace.decode_cand
+    fe = [0] * (width + 1)
+    for c in range(lo, hi + 1):
+        fe[min(dc.get(c, 0), width)] += 1
+    a("")
+    a("frontend delivery (decode candidates present per cycle):")
+    for n, cyc in enumerate(fe):
+        label = "%d%s" % (n, "+" if n == width else "")
+        a("    %-3s %9s  (%5.1f%%)" % (label, "{:,}".format(cyc),
+                                       _pct(cyc, span)))
+
+    # -- where in the run ----------------------------------------------
+    a("")
+    a("phases (issue-slot usage across the run):")
+    a("    %-5s %-17s %6s %10s  %s" % ("phase", "cycles", "used%",
+                                       "lost", "dominant loss"))
+    for p in range(phases):
+        c0 = lo + span * p // phases
+        c1 = lo + span * (p + 1) // phases - 1
+        ncyc = c1 - c0 + 1
+        slots = ncyc * width
+        dom = ""
+        if ph_reason[p]:
+            dk, dn = max(ph_reason[p].items(), key=lambda kv: kv[1])
+            dom = "%s %d%%" % (rname(dk), 100 * dn // max(ph_lost[p], 1))
+        a("    %-5d %8d..%-8d %5.1f%% %10s  %s" % (
+            p, c0, c1, _pct(ph_used[p], slots),
+            "{:,}".format(ph_lost[p]), dom))
+    return "\n".join(out)
+
+
+def control_report(trace, hist=False):
     """Control-transfer characterization: branches, JAL, JALR.
 
     'fetched ahead' = the next retired instruction's first fetch precedes
     this control op's completion, i.e. correct-path fetch ran ahead of
     resolution (frontend prediction worked).  Head-wait is scheduler
     cycles under RETIRE_HEAD_REQUIRED (reason 6).
+
+    The refetch detail measures the redirect path itself on the ops
+    that missed: complete -> correct-path fetch is the machinery cost
+    (0-1 = redirect at complete), fetch -> refetch is the full penalty
+    including the operand wait that delayed resolution, and the shadow
+    is the wrong-path work thrown away.  hist=True adds histograms,
+    including fetch -> complete for every branch (how long each one
+    keeps its speculation shadow open).
     """
     import bisect
     retired = sorted((r.uid, r) for r in trace.insns.values() if r.retired)
@@ -437,7 +836,9 @@ def control_report(trace):
         if k is None:
             continue
         s = stats.setdefault(k, {"n": 0, "ahead": 0, "refetch": 0,
-                                 "headwait": [], "shadow_squash": 0})
+                                 "headwait": [], "shadow_squash": 0,
+                                 "c2f": [], "r2f": [], "pen": [],
+                                 "shadow": []})
         s["n"] += 1
         if r.sched_wait_reasons:
             w = r.sched_wait_reasons.get(6, 0)
@@ -446,14 +847,23 @@ def control_report(trace):
         i = index[u]
         if i + 1 < len(retired):
             nu, nr = retired[i + 1]
+            shadow = (bisect.bisect_left(squashed, nu)
+                      - bisect.bisect_right(squashed, u))
             if (nr.fetch_first_cycle is not None
                     and r.complete_cycle is not None):
                 if nr.fetch_first_cycle < r.complete_cycle:
                     s["ahead"] += 1
                 else:
                     s["refetch"] += 1
-            s["shadow_squash"] += (bisect.bisect_left(squashed, nu)
-                                   - bisect.bisect_right(squashed, u))
+                    s["c2f"].append(nr.fetch_first_cycle - r.complete_cycle)
+                    if r.retire_cycle is not None:
+                        s["r2f"].append(nr.fetch_first_cycle
+                                        - r.retire_cycle)
+                    if r.fetch_first_cycle is not None:
+                        s["pen"].append(nr.fetch_first_cycle
+                                        - r.fetch_first_cycle)
+                    s["shadow"].append(shadow)
+            s["shadow_squash"] += shadow
 
     out = ["control-transfer characterization (retired):"]
     a = out.append
@@ -477,6 +887,49 @@ def control_report(trace):
     a("  total squashed uids in run: {:,}".format(len(squashed)))
     a("  (shadow-squash: squashed uids between this op and the next")
     a("   retired one -- wrong-path work in its speculation shadow)")
+
+    def _p(vals):
+        if not vals:
+            return "-"
+        vs = sorted(vals)
+        n = len(vs)
+        return "%d/%.1f/%d" % (vs[n // 2], sum(vs) / float(n), vs[-1])
+
+    a("")
+    a("  refetch detail (mispredicted / resolved-late ops):")
+    a("  %-10s %6s  %16s  %16s  %16s  %14s" % (
+        "class", "n", "complete->fetch", "retire->fetch",
+        "fetch->refetch", "shadow uids"))
+    a("  %-10s %6s  %16s  %16s  %16s  %14s" % (
+        "", "", "p50/mean/max", "p50/mean/max", "p50/mean/max",
+        "p50/mean/max"))
+    for k in ("branch", "jal", "jalr.call", "jalr.ret", "jalr.other"):
+        s = stats.get(k)
+        if not s or not s["c2f"]:
+            continue
+        a("  %-10s %6d  %16s  %16s  %16s  %14s" % (
+            k, len(s["c2f"]), _p(s["c2f"]), _p(s["r2f"]), _p(s["pen"]),
+            _p(s["shadow"])))
+    a("  (complete->fetch ~0-1 = the redirect fires at completion;")
+    a("   the rest of fetch->refetch is the wait for operands)")
+
+    if hist:
+        br = [r for _, r in retired if (r.instr & 0x7F) == 0x63
+              and r.complete_cycle is not None
+              and r.fetch_first_cycle is not None]
+        a("")
+        a("  branch fetch -> complete histogram (all retired branches --")
+        a("  how long each keeps its speculation shadow open):")
+        out.extend(_hist_lines(
+            [r.complete_cycle - r.fetch_first_cycle for r in br]))
+        for k in ("branch", "jalr.ret"):
+            s = stats.get(k)
+            if not s or not s["c2f"]:
+                continue
+            a("")
+            a("  %s fetch -> refetch histogram (full mispredict penalty):"
+              % k)
+            out.extend(_hist_lines(s["pen"]))
     return "\n".join(out)
 
 
