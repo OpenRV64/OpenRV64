@@ -52,7 +52,8 @@ class Insn(object):
     __slots__ = ("uid", "pc", "instr", "klass", "rd", "rs1", "rs2",
                  "writes_rd", "uses_rs1", "uses_rs2", "a", "b",
                  "result", "next_pc", "pred_pc", "done", "fault", "fault_pc",
-                 "is_store", "addr", "store_data", "csr_done", "bp_rec")
+                 "is_store", "addr", "store_data", "csr_done", "bp_rec",
+                 "fetch_fault")
 
     def __init__(self, uid, pc, instr):
         self.uid = uid
@@ -73,6 +74,10 @@ class Insn(object):
         self.store_data = None
         self.csr_done = False
         self.bp_rec = None
+        # Set when the line this came from could not be translated.  The
+        # instruction still exists and still flows down the pipe: a fault is a
+        # property of an instruction, and is only taken if it retires.
+        self.fetch_fault = 0
 
     def __eq__(self, o):
         return isinstance(o, Insn) and o.uid == self.uid
@@ -163,7 +168,11 @@ class IFetch(Module):
         out("core.cands", ASYNC, PULSE, doc="instructions offered this cycle"),
         out("mtl.ireq", ASYNC, PULSE, None, doc="line request, virtual"),
         out("core.pc", REG, LEVEL, 0),
-        out("core.ifault", REG, PULSE, None, doc="fetch fault, halts the machine"),
+        # A *level*, not a pulse, and not a halt: it says "fetch is parked on
+        # an address it cannot translate", which is only architectural if
+        # nothing older is in flight to redirect away from it.
+        out("core.ifault", REG, LEVEL, None,
+            doc="fetch parked on an untranslatable line"),
     ]
     subscribes = ["mtl.iresp", "mtl.iready", "mtl.iack", "redirect",
                   "core.taken"]
@@ -180,12 +189,15 @@ class IFetch(Module):
         self.bp = predictor
         Module.__init__(self, name)
 
-    def _predict(self, pc, w):
+    def _predict(self, pc, w, uid=None):
         """Predict, and hand the record back so retirement can train against
         the state that made this prediction rather than a later lookup."""
         if self.bp is None:
             return (pc + 4) & MASK, None
-        return self.bp.predict(pc, w)
+        try:
+            return self.bp.predict(pc, w, uid)
+        except TypeError:
+            return self.bp.predict(pc, w)
 
     def build(self, bus):
         if self.bp is None and self.predict != "seq":
@@ -205,9 +217,11 @@ class IFetch(Module):
         self.lines = {}          # line base -> bytes
         self.pending_line = None
         self.queue = []
+        self.line_fault = {}      # line base -> cause, for lines that faulted
         self.fetched = 0
         self.misses = 0
         self.stall_mem = 0
+        self.fault_stalls = 0
 
     def _word(self, pc):
         base = pc & ~(self.LINE - 1)
@@ -227,13 +241,29 @@ class IFetch(Module):
             pc = redir.target
         new, want_line = [], None
         while len(queue) < self.width:
+            base = pc & ~(self.LINE - 1)
+            cause = self.line_fault.get(base)
+            if cause is not None:
+                # Emit the faulting instruction rather than nothing: if this
+                # path is real the fault must be taken, and if it is not the
+                # redirect discards it like any other wrong-path work.  What
+                # cannot be done is fetching *past* it -- there is no way to
+                # know what follows an instruction that could not be read.
+                uid += 1
+                ins = Insn(uid, pc, 0)
+                ins.fetch_fault = cause
+                ins.pred_pc = (pc + 4) & MASK
+                ins.bp_rec = None
+                queue.append(ins)
+                new.append(ins)
+                break
             w = self._word(pc)
             if w is None:
-                want_line = pc & ~(self.LINE - 1)
+                want_line = base
                 break
             uid += 1
             ins = Insn(uid, pc, w)
-            ins.pred_pc, ins.bp_rec = self._predict(pc, w)
+            ins.pred_pc, ins.bp_rec = self._predict(pc, w, uid)
             queue.append(ins)
             new.append(ins)
             pc = ins.pred_pc
@@ -249,7 +279,8 @@ class IFetch(Module):
         bus.pub(self.S_CANDS, e["queue"][:self.width] or None)
         want = e["want_line"]
         if (want is not None and want != self.pending_line
-                and self.pending_line is None and bus.get(self.S_IRDY)):
+                and self.pending_line is None
+                and want not in self.line_fault and bus.get(self.S_IRDY)):
             bus.pub(self.S_IREQ, Xlate(want, want, self.LINE, ACCESS_EXEC,
                                        side="i"))
         else:
@@ -260,12 +291,23 @@ class IFetch(Module):
             self._reset_state()
             bus.pub(self.S_PC, self.pc)
             return
-        if bus.get(self.S_REDIR) is not None and self.bp is not None:
-            self.bp.recover()
+        if bus.get(self.S_REDIR) is not None:
+            # A different path: whatever could not be translated over there is
+            # not this path's problem.  Let it be retried if we come back.
+            self.line_fault.clear()
+            if self.bp is not None:
+                self.bp.recover()
         resp = bus.get(self.S_IRESP)
         if resp is not None and resp.side == "i":
             if resp.fault:
-                bus.pub(self.S_IFAULT, (resp.fault, resp.vaddr))
+                # Speculation ran off the mapped region.  Stop fetching and
+                # wait: a path that cannot be translated is almost always a
+                # path that was mispredicted, and the redirect that proves it
+                # is already on its way.  Faulting here would take a trap for
+                # an instruction that never architecturally happens -- which
+                # is what made a deeper window crash the machine rather than
+                # just waste work.
+                self.line_fault[resp.vaddr] = resp.fault
             else:
                 self.lines[resp.vaddr] = resp.data
             self.pending_line = None
@@ -289,7 +331,8 @@ class IFetch(Module):
 
     def report(self):
         return {"fetched": self.fetched, "line_misses": self.misses,
-                "cycles_waiting_on_imem": self.stall_mem}
+                "cycles_waiting_on_imem": self.stall_mem,
+                "faulting_lines": len(self.line_fault)}
 
 
 class Issue(Module):
@@ -364,10 +407,15 @@ class Issue(Module):
         for r in range(1, 32):
             self.map[r] = self.free.pop(0)
         self.window = []          # scheduler entries, waiting to issue
-        # Selected but not yet complete.  The window entry is gone by then, so
-        # without this a completing instruction has no physical destination to
-        # wake and every dependent waits forever.
-        self.inflight_pd = {}
+        # The registered MEM0 forwarding stage: load results wait here one
+        # cycle before they can wake anything.
+        self._mem_forward = []
+        # uid -> physical destination, from dispatch until the result lands.
+        # Recorded at *dispatch*, not at select: a unit that completes in the
+        # cycle it is issued -- a zero-latency or bypassed one -- delivers its
+        # result before selection bookkeeping would have run, and the wakeup
+        # then finds no destination and the register is never marked ready.
+        self.pd_of = {}
         self.history = []         # (uid, arch_rd, new_p, old_p) for rollback
         self.issued = 0
         self.dispatched = 0
@@ -376,10 +424,24 @@ class Issue(Module):
 
     # -- wakeup ------------------------------------------------------------
     def _wakeups(self, bus):
+        """Results that can wake a waiting entry this cycle.
+
+        The arithmetic pipes forward in the cycle they complete; the load path
+        does not.  ``backend_3p.v`` is explicit about why -- feeding the LSU
+        response combinationally back into dispatch "can make a new memory
+        issue affect the response-ready path in the same active region", so
+        MEM0 is pipelined by one cycle into a one-entry forwarding stage before
+        it can be an operand source.
+
+        This is not a conservatism knob.  A same-cycle bypass from every
+        completion port to every entry of a 32-64 entry window is wakeup,
+        select and an operand mux in one cycle across the whole window -- not
+        a network that closes timing, so a model that grants it is describing
+        a machine nobody can build."""
         w = {}
         for d in (bus.get(self.S_ERES) or ()):
             w[d.uid] = d
-        for d in (bus.get(self.S_LRES) or ()):
+        for d in self._mem_forward:          # completed last cycle
             w[d.uid] = d
         return w
 
@@ -393,7 +455,7 @@ class Issue(Module):
     def _eval(self, bus):
         woken_p = {}
         for d in self._wakeups(bus).values():
-            pd = self.inflight_pd.get(d.uid)
+            pd = self.pd_of.get(d.uid)
             if pd:
                 woken_p[pd] = d.result if d.result is not None else 0
 
@@ -495,14 +557,21 @@ class Issue(Module):
                     del self.history[i]
                     break
 
+        # Retire the destinations of the results that actually woke this
+        # cycle -- captured before the forwarding stage advances, or a load's
+        # destination is dropped a cycle before its wakeup is applied and the
+        # register never goes ready.
+        woke_now = list(self._wakeups(bus))
+        # Advance the one-cycle memory forwarding stage.  Anything squashed
+        # while sitting in it is dropped, as the RTL drops it on flush.
+        redir_now = bus.get(self.S_REDIR)
+        self._mem_forward = [d for d in (bus.get(self.S_LRES) or ())
+                             if redir_now is None or d.uid <= redir_now.owner]
         sel = set(e["sel"])
-        for w in self.window:
-            if w["uid"] in sel:
-                self.inflight_pd[w["uid"]] = w["pd"]
         self.window = [w for w in self.window if w["uid"] not in sel]
         self.issued += len(sel)
-        for uid in self._wakeups(bus):
-            self.inflight_pd.pop(uid, None)
+        for uid in woke_now:
+            self.pd_of.pop(uid, None)
 
         for ins in e["order"]:
             ps1 = self.map[ins.rs1] if ins.uses_rs1 else 0
@@ -513,6 +582,7 @@ class Issue(Module):
                 oldp = self.map[ins.rd]
                 self.map[ins.rd] = pd
                 self.ready[pd] = False
+                self.pd_of[ins.uid] = pd
                 self.history.append((ins.uid, ins.rd, pd, oldp))
             self.window.append({"uid": ins.uid, "ins": ins, "ps1": ps1,
                                 "ps2": ps2, "pd": pd})
@@ -534,7 +604,7 @@ class Issue(Module):
             self.map[rd] = oldp
             self.free.append(newp)
             self.ready[newp] = True
-            self.inflight_pd.pop(uid, None)
+            self.pd_of.pop(uid, None)
         self.window = [w for w in self.window if w["uid"] <= owner]
 
     def value_of(self, p):
@@ -623,6 +693,10 @@ class Exu(Module):
     def _execute(self, pkt):
         ins, a, b = pkt.ins, pkt.a, pkt.b
         i, pc = ins.instr, ins.pc
+        if ins.fetch_fault:
+            cause = (R.CAUSE_IFETCH_PAGE_FAULT if ins.fetch_fault == FAULT_PAGE
+                     else R.CAUSE_IFETCH_ACCESS)
+            return Done(ins.uid, None, (pc + 4) & MASK, cause, pc)
         try:
             result = R.alu(i, a, b, pc) if ins.klass in (R.ALU, R.MULDIV,
                                                          R.JUMP) else None
@@ -953,7 +1027,8 @@ class Rob(Module):
     subscribes = ["exu.result", "lsu.result", "core.ifault", "redirect"]
 
     def __init__(self, regs, mem, depth=16, retire_width=2, name=None,
-                 predictor=None):
+                 predictor=None, redirects=True, control=None,
+                 retire_limit=None, csr_events=None):
         self.boot_priv = PRIV_M
         self.boot_satp = 0
         self.regs = regs
@@ -962,13 +1037,39 @@ class Rob(Module):
         self.retire_width = retire_width
         self.bp = predictor        # trained at retirement: the only ordered
                                    # point at which an outcome is known real
+        # With execution removed there is no outcome to compare a prediction
+        # against, so a recording drives the redirects instead and this unit
+        # must stop declaring the signal -- one driver, always.
+        self.emit_redirects = redirects
+        # Architectural next-PC per retired instruction, from a recording.
+        # With execution faked there is no other source of truth about control
+        # flow, and without it the predictor trains on its own predictions.
+        self.control = control
+        # Stop after the same number of architectural instructions the
+        # recording retired.  A decoupled run cannot rely on reaching the
+        # program's own `ebreak`: with execution faked, the instruction stream
+        # is replayed rather than computed, and it simply runs off the end of
+        # the recording.
+        self.retire_limit = retire_limit
+        # With execution faked, a CSR write computes from a zero register and
+        # an MRET returns to a zero EPC.  The privileged state is supplied as
+        # boot state instead, and these instructions just retire.
+        self.inert_system = control is not None
+        # (arch_i -> (satp, priv)) replayed at the instruction that changed it.
+        self.csr_at = dict((e[0], (e[1], e[2])) for e in (csr_events or ()))
+        self.state_at_retire = {}
+        if not redirects:
+            self.publishes = [x for x in type(self).publishes
+                              if x.name != "dispatch.sched"]
         self.entries = []
         self.renames = {}          # uid -> (new phys, displaced phys)
         Module.__init__(self, name)
 
     def build(self, bus):
+        self.S_SCHED = bus.signal("dispatch.sched") \
+            if self.emit_redirects else None
         for a, n in (("S_FREE", "rob.free"), ("S_RET", "rob.retired"),
-                     ("S_SCHED", "dispatch.sched"), ("S_COUNT", "rob.count"),
+                     ("S_COUNT", "rob.count"),
                      ("S_SATP", "csr.satp"), ("S_PRIV", "csr.priv"),
                      ("S_SFENCE", "csr.sfence"), ("S_HALT", "core.halt"),
                      ("S_EXU", "exu.result"), ("S_LSU", "lsu.result"),
@@ -986,6 +1087,7 @@ class Rob(Module):
         del self.entries[:]
         self.renames.clear()
         self.state = {}            # uid -> Done, as results arrive
+        self.state_at_retire = {}  # uid -> architectural next-PC, for tracing
         self._posted = []
         self.retired = 0
         self.mispredicts = 0
@@ -1029,13 +1131,7 @@ class Rob(Module):
         if self.halt:
             return
 
-        f = bus.get(self.S_IFAULT)
-        if f is not None:
-            self.halt = ("fetch %s at %#x" %
-                         ("page fault" if f[0] == FAULT_PAGE else "access fault",
-                          f[1]), f[1])
-            bus.pub(self.S_HALT, self.halt)
-            return
+
 
         redir = bus.get(self.S_REDIR)
         if redir is not None:
@@ -1072,13 +1168,17 @@ class Rob(Module):
             retired.append(head)
             self.retired += 1
             n += 1
+            if self.retire_limit and self.retired >= self.retire_limit:
+                self.halt = ("retired %d instructions, the recorded count"
+                             % self.retired, head.pc)
+                break
             if stop:
                 break
         if retired:
             bus.pub(self.S_RET, retired)
         if self._posted:
             bus.pub(self.S_ST, list(self._posted))
-        if sched:
+        if sched and self.S_SCHED is not None:
             bus.pub(self.S_SCHED, sched)
         bus.pub(self.S_COUNT, len(self.entries))
         bus.pub(self.S_SATP, self.satp)
@@ -1090,11 +1190,20 @@ class Rob(Module):
         """Architectural state changes, in order.  Returns True to stop this
         cycle's retirement (a redirect or a halt)."""
         from .dispatch import Sched
+        if self.control is not None and self.retired < len(self.control):
+            replayed = self.control[self.retired]
+            if replayed is not None:
+                d.next_pc = replayed
+        ev = self.csr_at.get(self.retired)
+        if ev is not None:
+            self.satp, self.priv = ev
+        self.state_at_retire[ins.uid] = d.next_pc
         if self.bp is not None and ins.bp_rec is not None \
                 and d.next_pc is not None:
             taken = d.next_pc != ((ins.pc + 4) & MASK)
             self.bp.train(ins.bp_rec, taken, d.next_pc)
-        if ins.klass == R.SYSTEM and self._system(ins, d, bus, sched):
+        if ins.klass == R.SYSTEM and not self.inert_system \
+                and self._system(ins, d, bus, sched):
             return True
         if ins.writes_rd and d.result is not None:
             self.regs.write(ins.rd, d.result)
@@ -1187,4 +1296,6 @@ _CAUSE = {
     R.CAUSE_STORE_PAGE_FAULT: "store page fault",
     R.CAUSE_LOAD_ACCESS: "load access fault",
     R.CAUSE_STORE_ACCESS: "store access fault",
+    R.CAUSE_IFETCH_PAGE_FAULT: "fetch page fault",
+    R.CAUSE_IFETCH_ACCESS: "fetch access fault",
 }

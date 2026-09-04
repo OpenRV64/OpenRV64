@@ -30,12 +30,17 @@ def build(mem, entry_pc, fetch_width=3, issue_width=2, exu_pipes=2,
           mem_latency=0,
           phys_regs=63, window=32,
           itlb=16, dtlb=16, walk_latency=3, pmp_ranges=None, timing=True,
-          priv=PRIV_M, satp=0, predict="bp8",
+          priv=PRIV_M, satp=0, predict="bp8", null_exec=False, magic_mem=False, magic_exu=False,
+          record_back=None, replay_back=None, replay_latency=None,
           l1_bytes=16 * 1024, l1_ways=4, line_bytes=64, l1_hit=2,
-          beat_cycles=1):
+          beat_cycles=1, l1i_bytes=None):
     regs = RegFile()
     from .modules.bp import make as make_bp
-    bp = None if predict == "seq" else make_bp(predict)
+    if isinstance(predict, list):
+        from .modules.bp import Oracle
+        bp = Oracle(predict)          # a recorded architectural PC sequence
+    else:
+        bp = None if predict == "seq" else make_bp(predict)
     bus = Bus(timing=timing)
     bus.add(Clock(reset_steps=1).port())
     # A TLB hit costs nothing on its own: the L1 is virtually indexed and
@@ -48,7 +53,8 @@ def build(mem, entry_pc, fetch_width=3, issue_width=2, exu_pipes=2,
     # Separate L1I and L1D, as the RTL has: the two sides are independent
     # paths below the MTL, not one port they take turns on.
     l1i = bus.add(L1(mem, "l1i.req", "l1i.resp", "l1i.ready", "l1i",
-                     cache_bytes=l1_bytes, line_bytes=line_bytes,
+                     cache_bytes=(l1_bytes if l1i_bytes is None else l1i_bytes),
+                     line_bytes=line_bytes,
                      ways=l1_ways, hit_latency=l1_hit,
                      beat_cycles=beat_cycles, takes_stores=False))
     l1d = bus.add(L1(mem, "l1d.req", "l1d.resp", "l1d.ready", "l1d",
@@ -66,10 +72,53 @@ def build(mem, entry_pc, fetch_width=3, issue_width=2, exu_pipes=2,
     rob.priv, rob.satp = priv, satp
     bus.add(Issue(regs, rob, width=issue_width, phys_regs=phys_regs,
                   window=window))
-    bus.add(Exu(pipes=exu_pipes))
-    bus.add(Lsu(depth=lsu_depth, ports=lsu_ports))
-    bus.add(rob)
+    if null_exec:
+        # The backend removed: units that complete instantly, and the recorded
+        # backward channel put back so the frontend still pays for every wrong
+        # path it took.
+        from .modules.decouple import NullExu, NullLsu, RedirectReplay
+        bus.add(NullExu())
+        bus.add(NullLsu())
+        control, limit, csr_events = None, None, None
+        if replay_back:
+            import json
+            with open(replay_back) as f:
+                rec = json.load(f)
+            control, limit = rec.get("control"), rec.get("retired")
+            csr_events = rec.get("csr")
+        # Two ways to put the redirects back.  Default: retirement detects
+        # them natively from the replayed control flow, so their timing is
+        # whatever this configuration produces.  With `replay_latency` set,
+        # the recorded redirect stream drives them instead at a pinned
+        # resolve latency -- the sweep that asks what the frontend would do if
+        # branches resolved faster.
+        # The recorded redirect stream drives the frontend: it carries the
+        # real targets, including the MRET the null machine cannot compute.
+        # `replay_latency` pins every resolve; None replays each one's own.
+        rob.__init__(regs, mem, depth=rob_depth, retire_width=retire_width,
+                     predictor=bp, control=control, redirects=False,
+                     retire_limit=limit, csr_events=csr_events)
+        bus.add(rob)
+        bus.add(RedirectReplay(replay_back, latency=replay_latency))
+    elif magic_mem or magic_exu:
+        # The two halves of "make it fast" are independent knobs, so the four
+        # combinations can be measured separately.  Everything else stays
+        # real -- the machine computes its own results and its own control
+        # flow, and only time is removed.
+        from .modules.decouple import MagicLsu
+        bus.add(Exu(pipes=64, mul_latency=1, div_latency=1) if magic_exu
+                else Exu(pipes=exu_pipes))
+        bus.add(MagicLsu(mem, mtl) if magic_mem
+                else Lsu(depth=lsu_depth, ports=lsu_ports))
+        bus.add(rob)
+    else:
+        bus.add(Exu(pipes=exu_pipes))
+        bus.add(Lsu(depth=lsu_depth, ports=lsu_ports))
+        bus.add(rob)
     bus.add(Resolve())
+    if record_back:
+        from .modules.decouple import BackChannel
+        bus.add(BackChannel(record_back, rob))
     return {"bus": bus, "mem": mem, "regs": regs, "mtl": mtl, "bp": bp,
             "fetch": fe, "rob": rob, "l1i": l1i, "l1d": l1d}
 

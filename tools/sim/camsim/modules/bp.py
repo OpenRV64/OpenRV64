@@ -309,3 +309,62 @@ def make(kind):
         return Btfnt()
     raise ValueError("unimplemented predictor %r (bp9/TAGE is not modelled)"
                      % (kind,))
+
+
+class Oracle(object):
+    """A predictor that is never wrong, for attributing squash to prediction.
+
+    Takes the architectural next-PC sequence from a recorded run and answers
+    from it by instruction index. That indexing is only valid *because* it
+    never mispredicts: with no wrong path, the n-th instruction fetched is the
+    n-th architectural instruction, so the uid is the index. A fallible
+    predictor could not be driven this way."""
+
+    def __init__(self, control):
+        self.control = control
+        self.reset()
+
+    def reset(self):
+        self.lookups = self.trained = self.hits = 0
+        self.missing = 0
+
+    def predict(self, pc, instr, uid=None):
+        """Perfect for *conditional branches* only.
+
+        Not for everything: answering for MRET and CSR writes too would run
+        fetch past a serialising instruction before the privilege change it
+        performs has happened, and the machine faults. That is a real barrier
+        the model does not enforce -- worth fixing, but not what this predictor
+        is for. Jumps keep their normal handling."""
+        op = opcode(instr)
+        rec = {"pc": pc, "instr": instr, "cond": op == OP_BRANCH,
+               "taken": False}
+        if op == OP_JAL:
+            return (pc + imm_j(instr)) & MASK, rec
+        if op != OP_BRANCH:
+            return (pc + 4) & MASK, rec
+        if uid is None or uid > len(self.control) or self.control[uid-1] is None:
+            self.missing += 1
+            return (pc + 4) & MASK, rec
+        nxt = self.control[uid - 1] & MASK
+        rec["taken"] = nxt != ((pc + 4) & MASK)
+        return nxt, rec
+
+    def speculate(self, rec):
+        self.lookups += 1
+
+    def recover(self):
+        pass
+
+    def train(self, rec, taken, target):
+        if not rec["cond"]:
+            return
+        self.trained += 1
+        if rec["taken"] == taken:
+            self.hits += 1
+
+    def report(self):
+        n = self.trained
+        return {"kind": "oracle (conditional branches only)", "resolved": n,
+                "accuracy": round(self.hits / float(n), 4) if n else None,
+                "unanswered": self.missing}
