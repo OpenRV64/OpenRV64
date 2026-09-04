@@ -12,9 +12,12 @@ module tb_rename_tomasulo;
     reg [LANES*2*ARCH_WIDTH-1:0] source_arch;
     wire [LANES*2*PHYS_WIDTH-1:0] source_phys;
     wire [LANES*2-1:0] source_ready;
+    wire [LANES*2-1:0] source_producer_valid;
+    wire [LANES*2*10-1:0] source_producer_id;
     reg [LANES-1:0] destination_request;
     reg [LANES-1:0] destination_valid;
     reg [LANES*ARCH_WIDTH-1:0] destination_arch;
+    reg [LANES*10-1:0] destination_id;
     wire destination_ready;
     wire [LANES-1:0] destination_prefix_ready;
     wire [LANES*PHYS_WIDTH-1:0] destination_new_phys;
@@ -50,9 +53,12 @@ module tb_rename_tomasulo;
         .source_arch_i(source_arch),
         .source_phys_o(source_phys),
         .source_ready_o(source_ready),
+        .source_producer_valid_o(source_producer_valid),
+        .source_producer_id_o(source_producer_id),
         .destination_request_i(destination_request),
         .destination_valid_i(destination_valid),
         .destination_arch_i(destination_arch),
+        .destination_id_i(destination_id),
         .destination_ready_o(destination_ready),
         .destination_prefix_ready_o(destination_prefix_ready),
         .destination_new_phys_o(destination_new_phys),
@@ -96,6 +102,7 @@ module tb_rename_tomasulo;
         destination_request = 3'b000;
         destination_valid = 3'b000;
         destination_arch = {LANES*ARCH_WIDTH{1'b0}};
+        destination_id = {LANES*10{1'b0}};
         free_valid = 3'b000;
         free_tag = {3*PHYS_WIDTH{1'b0}};
         write_valid = 3'b000;
@@ -121,6 +128,7 @@ module tb_rename_tomasulo;
         // physical destinations while all x0 sources remain p0.
         source_arch = {5'd0, 5'd0, 5'd0, 5'd0, 5'd0, 5'd0};
         destination_arch = {5'd3, 5'd2, 5'd1};
+        destination_id = {10'd3, 10'd2, 10'd1};
         destination_request = 3'b111;
         destination_valid = 3'b111;
         #1;
@@ -135,6 +143,7 @@ module tb_rename_tomasulo;
         // The lane-2 x4 WAW must return lane 0's p35 as its dead old mapping.
         source_arch = {5'd1, 5'd4, 5'd3, 5'd4, 5'd2, 5'd1};
         destination_arch = {5'd4, 5'd1, 5'd4};
+        destination_id = {10'd6, 10'd5, 10'd4};
         destination_request = 3'b111;
         destination_valid = 3'b111;
         #1;
@@ -149,6 +158,14 @@ module tb_rename_tomasulo;
             (source_phys[4*PHYS_WIDTH +: PHYS_WIDTH] != 6'd35) ||
             (source_phys[5*PHYS_WIDTH +: PHYS_WIDTH] != 6'd36))
             fail("younger sources did not observe the correct issue-time RAT");
+        if ((source_producer_valid != 6'b111111) ||
+            (source_producer_id[0*10 +: 10] != 10'd1) ||
+            (source_producer_id[1*10 +: 10] != 10'd2) ||
+            (source_producer_id[2*10 +: 10] != 10'd4) ||
+            (source_producer_id[3*10 +: 10] != 10'd3) ||
+            (source_producer_id[4*10 +: 10] != 10'd4) ||
+            (source_producer_id[5*10 +: 10] != 10'd5))
+            fail("source producer identities did not follow physical rename");
         tick();
 
         destination_request = 3'b000;

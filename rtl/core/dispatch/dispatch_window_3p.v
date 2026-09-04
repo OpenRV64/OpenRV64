@@ -74,6 +74,9 @@ module openrv64_dispatch_window_3p #(
     input  wire [6*`RV64_XLEN-1:0]      gpr_read_data_i,
     input  wire [6*PHYS_REG_ADDR_WIDTH-1:0] rename_source_phys_i,
     input  wire [5:0]                   rename_source_ready_i,
+    input  wire [5:0]                   rename_source_producer_valid_i,
+    input  wire [6*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        rename_source_producer_id_i,
     input  wire [3*PHYS_REG_ADDR_WIDTH-1:0] rename_destination_phys_i,
     input  wire [2:0]                   physical_forward_valid_i,
     input  wire [2:0]                   physical_writeback_valid_i,
@@ -785,12 +788,20 @@ module openrv64_dispatch_window_3p #(
             // architectural owner machinery intact for the identity window,
             // but do not let it create a second dependency namespace here.
             if (PHYSICAL_RENAME != 0) begin
-                admit_src1_producer_valid[view_lane] = 1'b0;
-                admit_src2_producer_valid[view_lane] = 1'b0;
+                admit_src1_producer_valid[view_lane] =
+                    decode_uses_rs1_i[view_lane] &&
+                    rename_source_producer_valid_i[view_lane*2+0];
+                admit_src2_producer_valid[view_lane] =
+                    decode_uses_rs2_i[view_lane] &&
+                    rename_source_producer_valid_i[view_lane*2+1];
                 admit_src1_tag[view_lane] =
-                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+                    rename_source_producer_id_i[
+                        (view_lane*2+0)*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH];
                 admit_src2_tag[view_lane] =
-                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+                    rename_source_producer_id_i[
+                        (view_lane*2+1)*`OPENRV64_INSTR_ID_WIDTH +:
+                        `OPENRV64_INSTR_ID_WIDTH];
                 admit_src1_ready[view_lane] =
                     !decode_uses_rs1_i[view_lane] ||
                     rename_source_ready_i[view_lane*2+0];

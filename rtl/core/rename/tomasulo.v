@@ -28,6 +28,7 @@ module openrv64_rename_tomasulo #(
     parameter integer FREE_PORTS = 2,
     parameter integer WRITE_PORTS = 3,
     parameter integer COMMIT_PORTS = 3,
+    parameter integer PRODUCER_ID_WIDTH = 10,
     parameter integer CHECKPOINT_DEPTH = 16,
     parameter integer CHECKPOINT_SLOT_WIDTH = $clog2(CHECKPOINT_DEPTH),
     parameter integer FREE_COUNT_WIDTH = $clog2(PHYS_REG_COUNT + 1)
@@ -41,11 +42,16 @@ module openrv64_rename_tomasulo #(
     output wire [LANES*SOURCES_PER_LANE*PHYS_ADDR_WIDTH-1:0]
                                                 source_phys_o,
     output wire [LANES*SOURCES_PER_LANE-1:0]    source_ready_o,
+    output wire [LANES*SOURCES_PER_LANE-1:0]
+                                                source_producer_valid_o,
+    output wire [LANES*SOURCES_PER_LANE*PRODUCER_ID_WIDTH-1:0]
+                                                source_producer_id_o,
 
     // request describes the offered group; valid is the accepted subset.
     input  wire [LANES-1:0]                    destination_request_i,
     input  wire [LANES-1:0]                    destination_valid_i,
     input  wire [LANES*ARCH_ADDR_WIDTH-1:0]    destination_arch_i,
+    input  wire [LANES*PRODUCER_ID_WIDTH-1:0]  destination_id_i,
     output wire                                destination_ready_o,
     output wire [LANES-1:0]                    destination_prefix_ready_o,
     output wire [LANES*PHYS_ADDR_WIDTH-1:0]    destination_new_phys_o,
@@ -75,6 +81,8 @@ module openrv64_rename_tomasulo #(
     reg [PHYS_ADDR_WIDTH-1:0] rrat_q [0:ARCH_REG_COUNT-1];
     reg [PHYS_REG_COUNT:0] phys_ready_q;
     reg [PHYS_REG_COUNT:0] free_q;
+    reg [PRODUCER_ID_WIDTH-1:0]
+        phys_producer_id_q [0:PHYS_REG_COUNT];
     reg [PHYS_ADDR_WIDTH-1:0] alloc_cursor_q;
 
     reg [ARCH_REG_COUNT*PHYS_ADDR_WIDTH-1:0]
@@ -93,6 +101,9 @@ module openrv64_rename_tomasulo #(
 
     reg [LANES*SOURCES_PER_LANE*PHYS_ADDR_WIDTH-1:0] source_phys_r;
     reg [LANES*SOURCES_PER_LANE-1:0] source_ready_r;
+    reg [LANES*SOURCES_PER_LANE-1:0] source_producer_valid_r;
+    reg [LANES*SOURCES_PER_LANE*PRODUCER_ID_WIDTH-1:0]
+        source_producer_id_r;
     reg [LANES*PHYS_ADDR_WIDTH-1:0] destination_new_phys_r;
     reg [LANES*PHYS_ADDR_WIDTH-1:0] destination_old_phys_r;
     reg [LANES-1:0] allocation_found_r;
@@ -120,6 +131,7 @@ module openrv64_rename_tomasulo #(
     reg [ARCH_ADDR_WIDTH-1:0] source_arch;
     reg [ARCH_ADDR_WIDTH-1:0] destination_arch;
     reg [PHYS_ADDR_WIDTH-1:0] mapped_phys;
+    reg [PRODUCER_ID_WIDTH-1:0] mapped_producer_id;
     reg [PHYS_ADDR_WIDTH-1:0] selected_phys;
     reg mapped_from_candidate;
     reg selected_found;
@@ -131,6 +143,10 @@ module openrv64_rename_tomasulo #(
         source_phys_r =
             {LANES*SOURCES_PER_LANE*PHYS_ADDR_WIDTH{1'b0}};
         source_ready_r = {LANES*SOURCES_PER_LANE{1'b0}};
+        source_producer_valid_r =
+            {LANES*SOURCES_PER_LANE{1'b0}};
+        source_producer_id_r =
+            {LANES*SOURCES_PER_LANE*PRODUCER_ID_WIDTH{1'b0}};
         destination_new_phys_r = {LANES*PHYS_ADDR_WIDTH{1'b0}};
         destination_old_phys_r = {LANES*PHYS_ADDR_WIDTH{1'b0}};
         allocation_found_r = {LANES{1'b0}};
@@ -238,6 +254,7 @@ module openrv64_rename_tomasulo #(
             source_arch = source_arch_i[
                 source*ARCH_ADDR_WIDTH +: ARCH_ADDR_WIDTH];
             mapped_phys = rat_q[source_arch];
+            mapped_producer_id = phys_producer_id_q[mapped_phys];
             mapped_from_candidate = 1'b0;
             for (prior_lane = 0;
                  prior_lane < (source / SOURCES_PER_LANE);
@@ -249,6 +266,9 @@ module openrv64_rename_tomasulo #(
                      source_arch)) begin
                     mapped_phys = destination_new_phys_r[
                         prior_lane*PHYS_ADDR_WIDTH +: PHYS_ADDR_WIDTH];
+                    mapped_producer_id = destination_id_i[
+                        prior_lane*PRODUCER_ID_WIDTH +:
+                        PRODUCER_ID_WIDTH];
                     mapped_from_candidate = 1'b1;
                 end
             end
@@ -266,6 +286,12 @@ module openrv64_rename_tomasulo #(
                         PHYS_ADDR_WIDTH] == mapped_phys))
                     source_ready_r[source] = 1'b1;
             end
+            source_producer_valid_r[source] =
+                (source_arch != {ARCH_ADDR_WIDTH{1'b0}}) &&
+                !source_ready_r[source];
+            source_producer_id_r[
+                source*PRODUCER_ID_WIDTH +: PRODUCER_ID_WIDTH] =
+                mapped_producer_id;
         end
 
         free_count_r = 0;
@@ -291,6 +317,8 @@ module openrv64_rename_tomasulo #(
         &(~destination_valid_i | allocation_found_r);
     assign source_phys_o = source_phys_r;
     assign source_ready_o = source_ready_r;
+    assign source_producer_valid_o = source_producer_valid_r;
+    assign source_producer_id_o = source_producer_id_r;
     assign destination_new_phys_o = destination_new_phys_r;
     assign destination_old_phys_o = destination_old_phys_r;
     assign free_count_o = free_count_r[FREE_COUNT_WIDTH-1:0];
@@ -329,6 +357,10 @@ module openrv64_rename_tomasulo #(
             for (reset_tag = ARCH_REG_COUNT;
                  reset_tag <= PHYS_REG_COUNT; reset_tag = reset_tag + 1)
                 free_q[reset_tag] <= 1'b1;
+            for (reset_tag = 0; reset_tag <= PHYS_REG_COUNT;
+                 reset_tag = reset_tag + 1)
+                phys_producer_id_q[reset_tag] <=
+                    {PRODUCER_ID_WIDTH{1'b0}};
             alloc_cursor_q <= PHYS_ADDR_WIDTH'(ARCH_REG_COUNT);
             checkpoint_live_q <= {CHECKPOINT_DEPTH{1'b0}};
             for (checkpoint_slot = 0;
@@ -435,6 +467,11 @@ module openrv64_rename_tomasulo #(
                             phys_ready_q[destination_new_phys_r[
                                 update_lane*PHYS_ADDR_WIDTH +:
                                 PHYS_ADDR_WIDTH]] <= 1'b0;
+                            phys_producer_id_q[destination_new_phys_r[
+                                update_lane*PHYS_ADDR_WIDTH +:
+                                PHYS_ADDR_WIDTH]] <= destination_id_i[
+                                    update_lane*PRODUCER_ID_WIDTH +:
+                                    PRODUCER_ID_WIDTH];
                             free_q[destination_new_phys_r[
                                 update_lane*PHYS_ADDR_WIDTH +:
                                 PHYS_ADDR_WIDTH]] <= 1'b0;

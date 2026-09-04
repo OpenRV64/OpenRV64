@@ -517,6 +517,9 @@ module openrv64_dispatch #(
                 .rename_source_phys_i(
                     {6*PHYS_REG_ADDR_WIDTH_3P{1'b0}}),
                 .rename_source_ready_i(6'b111111),
+                .rename_source_producer_valid_i(6'b000000),
+                .rename_source_producer_id_i(
+                    {6*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
                 .rename_destination_phys_i(
                     {3*PHYS_REG_ADDR_WIDTH_3P{1'b0}}),
                 .physical_forward_valid_i(3'b000),
@@ -713,6 +716,9 @@ module openrv64_dispatch #(
                 rename_destination_old_phys;
             wire [5:0] rename_source_ready;
             wire [5:0] rename_source_phys_ready;
+            wire [5:0] rename_source_producer_valid;
+            wire [6*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                rename_source_producer_id;
             wire [2:0] rename_checkpoint_valid;
             wire [2:0] rename_checkpoint_before;
             genvar checkpoint_lane;
@@ -748,6 +754,9 @@ module openrv64_dispatch #(
                     assign rename_destination_prefix_ready = 3'b111;
                     assign rename_source_ready = 6'b111111;
                     assign rename_source_phys_ready = 6'b111111;
+                    assign rename_source_producer_valid = 6'b000000;
+                    assign rename_source_producer_id =
+                        {6*`OPENRV64_INSTR_ID_WIDTH{1'b0}};
                     genvar identity_arch;
                     for (identity_arch = 0; identity_arch < 32;
                          identity_arch = identity_arch + 1) begin :
@@ -788,6 +797,7 @@ module openrv64_dispatch #(
                         .FREE_PORTS(3),
                         .WRITE_PORTS(3),
                         .COMMIT_PORTS(3),
+                        .PRODUCER_ID_WIDTH(`OPENRV64_INSTR_ID_WIDTH),
                         .CHECKPOINT_DEPTH(1 << RETIRE_SLOT_WIDTH_3P),
                         .CHECKPOINT_SLOT_WIDTH(RETIRE_SLOT_WIDTH_3P)
                     ) u_rename (
@@ -797,9 +807,13 @@ module openrv64_dispatch #(
                         .source_arch_i(selected_gpr_read_addr),
                         .source_phys_o(gpr_read_addr_3p_o),
                         .source_ready_o(rename_source_ready),
+                        .source_producer_valid_o(
+                            rename_source_producer_valid),
+                        .source_producer_id_o(rename_source_producer_id),
                         .destination_request_i(rename_destination_request),
                         .destination_valid_i(rename_destination_valid),
                         .destination_arch_i(rename_destination_arch),
+                        .destination_id_i(allocation_id_3p_i),
                         .destination_ready_o(rename_destination_ready),
                         .destination_prefix_ready_o(
                             rename_destination_prefix_ready),
@@ -854,6 +868,9 @@ module openrv64_dispatch #(
                 .rename_source_arch_o(tomasulo_rename_source_arch),
                 .rename_source_phys_i(gpr_read_addr_3p_o),
                 .rename_source_ready_i(rename_source_phys_ready),
+                .rename_source_producer_valid_i(
+                    rename_source_producer_valid),
+                .rename_source_producer_id_i(rename_source_producer_id),
                 .rename_destination_phys_i(rename_destination_new_phys),
                 .physical_forward_valid_i(
                     completion_forward_valid_3p_i),

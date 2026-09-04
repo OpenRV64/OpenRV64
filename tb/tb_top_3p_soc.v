@@ -1060,6 +1060,14 @@ module tb_top_3p_soc #(
     integer alu_chain_issue_ex1_events;
     integer alu_chain_operand_events;
     integer alu_chain_wait_cycles;
+    integer exu_mem_chain_accept_events;
+    integer exu_mem_chain_accept_load_events;
+    integer exu_mem_chain_accept_store_events;
+    integer exu_mem_chain_issue_events;
+    integer exu_mem_chain_operand_events;
+    integer exu_mem_chain_ex0_operand_events;
+    integer exu_mem_chain_ex1_operand_events;
+    integer exu_mem_chain_wait_cycles;
     integer branch_forward_wakeup_operand_events;
     integer branch_forward_wakeup_ex0_operand_events;
     integer branch_forward_wakeup_ex1_operand_events;
@@ -5030,6 +5038,14 @@ module tb_top_3p_soc #(
         alu_chain_issue_ex1_events = 0;
         alu_chain_operand_events = 0;
         alu_chain_wait_cycles = 0;
+        exu_mem_chain_accept_events = 0;
+        exu_mem_chain_accept_load_events = 0;
+        exu_mem_chain_accept_store_events = 0;
+        exu_mem_chain_issue_events = 0;
+        exu_mem_chain_operand_events = 0;
+        exu_mem_chain_ex0_operand_events = 0;
+        exu_mem_chain_ex1_operand_events = 0;
+        exu_mem_chain_wait_cycles = 0;
         branch_forward_wakeup_operand_events = 0;
         branch_forward_wakeup_ex0_operand_events = 0;
         branch_forward_wakeup_ex1_operand_events = 0;
@@ -5796,6 +5812,30 @@ module tb_top_3p_soc #(
                 if (dut.u_backend.banked_independent_accept[1] &&
                     (|dut.u_backend.dispatch_pipe_chain_mask[2 +: 2]))
                     alu_chain_accept_events = alu_chain_accept_events + 1;
+                if (dut.u_backend.banked_independent_accept[2] &&
+                    (|dut.u_backend.dispatch_pipe_chain_mask[4 +: 2])) begin
+                    exu_mem_chain_accept_events =
+                        exu_mem_chain_accept_events + 1;
+                    if (dut.u_backend.dispatch_pipe_payload[
+                            2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 15])
+                        exu_mem_chain_accept_store_events =
+                            exu_mem_chain_accept_store_events + 1;
+                    else
+                        exu_mem_chain_accept_load_events =
+                            exu_mem_chain_accept_load_events + 1;
+                end
+                if (dut.u_backend.banked_independent_accept[3] &&
+                    (|dut.u_backend.dispatch_pipe_chain_mask[6 +: 2])) begin
+                    exu_mem_chain_accept_events =
+                        exu_mem_chain_accept_events + 1;
+                    if (dut.u_backend.dispatch_pipe_payload[
+                            3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + 15])
+                        exu_mem_chain_accept_store_events =
+                            exu_mem_chain_accept_store_events + 1;
+                    else
+                        exu_mem_chain_accept_load_events =
+                            exu_mem_chain_accept_load_events + 1;
+                end
                 if (dut.u_backend.pipe_valid[0] &&
                     (|dut.u_backend.pipe_chain_mask[0 +: 2])) begin
                     if (dut.u_backend.pipe_ready[0]) begin
@@ -5820,6 +5860,70 @@ module tb_top_3p_soc #(
                             dut.u_backend.pipe_chain_mask[3];
                     end else begin
                         alu_chain_wait_cycles = alu_chain_wait_cycles + 1;
+                    end
+                end
+                if (dut.u_backend.pipe_valid[2] &&
+                    (|dut.u_backend.pipe_chain_mask[4 +: 2])) begin
+                    if (dut.u_backend.pipe_ready[2]) begin
+                        exu_mem_chain_issue_events =
+                            exu_mem_chain_issue_events + 1;
+                        exu_mem_chain_operand_events =
+                            exu_mem_chain_operand_events +
+                            dut.u_backend.pipe_chain_mask[4] +
+                            dut.u_backend.pipe_chain_mask[5];
+                        if (dut.u_backend.pipe_chain_mask[4]) begin
+                            if (dut.u_backend
+                                    .banked_independent_chain_select_q[4])
+                                exu_mem_chain_ex1_operand_events =
+                                    exu_mem_chain_ex1_operand_events + 1;
+                            else
+                                exu_mem_chain_ex0_operand_events =
+                                    exu_mem_chain_ex0_operand_events + 1;
+                        end
+                        if (dut.u_backend.pipe_chain_mask[5]) begin
+                            if (dut.u_backend
+                                    .banked_independent_chain_select_q[5])
+                                exu_mem_chain_ex1_operand_events =
+                                    exu_mem_chain_ex1_operand_events + 1;
+                            else
+                                exu_mem_chain_ex0_operand_events =
+                                    exu_mem_chain_ex0_operand_events + 1;
+                        end
+                    end else begin
+                        exu_mem_chain_wait_cycles =
+                            exu_mem_chain_wait_cycles + 1;
+                    end
+                end
+                if (dut.u_backend.pipe_valid[3] &&
+                    (|dut.u_backend.pipe_chain_mask[6 +: 2])) begin
+                    if (dut.u_backend.pipe_ready[3]) begin
+                        exu_mem_chain_issue_events =
+                            exu_mem_chain_issue_events + 1;
+                        exu_mem_chain_operand_events =
+                            exu_mem_chain_operand_events +
+                            dut.u_backend.pipe_chain_mask[6] +
+                            dut.u_backend.pipe_chain_mask[7];
+                        if (dut.u_backend.pipe_chain_mask[6]) begin
+                            if (dut.u_backend
+                                    .banked_independent_chain_select_q[6])
+                                exu_mem_chain_ex1_operand_events =
+                                    exu_mem_chain_ex1_operand_events + 1;
+                            else
+                                exu_mem_chain_ex0_operand_events =
+                                    exu_mem_chain_ex0_operand_events + 1;
+                        end
+                        if (dut.u_backend.pipe_chain_mask[7]) begin
+                            if (dut.u_backend
+                                    .banked_independent_chain_select_q[7])
+                                exu_mem_chain_ex1_operand_events =
+                                    exu_mem_chain_ex1_operand_events + 1;
+                            else
+                                exu_mem_chain_ex0_operand_events =
+                                    exu_mem_chain_ex0_operand_events + 1;
+                        end
+                    end else begin
+                        exu_mem_chain_wait_cycles =
+                            exu_mem_chain_wait_cycles + 1;
                     end
                 end
                 window_unissued_entry_cycles =
@@ -8874,6 +8978,16 @@ module tb_top_3p_soc #(
             alu_chain_accept_events, alu_chain_issue_events,
             alu_chain_issue_ex0_events, alu_chain_issue_ex1_events,
             alu_chain_operand_events, alu_chain_wait_cycles);
+        $display(
+            "PERF_ICX_L2_EXU_MEM_CHAIN accept_events=%0d loads=%0d stores=%0d issue_events=%0d operand_events=%0d ex0_operands=%0d ex1_operands=%0d wait_cycles=%0d",
+            exu_mem_chain_accept_events,
+            exu_mem_chain_accept_load_events,
+            exu_mem_chain_accept_store_events,
+            exu_mem_chain_issue_events,
+            exu_mem_chain_operand_events,
+            exu_mem_chain_ex0_operand_events,
+            exu_mem_chain_ex1_operand_events,
+            exu_mem_chain_wait_cycles);
         $display(
             "PERF_ICX_L2_BRANCH_FORWARD wakeup_operands=%0d wakeup_ex0=%0d wakeup_ex1=%0d wakeup_mem0=%0d wakeup_entries=%0d wakeup_eligible=%0d selected=%0d offered=%0d release_events=%0d release_operands=%0d release_ex0=%0d release_ex1=%0d release_mem0=%0d",
             branch_forward_wakeup_operand_events,

@@ -103,6 +103,9 @@ module tb_dispatch_window_3p;
         .prediction_update_slot_i(prediction_update_slot),
         .prediction_update_taken_i(prediction_update_taken),
         .gpr_read_addr_o(gpr_read_addr), .gpr_read_data_i(gpr_read_data),
+        .rename_source_producer_valid_i(6'b000000),
+        .rename_source_producer_id_i(
+            {6*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .physical_forward_valid_i(3'b000),
         .allocation_ready_i(allocation_ready),
         .allocation_id_i(allocation_id),

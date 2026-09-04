@@ -42,6 +42,9 @@ module openrv64_dispatch_3p_tomasulo #(
     output wire [6*`RV64_REG_ADDR_WIDTH-1:0] rename_source_arch_o,
     input  wire [6*PHYS_REG_ADDR_WIDTH-1:0] rename_source_phys_i,
     input  wire [5:0] rename_source_ready_i,
+    input  wire [5:0] rename_source_producer_valid_i,
+    input  wire [6*`OPENRV64_INSTR_ID_WIDTH-1:0]
+        rename_source_producer_id_i,
     input  wire [3*PHYS_REG_ADDR_WIDTH-1:0] rename_destination_phys_i,
     input  wire [2:0] physical_forward_valid_i,
     input  wire [2:0] physical_writeback_valid_i,
@@ -139,6 +142,9 @@ module openrv64_dispatch_3p_tomasulo #(
         .gpr_read_data_i({6*`RV64_XLEN{1'b0}}),
         .rename_source_phys_i(rename_source_phys_i),
         .rename_source_ready_i(rename_source_ready_i),
+        .rename_source_producer_valid_i(
+            rename_source_producer_valid_i),
+        .rename_source_producer_id_i(rename_source_producer_id_i),
         .rename_destination_phys_i(rename_destination_phys_i),
         .physical_forward_valid_i(physical_forward_valid_i),
         .physical_writeback_valid_i(physical_writeback_valid_i),
