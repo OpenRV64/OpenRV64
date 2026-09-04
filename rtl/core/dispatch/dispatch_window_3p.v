@@ -38,6 +38,7 @@ module openrv64_dispatch_window_3p #(
     parameter integer PHYS_REG_ADDR_WIDTH = 6,
     parameter integer ENABLE_SPECULATION = 0,
     parameter integer ENABLE_ALU2 = 0,
+    parameter integer ENABLE_ALU_CHAINING = 0,
     parameter integer DEFER_GPR_READ = 0,
     parameter integer MAX_ISSUE_LANES = 4,
     parameter integer DEPTH = 16,
@@ -81,6 +82,15 @@ module openrv64_dispatch_window_3p #(
     output wire [3*`OPENRV64_DISPATCH_META_WIDTH-1:0] allocation_meta_o,
 
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_i,
+    // A chain producer is a deterministic one-cycle ALU operation that is
+    // actually entering EX on this cycle.  The scheduler may place one exact
+    // dependent directly behind it on the same lane; no result data feeds
+    // back through this interface.
+    input  wire [1:0]                   chain_producer_valid_i,
+    input  wire [2*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        chain_producer_id_i,
+    input  wire [2*PHYS_REG_ADDR_WIDTH-1:0]
+                                        chain_producer_phys_i,
     // Pre-handshake candidates and their age ranks.  The banked register-load
     // requester uses these stable sidebands to arbitrate six read addresses
     // without feeding register-file grants back into candidate generation.
@@ -1021,6 +1031,10 @@ module openrv64_dispatch_window_3p #(
     reg trace_entry_older_persistent_jalr [0:DEPTH-1];
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
         trace_entry_blocker_id [0:DEPTH-1];
+    reg chain_eligible_ex0 [0:DEPTH-1];
+    reg chain_eligible_ex1 [0:DEPTH-1];
+    reg [1:0] chain_mask_ex0 [0:DEPTH-1];
+    reg [1:0] chain_mask_ex1 [0:DEPTH-1];
     // Directed performance evidence for non-speculative read-only loads that
     // are younger than completed control still resident in the window.  The
     // candidate count is independent of the selected completed-control policy;
@@ -1203,6 +1217,10 @@ module openrv64_dispatch_window_3p #(
             trace_entry_older_persistent_jalr[eligible_idx] = 1'b0;
             trace_entry_blocker_id[eligible_idx] =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            chain_eligible_ex0[eligible_idx] = 1'b0;
+            chain_eligible_ex1[eligible_idx] = 1'b0;
+            chain_mask_ex0[eligible_idx] = 2'b00;
+            chain_mask_ex1[eligible_idx] = 2'b00;
             for (older_idx = 0; older_idx < DEPTH;
                  older_idx = older_idx + 1) begin
                 if (valid_q[older_idx] &&
@@ -1330,6 +1348,61 @@ module openrv64_dispatch_window_3p #(
                 !issued_q[eligible_idx] && src1_ready_now[eligible_idx] &&
                 src2_ready_now[eligible_idx] && !older_unissued_hard &&
                 !older_persistent_hard;
+
+            // Same-lane ALU chaining is a scheduler promise, not a speculative
+            // value broadcast.  Admit a base-ALU consumer when every missing
+            // operand names the exact one-cycle producer currently firing on
+            // that lane.  Other operands must already be ready.  The selected
+            // packet carries the original producer IDs to the downstream
+            // operand latch; EX verifies them against its retained completion.
+            chain_mask_ex0[eligible_idx][0] =
+                (ENABLE_ALU_CHAINING != 0) && PHYSICAL_RENAME &&
+                chain_producer_valid_i[0] && uses_rs1_q[eligible_idx] &&
+                !src1_ready_now[eligible_idx] &&
+                (src1_phys_q[eligible_idx] == chain_producer_phys_i[
+                    0*PHYS_REG_ADDR_WIDTH +: PHYS_REG_ADDR_WIDTH]);
+            chain_mask_ex0[eligible_idx][1] =
+                (ENABLE_ALU_CHAINING != 0) && PHYSICAL_RENAME &&
+                chain_producer_valid_i[0] && uses_rs2_q[eligible_idx] &&
+                !src2_ready_now[eligible_idx] &&
+                (src2_phys_q[eligible_idx] == chain_producer_phys_i[
+                    0*PHYS_REG_ADDR_WIDTH +: PHYS_REG_ADDR_WIDTH]);
+            chain_mask_ex1[eligible_idx][0] =
+                (ENABLE_ALU_CHAINING != 0) && PHYSICAL_RENAME &&
+                chain_producer_valid_i[1] && uses_rs1_q[eligible_idx] &&
+                !src1_ready_now[eligible_idx] &&
+                (src1_phys_q[eligible_idx] == chain_producer_phys_i[
+                    1*PHYS_REG_ADDR_WIDTH +: PHYS_REG_ADDR_WIDTH]);
+            chain_mask_ex1[eligible_idx][1] =
+                (ENABLE_ALU_CHAINING != 0) && PHYSICAL_RENAME &&
+                chain_producer_valid_i[1] && uses_rs2_q[eligible_idx] &&
+                !src2_ready_now[eligible_idx] &&
+                (src2_phys_q[eligible_idx] == chain_producer_phys_i[
+                    1*PHYS_REG_ADDR_WIDTH +: PHYS_REG_ADDR_WIDTH]);
+            chain_eligible_ex0[eligible_idx] =
+                (|chain_mask_ex0[eligible_idx]) &&
+                valid_q[eligible_idx] && !issued_q[eligible_idx] &&
+                is_flexible_alu(payload_q[eligible_idx]) &&
+                (src1_ready_now[eligible_idx] ||
+                 chain_mask_ex0[eligible_idx][0]) &&
+                (src2_ready_now[eligible_idx] ||
+                 chain_mask_ex0[eligible_idx][1]) &&
+                !older_unissued_hard && !older_persistent_hard &&
+                id_is_younger(id_q[eligible_idx], chain_producer_id_i[
+                    0*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH]);
+            chain_eligible_ex1[eligible_idx] =
+                (|chain_mask_ex1[eligible_idx]) &&
+                valid_q[eligible_idx] && !issued_q[eligible_idx] &&
+                is_flexible_alu(payload_q[eligible_idx]) &&
+                (src1_ready_now[eligible_idx] ||
+                 chain_mask_ex1[eligible_idx][0]) &&
+                (src2_ready_now[eligible_idx] ||
+                 chain_mask_ex1[eligible_idx][1]) &&
+                !older_unissued_hard && !older_persistent_hard &&
+                id_is_younger(id_q[eligible_idx], chain_producer_id_i[
+                    1*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH]);
             if (is_persistent_hard(payload_q[eligible_idx]) &&
                 (id_q[eligible_idx] != next_retire_id_i))
                 eligible[eligible_idx] = 1'b0;
@@ -1413,21 +1486,27 @@ module openrv64_dispatch_window_3p #(
             // selector below has produced its physical-pipe choices.
             if (valid_q[eligible_idx] && !issued_q[eligible_idx]) begin
                 if (!src1_ready_now[eligible_idx] &&
-                    !src2_ready_now[eligible_idx]) begin
+                    !src2_ready_now[eligible_idx] &&
+                    !chain_eligible_ex0[eligible_idx] &&
+                    !chain_eligible_ex1[eligible_idx]) begin
                     trace_entry_gate_reason[eligible_idx] =
                         `OPENRV64_TTRACE_REASON_BOTH_SOURCES_PENDING;
                     trace_entry_blocker_valid[eligible_idx] =
                         src1_producer_valid_q[eligible_idx];
                     trace_entry_blocker_id[eligible_idx] =
                         src1_tag_q[eligible_idx];
-                end else if (!src1_ready_now[eligible_idx]) begin
+                end else if (!src1_ready_now[eligible_idx] &&
+                             !chain_eligible_ex0[eligible_idx] &&
+                             !chain_eligible_ex1[eligible_idx]) begin
                     trace_entry_gate_reason[eligible_idx] =
                         `OPENRV64_TTRACE_REASON_SRC1_PENDING;
                     trace_entry_blocker_valid[eligible_idx] =
                         src1_producer_valid_q[eligible_idx];
                     trace_entry_blocker_id[eligible_idx] =
                         src1_tag_q[eligible_idx];
-                end else if (!src2_ready_now[eligible_idx]) begin
+                end else if (!src2_ready_now[eligible_idx] &&
+                             !chain_eligible_ex0[eligible_idx] &&
+                             !chain_eligible_ex1[eligible_idx]) begin
                     trace_entry_gate_reason[eligible_idx] =
                         `OPENRV64_TTRACE_REASON_SRC2_PENDING;
                     trace_entry_blocker_valid[eligible_idx] =
@@ -1750,6 +1829,8 @@ module openrv64_dispatch_window_3p #(
     reg select_alu2_admit;
     reg select_mem_admit;
     reg select_mem2_admit;
+    reg select_ex0_chain;
+    reg select_ex1_chain;
     integer select_offset;
     integer select_slot;
     integer selected_idx;
@@ -1781,6 +1862,8 @@ module openrv64_dispatch_window_3p #(
         select_alu2_admit = 1'b0;
         select_mem_admit = 1'b0;
         select_mem2_admit = 1'b0;
+        select_ex0_chain = 1'b0;
+        select_ex1_chain = 1'b0;
         selected_idx = 0;
         selected_mem_pipe = `OPENRV64_EXEC_PIPE_MEM0;
         selected_mem2_pipe = `OPENRV64_EXEC_PIPE_MEM0;
@@ -1791,20 +1874,42 @@ module openrv64_dispatch_window_3p #(
         select_mem_rank = 0;
         select_mem2_rank = 0;
 
+        // A chain consumes the same lane immediately behind its producer.  It
+        // takes precedence over unrelated work on that lane; otherwise the
+        // retained completion would no longer be the promised source.
+        for (select_offset = 0; select_offset < DEPTH;
+             select_offset = select_offset + 1) begin
+            select_slot = select_offset;
+            if (chain_eligible_ex0[select_slot] &&
+                (!select_ex0_valid ||
+                 id_is_younger(id_q[select_ex0], id_q[select_slot]))) begin
+                select_ex0_valid = 1'b1;
+                select_ex0_chain = 1'b1;
+                select_ex0 = select_slot[SCHED_SLOT_WIDTH-1:0];
+            end
+            if (chain_eligible_ex1[select_slot] &&
+                (!select_ex1_valid ||
+                 id_is_younger(id_q[select_ex1], id_q[select_slot]))) begin
+                select_ex1_valid = 1'b1;
+                select_ex1_chain = 1'b1;
+                select_ex1 = select_slot[SCHED_SLOT_WIDTH-1:0];
+            end
+        end
+
         // Reserve fixed-capability work first.  Scheduler slots are unrelated
         // to ROB ring position in physical mode, so compare global IDs rather
         // than walking from next_retire_slot_i.
         for (select_offset = 0; select_offset < DEPTH;
              select_offset = select_offset + 1) begin
             select_slot = select_offset;
-            if (eligible[select_slot] &&
+            if (!select_ex0_chain && eligible[select_slot] &&
                 is_fixed_ex0(payload_q[select_slot]) &&
                 (!select_ex0_valid ||
                  id_is_younger(id_q[select_ex0], id_q[select_slot]))) begin
                 select_ex0_valid = 1'b1;
                 select_ex0 = select_slot[SCHED_SLOT_WIDTH-1:0];
             end
-            if (eligible[select_slot] &&
+            if (!select_ex1_chain && eligible[select_slot] &&
                 is_fixed_ex1(payload_q[select_slot]) &&
                 (!select_ex1_valid ||
                  id_is_younger(id_q[select_ex1], id_q[select_slot]))) begin
@@ -1824,7 +1929,7 @@ module openrv64_dispatch_window_3p #(
         for (select_offset = 0; select_offset < DEPTH;
              select_offset = select_offset + 1) begin
             select_slot = select_offset;
-            if (eligible[select_slot] &&
+            if (!select_ex0_chain && eligible[select_slot] &&
                 is_flexible_alu(payload_q[select_slot]) &&
                 (!select_ex1_valid ||
                  (select_ex1 != select_slot[SCHED_SLOT_WIDTH-1:0])) &&
@@ -1837,7 +1942,7 @@ module openrv64_dispatch_window_3p #(
         for (select_offset = 0; select_offset < DEPTH;
              select_offset = select_offset + 1) begin
             select_slot = select_offset;
-            if (eligible[select_slot] &&
+            if (!select_ex1_chain && eligible[select_slot] &&
                 is_flexible_alu(payload_q[select_slot]) &&
                 (!select_ex0_valid ||
                  (select_ex0 != select_slot[SCHED_SLOT_WIDTH-1:0])) &&
@@ -2117,22 +2222,32 @@ module openrv64_dispatch_window_3p #(
                 0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + PAYLOAD_RS2_DATA +:
                 `RV64_XLEN] = src2_data_now[selected_idx];
             pipe_src1_producer_valid_o[0] =
+                (select_ex0_chain && chain_mask_ex0[selected_idx][0]) ||
                 src1_producer_valid_q[selected_idx] ||
                 ((PHYSICAL_RENAME != 0) &&
                  src1_wakeup_now[selected_idx]);
             pipe_src1_producer_id_o[
                 0*`OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH] =
+                (select_ex0_chain && chain_mask_ex0[selected_idx][0]) ?
+                chain_producer_id_i[
+                    0*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH] :
                 src1_wakeup_now[selected_idx] ?
                 src1_wakeup_id_now[selected_idx] :
                 src1_tag_q[selected_idx];
             pipe_src2_producer_valid_o[0] =
+                (select_ex0_chain && chain_mask_ex0[selected_idx][1]) ||
                 src2_producer_valid_q[selected_idx] ||
                 ((PHYSICAL_RENAME != 0) &&
                  src2_wakeup_now[selected_idx]);
             pipe_src2_producer_id_o[
                 0*`OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH] =
+                (select_ex0_chain && chain_mask_ex0[selected_idx][1]) ?
+                chain_producer_id_i[
+                    0*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH] :
                 src2_wakeup_now[selected_idx] ?
                 src2_wakeup_id_now[selected_idx] :
                 src2_tag_q[selected_idx];
@@ -2164,22 +2279,32 @@ module openrv64_dispatch_window_3p #(
                 1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + PAYLOAD_RS2_DATA +:
                 `RV64_XLEN] = src2_data_now[selected_idx];
             pipe_src1_producer_valid_o[1] =
+                (select_ex1_chain && chain_mask_ex1[selected_idx][0]) ||
                 src1_producer_valid_q[selected_idx] ||
                 ((PHYSICAL_RENAME != 0) &&
                  src1_wakeup_now[selected_idx]);
             pipe_src1_producer_id_o[
                 1*`OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH] =
+                (select_ex1_chain && chain_mask_ex1[selected_idx][0]) ?
+                chain_producer_id_i[
+                    1*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH] :
                 src1_wakeup_now[selected_idx] ?
                 src1_wakeup_id_now[selected_idx] :
                 src1_tag_q[selected_idx];
             pipe_src2_producer_valid_o[1] =
+                (select_ex1_chain && chain_mask_ex1[selected_idx][1]) ||
                 src2_producer_valid_q[selected_idx] ||
                 ((PHYSICAL_RENAME != 0) &&
                  src2_wakeup_now[selected_idx]);
             pipe_src2_producer_id_o[
                 1*`OPENRV64_INSTR_ID_WIDTH +:
                 `OPENRV64_INSTR_ID_WIDTH] =
+                (select_ex1_chain && chain_mask_ex1[selected_idx][1]) ?
+                chain_producer_id_i[
+                    1*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH] :
                 src2_wakeup_now[selected_idx] ?
                 src2_wakeup_id_now[selected_idx] :
                 src2_tag_q[selected_idx];

@@ -978,3 +978,60 @@ the exact A/B control `atomic-sv39-3p-tomasulo-ddr3-20260903T234243Z` fails at
 the same case and simulated time with only the promotion disabled.  The older
 `20260903T135855Z` atomic pass is not source-matched to the later store-prefix
 changes and is therefore not a valid control for this failure.
+
+## Linux bring-up: replay blocks an older store window
+
+The exact simulator from the pre-committed-store Linux run was preserved and
+replayed to a requested five-million-cycle snapshot as managed run
+`linux-l1-tomasulo-1h-ddr3-20260904T021734Z`.  The validated checkpoint is
+`checkpoint-5000000.vls`, is 554,395,192 bytes, and has SHA-256
+`e08d72754158f2a4dfa7f47fdc98f1c63243f38c2a878f513a01b1da747ff04c`.
+It belongs to simulator SHA-256
+`73564bf2e6ba526f48c6bd1acdaf47e3181ab880f0b00ddd05368421961d5aff`
+and must not be restored into the source-current model.  A second validated
+checkpoint at cycle 5,980,000 is retained by run
+`linux-l1-tomasulo-1h-ddr3-20260904T024101Z`; its SHA-256 is
+`af821dd27638f93315adef217f455cecfc166892945df76d72b40eead4462eaf`.
+
+GDB replay from the latter checkpoint reproduced the cycle-5,991,506 LSQ
+timeout and exposed the complete wait cycle.  The ROB head and SQ head were
+translated cacheable store ID 452 in retirement slot 54.  The SQ also held
+the following byte stores 453 through 455, and none of the four had sent an
+access or result.  Normal load replay ID 484 was pending in slot 22.  Control
+watches for IDs 476, 479, and 481 were older than that replay, so the replay
+correctly remained ineligible.  Nevertheless,
+`ordered_store_window_valid` was zero for every lane because its old policy
+unconditionally included `!memory_replay_pending_q`.
+
+That policy is circular.  Stores 452 through 455 are strictly older than the
+replay cut and are allowed to complete and retire while the cut waits.  The
+global gate instead prevents the ROB head from completing, while the replay
+cannot issue until its older controls resolve.  The timeout's reported
+`squash_id=467` is not the replay ID; the registered replay state directly
+identified ID 484.
+
+The ordered-store window now uses the same wrap-safe instruction-age rule as
+pending-replay retirement: a pending replay suppresses a store at its cut or
+in its younger suffix, but it does not suppress a strictly older store.  This
+is primarily a correction for configurations using the ordered cacheable
+store window.  The source-current committed-store queue authorizes cacheable
+stores by their committed bit instead, so the archived checkpoint is evidence
+for the old failure and not proof of current Linux completion.
+
+Managed run `3p-banked-directed-20260904T025224Z` passes a new directed check
+covering both a fully older three-store window and a mixed window ending at
+the replay cut, as well as the existing banked backend suite.
+
+The committed-store conversion also exposed the independent atomic failure
+already recorded above.  A posted cacheable ordinary store does not emit the
+old LSQ result event, so that event could no longer invalidate the hart-local
+LR reservation.  Accepted store commit now supplies the missing invalidation,
+and an SC admitted in the same cycle explicitly observes the clear.  Managed
+run `atomic-sv39-3p-tomasulo-ddr3-20260904T025421Z` passes all 30 atomic starts
+and completions, including former failing case `0x41`.  Source-matched runs
+`misaligned-order-replay-sv39-3p-tomasulo-ddr3-20260904T025718Z` and
+`lrsc-redirect-stress-sv39-3p-tomasulo-ddr3-20260904T025806Z` also pass; the
+latter completes all 8,192 atomic operations.  Two earlier background launch
+records at `20260904T025255Z` and one misaligned record at
+`20260904T025620Z` never started a worker and are runner `lost` records, not
+test failures.

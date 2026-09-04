@@ -1290,6 +1290,11 @@ module openrv64_rv64_top #(
         .allocation_slot_3p_i(9'd0),
         .pipe_ready_3p_i(
             {`OPENRV64_EXEC_PIPE_COUNT{1'b0}}),
+        .chain_producer_valid_3p_i(2'b00),
+        .chain_producer_id_3p_i(
+            {2*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .chain_producer_phys_3p_i(
+            {2*`OPENRV64_PHYS_REG_ADDR_WIDTH{1'b0}}),
         .forward_valid_3p_i(2'b00),
         .forward_rd_addr_3p_i({2*`RV64_REG_ADDR_WIDTH{1'b0}}),
         .completion_forward_valid_3p_i(3'b000),
@@ -1371,6 +1376,8 @@ module openrv64_rv64_top #(
         .priv_mode_i(csr_priv_mode),
         .sret_allowed_i(csr_sret_allowed),
         .sfence_vma_allowed_i(csr_sfence_vma_allowed),
+        .issue_chain_mask_3p_i(
+            {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}}),
         .redirect_valid_o(exec_redirect_valid),
         .redirect_target_o(exec_redirect_target),
         .branch_resolved_o(exec_branch_resolved),

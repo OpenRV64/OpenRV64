@@ -1561,6 +1561,8 @@ module openrv64_backend_4pf #(
         .issue_unsupported_3p_o(pipe_unsupported),
         .issue_id_3p_i(pipe_id), .issue_slot_3p_i(pipe_slot),
         .issue_payload_3p_i(pipe_payload),
+        .issue_chain_mask_3p_i(
+            {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}}),
         .branch_forward_valid_3p_i(
             branch_completion_forward_valid[0]),
         .branch_forward_tag_3p_i(complete_slot[0 +: SLOT_WIDTH]),

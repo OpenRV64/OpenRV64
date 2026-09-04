@@ -264,6 +264,7 @@ module tb_top_3p_soc #(
     parameter integer PHYS_REG_COUNT = `OPENRV64_PHYS_REG_COUNT,
     parameter integer RENAME_MODE = `OPENRV64_RENAME_IDENTITY,
     parameter integer ENABLE_ALU2 = 0,
+    parameter integer ENABLE_ALU_CHAINING = 0,
     parameter integer ENABLE_PIPELINE_STATE_TRACE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer STORE_QUEUE_DEPTH = 4,
@@ -1044,6 +1045,12 @@ module tb_top_3p_soc #(
     integer window_wakeup_mem0_operand_events;
     integer window_wakeup_entry_events;
     integer window_wakeup_eligible_entry_events;
+    integer alu_chain_accept_events;
+    integer alu_chain_issue_events;
+    integer alu_chain_issue_ex0_events;
+    integer alu_chain_issue_ex1_events;
+    integer alu_chain_operand_events;
+    integer alu_chain_wait_cycles;
     integer branch_forward_wakeup_operand_events;
     integer branch_forward_wakeup_ex0_operand_events;
     integer branch_forward_wakeup_ex1_operand_events;
@@ -2872,6 +2879,7 @@ module tb_top_3p_soc #(
         .PHYS_REG_COUNT(PHYS_REG_COUNT),
         .RENAME_MODE(RENAME_MODE),
         .ENABLE_ALU2(ENABLE_ALU2),
+        .ENABLE_ALU_CHAINING(ENABLE_ALU_CHAINING),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .BANKED_GPR(BANKED_GPR),
@@ -4998,6 +5006,12 @@ module tb_top_3p_soc #(
         window_wakeup_mem0_operand_events = 0;
         window_wakeup_entry_events = 0;
         window_wakeup_eligible_entry_events = 0;
+        alu_chain_accept_events = 0;
+        alu_chain_issue_events = 0;
+        alu_chain_issue_ex0_events = 0;
+        alu_chain_issue_ex1_events = 0;
+        alu_chain_operand_events = 0;
+        alu_chain_wait_cycles = 0;
         branch_forward_wakeup_operand_events = 0;
         branch_forward_wakeup_ex0_operand_events = 0;
         branch_forward_wakeup_ex1_operand_events = 0;
@@ -5758,6 +5772,38 @@ module tb_top_3p_soc #(
                     raw_secondary_only_cycles + 1;
             end
             if (ISSUE_WINDOW != 0) begin
+                if (dut.u_backend.banked_independent_accept[0] &&
+                    (|dut.u_backend.dispatch_pipe_chain_mask[0 +: 2]))
+                    alu_chain_accept_events = alu_chain_accept_events + 1;
+                if (dut.u_backend.banked_independent_accept[1] &&
+                    (|dut.u_backend.dispatch_pipe_chain_mask[2 +: 2]))
+                    alu_chain_accept_events = alu_chain_accept_events + 1;
+                if (dut.u_backend.pipe_valid[0] &&
+                    (|dut.u_backend.pipe_chain_mask[0 +: 2])) begin
+                    if (dut.u_backend.pipe_ready[0]) begin
+                        alu_chain_issue_events = alu_chain_issue_events + 1;
+                        alu_chain_issue_ex0_events =
+                            alu_chain_issue_ex0_events + 1;
+                        alu_chain_operand_events = alu_chain_operand_events +
+                            dut.u_backend.pipe_chain_mask[0] +
+                            dut.u_backend.pipe_chain_mask[1];
+                    end else begin
+                        alu_chain_wait_cycles = alu_chain_wait_cycles + 1;
+                    end
+                end
+                if (dut.u_backend.pipe_valid[1] &&
+                    (|dut.u_backend.pipe_chain_mask[2 +: 2])) begin
+                    if (dut.u_backend.pipe_ready[1]) begin
+                        alu_chain_issue_events = alu_chain_issue_events + 1;
+                        alu_chain_issue_ex1_events =
+                            alu_chain_issue_ex1_events + 1;
+                        alu_chain_operand_events = alu_chain_operand_events +
+                            dut.u_backend.pipe_chain_mask[2] +
+                            dut.u_backend.pipe_chain_mask[3];
+                    end else begin
+                        alu_chain_wait_cycles = alu_chain_wait_cycles + 1;
+                    end
+                end
                 window_unissued_entry_cycles =
                     window_unissued_entry_cycles +
                     trace_window_unissued;
@@ -8154,13 +8200,14 @@ module tb_top_3p_soc #(
         end
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
-            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d rename_mode=%0d phys_regs=%0d issue_window=%0d speculation_window=%0d alu2=%0d oracle_branches=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d scheduler_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
+            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d rename_mode=%0d phys_regs=%0d issue_window=%0d speculation_window=%0d alu2=%0d alu_chaining=%0d oracle_branches=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d scheduler_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_CAROUSEL,
             FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             COMPLETION_FORWARD_MASK, BRANCH_COMPLETION_FORWARD_MASK,
             ENABLE_FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
             RENAME_MODE, PHYS_REG_COUNT,
-            ISSUE_WINDOW, SPECULATION_WINDOW, ENABLE_ALU2, ORACLE_BRANCHES,
+            ISSUE_WINDOW, SPECULATION_WINDOW, ENABLE_ALU2,
+            ENABLE_ALU_CHAINING, ORACLE_BRANCHES,
             BANKED_GPR, BANKED_GPR_NUM_BANKS,
             BANKED_GPR_READ_PORTS_PER_BANK,
             `OPENRV64_3P_RESULT_READY_CONTROL_RELEASE, RETIRE_DEPTH,
@@ -8766,6 +8813,11 @@ module tb_top_3p_soc #(
             window_wakeup_mem0_operand_events,
             window_wakeup_entry_events,
             window_wakeup_eligible_entry_events);
+        $display(
+            "PERF_ICX_L2_ALU_CHAIN accept_events=%0d issue_events=%0d ex0=%0d ex1=%0d operand_events=%0d wait_cycles=%0d",
+            alu_chain_accept_events, alu_chain_issue_events,
+            alu_chain_issue_ex0_events, alu_chain_issue_ex1_events,
+            alu_chain_operand_events, alu_chain_wait_cycles);
         $display(
             "PERF_ICX_L2_BRANCH_FORWARD wakeup_operands=%0d wakeup_ex0=%0d wakeup_ex1=%0d wakeup_mem0=%0d wakeup_entries=%0d wakeup_eligible=%0d selected=%0d offered=%0d release_events=%0d release_operands=%0d release_ex0=%0d release_ex1=%0d release_mem0=%0d",
             branch_forward_wakeup_operand_events,

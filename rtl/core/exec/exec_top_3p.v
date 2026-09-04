@@ -72,6 +72,8 @@ module openrv64_exec_top_3p #(
     input  wire [`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         issue_payload_i,
+    input  wire [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        issue_chain_mask_i,
     input  wire                         branch_forward_valid_i,
     input  wire [PRODUCER_TAG_WIDTH-1:0] branch_forward_tag_i,
     input  wire [`RV64_REG_ADDR_WIDTH-1:0]
@@ -498,6 +500,7 @@ module openrv64_exec_top_3p #(
 
     openrv64_exec_pipe_ex0 #(
         .RETIRE_SLOT_WIDTH(RETIRE_SLOT_WIDTH),
+        .PRODUCER_TAG_WIDTH(PRODUCER_TAG_WIDTH),
         .ENABLE_RV64M(ENABLE_RV64M),
         .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
         .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING)
@@ -516,6 +519,13 @@ module openrv64_exec_top_3p #(
         .issue_payload_i(issue_payload_i[
             0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]),
+        .chain_mask_i(issue_chain_mask_i[0 +: 2]),
+        .src1_producer_valid_i(issue_src1_producer_valid_i[0]),
+        .src1_producer_tag_i(issue_src1_producer_tag_i[
+            0*PRODUCER_TAG_WIDTH +: PRODUCER_TAG_WIDTH]),
+        .src2_producer_valid_i(issue_src2_producer_valid_i[0]),
+        .src2_producer_tag_i(issue_src2_producer_tag_i[
+            0*PRODUCER_TAG_WIDTH +: PRODUCER_TAG_WIDTH]),
         .complete_valid_o(complete_valid_o[0]),
         .complete_ready_i(complete_ready_i[0]),
         .complete_id_o(complete_id_o[
@@ -546,6 +556,7 @@ module openrv64_exec_top_3p #(
         .issue_payload_i(issue_payload_i[
             1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]),
+        .chain_mask_i(issue_chain_mask_i[2 +: 2]),
         .branch_forward_valid_i(branch_forward_valid_i),
         .branch_forward_tag_i(branch_forward_tag_i),
         .branch_forward_rd_addr_i(branch_forward_rd_addr_i),

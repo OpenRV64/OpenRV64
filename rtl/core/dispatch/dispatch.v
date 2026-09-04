@@ -23,6 +23,7 @@ module openrv64_dispatch #(
     parameter integer ENABLE_ISSUE_WINDOW_3P = 0,
     parameter integer ENABLE_SPECULATION_WINDOW_3P = 0,
     parameter integer ENABLE_ALU2_3P = 0,
+    parameter integer ENABLE_ALU_CHAINING_3P = 0,
     parameter integer DEFER_WINDOW_GPR_READ_3P = 0,
     parameter integer MAX_WINDOW_ISSUE_LANES_3P = 4,
     parameter integer ISSUE_WINDOW_DEPTH_3P = 16,
@@ -162,6 +163,11 @@ module openrv64_dispatch #(
     output wire [2:0]                   allocation_valid_3p_o,
     output wire [3*RETIRE_META_WIDTH_3P-1:0] allocation_meta_3p_o,
     input  wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_ready_3p_i,
+    input  wire [1:0]                   chain_producer_valid_3p_i,
+    input  wire [2*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        chain_producer_id_3p_i,
+    input  wire [2*PHYS_REG_ADDR_WIDTH_3P-1:0]
+                                        chain_producer_phys_3p_i,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
                                         pipe_candidate_valid_3p_o,
     output wire [`OPENRV64_EXEC_PIPE_COUNT-1:0]
@@ -472,6 +478,7 @@ module openrv64_dispatch #(
                 .PHYSICAL_RENAME(0),
                 .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH_3P),
                 .ENABLE_SPECULATION(ENABLE_SPECULATION_WINDOW_3P),
+                .ENABLE_ALU_CHAINING(0),
                 .DEFER_GPR_READ(DEFER_WINDOW_GPR_READ_3P),
                 .MAX_ISSUE_LANES(MAX_WINDOW_ISSUE_LANES_3P),
                 .DEPTH(ISSUE_WINDOW_DEPTH_3P),
@@ -511,6 +518,11 @@ module openrv64_dispatch #(
                 .allocation_valid_o(window_allocation_valid),
                 .allocation_meta_o(window_allocation_meta),
                 .pipe_ready_i(pipe_ready_3p_i),
+                .chain_producer_valid_i(2'b00),
+                .chain_producer_id_i(
+                    {2*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+                .chain_producer_phys_i(
+                    {2*PHYS_REG_ADDR_WIDTH_3P{1'b0}}),
                 .pipe_candidate_valid_o(window_pipe_candidate_valid),
                 .pipe_squashed_o(window_pipe_squashed),
                 .pipe_age_rank_o(window_pipe_age_rank),
@@ -802,6 +814,7 @@ module openrv64_dispatch #(
             openrv64_dispatch_3p_tomasulo #(
                 .ENABLE_SPECULATION(ENABLE_SPECULATION_WINDOW_3P),
                 .ENABLE_ALU2(ENABLE_ALU2_3P),
+                .ENABLE_ALU_CHAINING(ENABLE_ALU_CHAINING_3P),
                 .MAX_ISSUE_LANES(MAX_WINDOW_ISSUE_LANES_3P),
                 .DEPTH(ISSUE_WINDOW_DEPTH_3P),
                 .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH_3P),
@@ -839,6 +852,9 @@ module openrv64_dispatch #(
                 .allocation_valid_o(tomasulo_allocation_valid),
                 .allocation_meta_o(tomasulo_allocation_meta),
                 .pipe_ready_i(pipe_ready_3p_i),
+                .chain_producer_valid_i(chain_producer_valid_3p_i),
+                .chain_producer_id_i(chain_producer_id_3p_i),
+                .chain_producer_phys_i(chain_producer_phys_3p_i),
                 .pipe_candidate_valid_o(tomasulo_pipe_candidate_valid),
                 .pipe_squashed_o(tomasulo_pipe_squashed),
                 .pipe_age_rank_o(tomasulo_pipe_age_rank),

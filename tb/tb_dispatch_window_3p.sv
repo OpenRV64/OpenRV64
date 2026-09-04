@@ -101,7 +101,13 @@ module tb_dispatch_window_3p;
         .allocation_slot_i(allocation_slot),
         .allocation_valid_o(allocation_valid),
         .allocation_meta_o(allocation_meta),
-        .pipe_ready_i(pipe_ready), .pipe_valid_o(pipe_valid),
+        .pipe_ready_i(pipe_ready),
+        .chain_producer_valid_i(2'b00),
+        .chain_producer_id_i(
+            {2*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .chain_producer_phys_i(
+            {2*`OPENRV64_PHYS_REG_ADDR_WIDTH{1'b0}}),
+        .pipe_valid_o(pipe_valid),
         .pipe_squashed_o(pipe_squashed),
         .pipe_id_o(pipe_id), .pipe_slot_o(pipe_slot),
         .pipe_payload_o(pipe_payload),

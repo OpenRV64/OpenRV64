@@ -210,6 +210,8 @@ module openrv64_exec_top #(
     input  wire [`OPENRV64_EXEC_PIPE_COUNT*
                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         issue_payload_3p_i,
+    input  wire [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
+                                        issue_chain_mask_3p_i,
     input  wire                         branch_forward_valid_3p_i,
     input  wire [PRODUCER_TAG_WIDTH_3P-1:0]
                                         branch_forward_tag_3p_i,
@@ -423,6 +425,7 @@ module openrv64_exec_top #(
                 .issue_id_i(issue_id_3p_i),
                 .issue_slot_i(issue_slot_3p_i),
                 .issue_payload_i(issue_payload_3p_i),
+                .issue_chain_mask_i(issue_chain_mask_3p_i),
                 .branch_forward_valid_i(branch_forward_valid_3p_i),
                 .branch_forward_tag_i(branch_forward_tag_3p_i),
                 .branch_forward_rd_addr_i(

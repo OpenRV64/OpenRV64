@@ -255,7 +255,8 @@ module openrv64_exec_lsu_rv64a #(
                             access_fault_q <= 1'b1;
                             state_q <= STATE_DONE;
                         end else if (op_sel_i == `RV64_LSU_OP_SC) begin
-                            if (reservation_valid_q &&
+                            if (!clear_reservation_i &&
+                                reservation_valid_q &&
                                 (reservation_addr_q == addr_i) &&
                                 (reservation_size_q == size_sel_i)) begin
                                 state_q <= STATE_WRITE;

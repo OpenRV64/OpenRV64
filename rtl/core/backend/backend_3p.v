@@ -32,6 +32,7 @@ module openrv64_backend_3p #(
     parameter integer ENABLE_ISSUE_WINDOW = 0,
     parameter integer ENABLE_SPECULATION_WINDOW = 0,
     parameter integer ENABLE_ALU2 = 0,
+    parameter integer ENABLE_ALU_CHAINING = 0,
     parameter integer ISSUE_WINDOW_DEPTH = 16,
     parameter integer RENAME_MODE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
@@ -326,6 +327,10 @@ module openrv64_backend_3p #(
         dispatch_pipe_src2_phys;
     wire [`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH-1:0]
         dispatch_pipe_destination_phys;
+    reg [`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH-1:0]
+        banked_independent_destination_phys_q;
+    wire [2*`OPENRV64_EXEC_PIPE_COUNT-1:0] dispatch_pipe_chain_mask;
+    wire [2*`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_chain_mask;
     wire [32*PHYS_REG_ADDR_WIDTH-1:0] rename_committed_map;
     wire [`OPENRV64_EXEC_PIPE_COUNT-1:0] pipe_unsupported;
 
@@ -386,6 +391,7 @@ module openrv64_backend_3p #(
     wire [`RV64_INSTR_WIDTH-1:0] async_store_fault_instr;
     reg async_store_fault_pending_q;
     reg memory_replay_pending_q;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] memory_replay_id_q;
     reg [`RV64_EXCEPT_CAUSE_WIDTH-1:0] async_store_fault_cause_q;
     reg [`RV64_XLEN-1:0] async_store_fault_addr_q;
     reg [`RV64_XLEN-1:0] async_store_fault_pc_q;
@@ -776,6 +782,10 @@ module openrv64_backend_3p #(
                     RETIRE_RESULT_WIDTH];
             wire [SLOT_WIDTH-1:0] head_slot = queue_retire_slot[
                 ordered_store_window_lane*SLOT_WIDTH +: SLOT_WIDTH];
+            wire [`OPENRV64_INSTR_ID_WIDTH-1:0] head_id =
+                queue_head_id[
+                    ordered_store_window_lane*`OPENRV64_INSTR_ID_WIDTH +:
+                    `OPENRV64_INSTR_ID_WIDTH];
             wire ordinary_store = queue_head_valid[
                     ordered_store_window_lane] &&
                 head_record[`OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT] &&
@@ -787,7 +797,8 @@ module openrv64_backend_3p #(
                 ordered_store_window_lane] =
                 (ENABLE_POSTED_STORES != 0) && ordinary_store &&
                 !flush_i && !squash_frontend_i &&
-                !memory_replay_pending_q &&
+                (!memory_replay_pending_q ||
+                 memory_id_is_younger(memory_replay_id_q, head_id)) &&
                 !async_store_fault_pending_q &&
                 ((ordered_store_window_lane == 0) || !irq_pending_i);
             assign ordered_store_window_complete[
@@ -1145,7 +1156,6 @@ module openrv64_backend_3p #(
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
         memory_control_watch_id_q [0:MEMORY_WATCH_DEPTH-1];
     reg memory_replay_ordered_issue_q;
-    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] memory_replay_id_q;
     reg [SLOT_WIDTH-1:0] memory_replay_slot_q;
     reg [`RV64_XLEN-1:0] memory_replay_target_q;
     // An ordered replay is allowed to bypass older incomplete controls to
@@ -2116,6 +2126,82 @@ module openrv64_backend_3p #(
                 (opcode == `RV64_OPCODE_OP_32);
         end
     endfunction
+
+    function automatic is_chainable_base_alu_issue;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        reg [`RV64_INSTR_WIDTH-1:0] instr;
+        begin
+            instr = payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_LSB +:
+                            `RV64_INSTR_WIDTH];
+            is_chainable_base_alu_issue =
+                payload[17] &&
+                (payload[35 +: `RV64_REG_ADDR_WIDTH] != `RV64_REG_X0) &&
+                (payload[32 +: `RV64_ALU_EXT_WIDTH] ==
+                 `RV64_ALU_EXT_BASE) &&
+                !payload[8] && !payload[5] && !payload[4] &&
+                is_alu_forward_instruction(instr);
+        end
+    endfunction
+
+    // Only an operation that actually fires can promise that its registered
+    // completion will be the same lane's next retained result.  The scheduler
+    // receives identity only; result data remains entirely inside EX0/EX1.
+    wire [1:0] alu_chain_producer_valid =
+        ((ENABLE_ALU_CHAINING != 0) && (BANKED_GPR != 0) &&
+         (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) ? {
+            pipe_valid[1] && pipe_ready[1] &&
+                is_chainable_base_alu_issue(pipe_payload[
+                    1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]),
+            pipe_valid[0] && pipe_ready[0] &&
+                is_chainable_base_alu_issue(pipe_payload[
+                    0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH])
+        } : 2'b00;
+    wire [2*`OPENRV64_INSTR_ID_WIDTH-1:0] alu_chain_producer_id =
+        pipe_id[0 +: 2*`OPENRV64_INSTR_ID_WIDTH];
+    wire [2*PHYS_REG_ADDR_WIDTH-1:0] alu_chain_producer_phys =
+        banked_independent_destination_phys_q[
+            0 +: 2*PHYS_REG_ADDR_WIDTH];
+    wire [1:0] dispatch_ex0_chain_mask = {
+        alu_chain_producer_valid[0] &&
+            dispatch_pipe_src2_producer_valid[0] &&
+            (dispatch_pipe_src2_producer_id[
+                 0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH]),
+        alu_chain_producer_valid[0] &&
+            dispatch_pipe_src1_producer_valid[0] &&
+            (dispatch_pipe_src1_producer_id[
+                 0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 0*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH])
+    };
+    wire [1:0] dispatch_ex1_chain_mask = {
+        alu_chain_producer_valid[1] &&
+            dispatch_pipe_src2_producer_valid[1] &&
+            (dispatch_pipe_src2_producer_id[
+                 1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH]),
+        alu_chain_producer_valid[1] &&
+            dispatch_pipe_src1_producer_valid[1] &&
+            (dispatch_pipe_src1_producer_id[
+                 1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH] ==
+             alu_chain_producer_id[
+                 1*`OPENRV64_INSTR_ID_WIDTH +:
+                 `OPENRV64_INSTR_ID_WIDTH])
+    };
+    assign dispatch_pipe_chain_mask = {
+        4'b0000, dispatch_ex1_chain_mask, dispatch_ex0_chain_mask
+    };
 
     wire [`RV64_INSTR_WIDTH-1:0] completion_forward_instr0 =
         complete_payload[
@@ -3143,6 +3229,8 @@ module openrv64_backend_3p #(
     reg [`OPENRV64_EXEC_PIPE_COUNT-1:0]
         banked_independent_uses_rs2_q;
     reg [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
+        banked_independent_chain_mask_q;
+    reg [2*`OPENRV64_EXEC_PIPE_COUNT-1:0]
         banked_independent_operand_done_q;
     reg [2*`OPENRV64_EXEC_PIPE_COUNT*`RV64_XLEN-1:0]
         banked_independent_operand_data_q;
@@ -3712,6 +3800,10 @@ module openrv64_backend_3p #(
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             banked_independent_operand_done_q <=
                 {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_independent_chain_mask_q <=
+                {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_independent_destination_phys_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH{1'b0}};
             banked_independent_operand_data_q <=
                 {2*`OPENRV64_EXEC_PIPE_COUNT*`RV64_XLEN{1'b0}};
             banked_independent_response_owner_valid_q <= 6'b000000;
@@ -3720,6 +3812,10 @@ module openrv64_backend_3p #(
                 {`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
             banked_independent_operand_done_q <=
                 {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_independent_chain_mask_q <=
+                {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
+            banked_independent_destination_phys_q <=
+                {`OPENRV64_EXEC_PIPE_COUNT*PHYS_REG_ADDR_WIDTH{1'b0}};
             banked_independent_response_owner_valid_q <= 6'b000000;
         end else if (squash_frontend_i) begin
             banked_independent_valid_q <=
@@ -3808,6 +3904,12 @@ module openrv64_backend_3p #(
                         banked_independent_state_pipe] <= 1'b0;
                     banked_independent_operand_done_q[
                         banked_independent_state_pipe*2 +: 2] <= 2'b00;
+                    banked_independent_chain_mask_q[
+                        banked_independent_state_pipe*2 +: 2] <= 2'b00;
+                    banked_independent_destination_phys_q[
+                        banked_independent_state_pipe*PHYS_REG_ADDR_WIDTH +:
+                        PHYS_REG_ADDR_WIDTH] <=
+                        {PHYS_REG_ADDR_WIDTH{1'b0}};
                 end
 
                 if (banked_independent_accept[
@@ -3868,6 +3970,16 @@ module openrv64_backend_3p #(
                         banked_independent_state_pipe] <=
                         dispatch_pipe_uses_rs2[
                             banked_independent_state_pipe];
+                    banked_independent_chain_mask_q[
+                        banked_independent_state_pipe*2 +: 2] <=
+                        dispatch_pipe_chain_mask[
+                            banked_independent_state_pipe*2 +: 2];
+                    banked_independent_destination_phys_q[
+                        banked_independent_state_pipe*PHYS_REG_ADDR_WIDTH +:
+                        PHYS_REG_ADDR_WIDTH] <=
+                        dispatch_pipe_destination_phys[
+                            banked_independent_state_pipe*
+                            PHYS_REG_ADDR_WIDTH +: PHYS_REG_ADDR_WIDTH];
 
                     for (banked_independent_state_operand = 0;
                          banked_independent_state_operand < 2;
@@ -4415,6 +4527,10 @@ module openrv64_backend_3p #(
         (banked_window_regload ? banked_independent_src2_producer_id_q :
          banked_regload_issue_src2_producer_id) :
         dispatch_pipe_src2_producer_id;
+    assign pipe_chain_mask =
+        ((BANKED_GPR != 0) && banked_window_regload) ?
+            banked_independent_chain_mask_q :
+            {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}};
 
     // Source-split simulation probes keep MEM0 load forwarding from being
     // reported as EXU forwarding in the performance harness.
@@ -5245,6 +5361,7 @@ module openrv64_backend_3p #(
         .ENABLE_ISSUE_WINDOW_3P(ENABLE_ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW_3P(ENABLE_SPECULATION_WINDOW),
         .ENABLE_ALU2_3P(ENABLE_ALU2),
+        .ENABLE_ALU_CHAINING_3P(ENABLE_ALU_CHAINING),
         .DEFER_WINDOW_GPR_READ_3P(BANKED_GPR != 0),
         .MAX_WINDOW_ISSUE_LANES_3P((BANKED_GPR != 0) ? 3 : 4),
         .ISSUE_WINDOW_DEPTH_3P(ISSUE_WINDOW_DEPTH),
@@ -5322,6 +5439,9 @@ module openrv64_backend_3p #(
             banked_independent_pipe_ready :
             ((BANKED_GPR != 0) ?
              {`OPENRV64_EXEC_PIPE_COUNT{1'b1}} : pipe_ready)),
+        .chain_producer_valid_3p_i(alu_chain_producer_valid),
+        .chain_producer_id_3p_i(alu_chain_producer_id),
+        .chain_producer_phys_3p_i(alu_chain_producer_phys),
         .pipe_candidate_valid_3p_o(dispatch_pipe_candidate_valid),
         .pipe_squashed_3p_o(dispatch_pipe_squashed),
         .pipe_age_rank_3p_o(dispatch_pipe_age_rank),
@@ -5510,6 +5630,7 @@ module openrv64_backend_3p #(
         .issue_unsupported_3p_o(pipe_unsupported),
         .issue_id_3p_i(pipe_id), .issue_slot_3p_i(pipe_slot),
         .issue_payload_3p_i(pipe_payload),
+        .issue_chain_mask_3p_i(pipe_chain_mask),
         .branch_forward_valid_3p_i((BANKED_GPR == 0) &&
             branch_completion_forward_valid[0]),
         .branch_forward_tag_3p_i(

@@ -1025,8 +1025,12 @@ module openrv64_exec_lsu #(
         ((misaligned_pending_q || misaligned_active) &&
          misaligned_store_q);
 
+    // A posted cacheable store no longer emits an LSQ result when its memory
+    // write drains.  Its accepted retirement commit is therefore the local
+    // architectural store event that invalidates an LR reservation.
     wire clear_atomic_reservation =
         (lsq_result_valid && lsq_result_ready && lsq_result_store) ||
+        (|(store_commit_valid_i & store_commit_accept_o)) ||
         ((COHERENT_ATOMICS != 0) &&
          coherent_reservation_clear_i);
 

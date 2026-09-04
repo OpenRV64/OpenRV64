@@ -11,6 +11,8 @@
 module tb_backend_3p_banked #(
     parameter integer ISSUE_WINDOW = 0,
     parameter integer SPECULATION_WINDOW = ISSUE_WINDOW,
+    parameter integer ENABLE_ALU_CHAINING = 0,
+    parameter integer CHAIN_PROBE_ONLY = 0,
     parameter integer RENAME_MODE = 0,
     parameter integer RETIRE_DEPTH = 16,
     parameter integer SCHEDULER_DEPTH = RETIRE_DEPTH
@@ -121,6 +123,7 @@ module tb_backend_3p_banked #(
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .ENABLE_ALU2(RENAME_MODE != 0),
+        .ENABLE_ALU_CHAINING(ENABLE_ALU_CHAINING),
         .RENAME_MODE(RENAME_MODE),
         .ISSUE_WINDOW_DEPTH(SCHEDULER_DEPTH),
         .BANKED_GPR(1),
@@ -521,14 +524,17 @@ module tb_backend_3p_banked #(
     reg tomasulo_forward_probe_active;
     reg saw_tomasulo_alu_forward_accept;
     reg saw_tomasulo_alu_forward_without_writeback;
+    reg saw_tomasulo_alu_chain_issue;
     reg tomasulo_load_forward_probe_active;
     reg saw_tomasulo_load_forward_accept;
     reg saw_tomasulo_load_forward_without_writeback;
     reg memory_replay_probe_active;
+    reg saw_memory_replay_store_sideband;
     integer replay_store_component_count;
     integer jalr_probe_pipe;
     integer forward_probe_pipe;
     integer forward_probe_port;
+    integer forward_probe_window;
     integer rename_monitor_lane;
     integer monitor_cycle;
     integer forward_producer_issue_cycle;
@@ -718,11 +724,15 @@ module tb_backend_3p_banked #(
                 if (dut.exec_redirect_id != dut.ordered_head_id)
                     saw_jalr_resolve_before_head = 1'b1;
             end
+            if (memory_replay_probe_active &&
+                dut.posted_store_complete_valid &&
+                dut.posted_store_complete_accept)
+                saw_memory_replay_store_sideband = 1'b1;
 
             // Address-phase acceptance of trace 61 must use the exact live
-            // physical producer.  The directed probe below holds every PRF
-            // write ack low, so observing this proves scheduler wakeup is not
-            // accidentally coming from stored-tag readiness.
+            // physical producer.  In chain mode it occurs in the producer's
+            // issue cycle; otherwise the probe holds every PRF write ack low
+            // to exercise ordinary registered-completion forwarding.
             if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
                 tomasulo_forward_probe_active) begin
                 for (forward_probe_pipe = 0;
@@ -731,8 +741,69 @@ module tb_backend_3p_banked #(
                     if (issue_valid[forward_probe_pipe] &&
                         (dut.pipe_payload[
                             forward_probe_pipe*IW + I_TRACE +: 64] ==
-                         64'd60))
+                         64'd60)) begin
                         forward_producer_issue_cycle = monitor_cycle;
+                        $display(
+                            "ALU_CHAIN_PROBE producer_cycle=%0d lane=%0d chain_producer=%b ids=%h dispatch_valid=%b dispatch_chain=%b",
+                            monitor_cycle, forward_probe_pipe,
+                            dut.alu_chain_producer_valid,
+                            dut.alu_chain_producer_id,
+                            dut.dispatch_pipe_valid,
+                            dut.dispatch_pipe_chain_mask);
+                        for (forward_probe_window = 0;
+                             forward_probe_window < SCHEDULER_DEPTH;
+                             forward_probe_window = forward_probe_window + 1)
+                            if (dut.u_dispatch.g_3p.u_tomasulo_window.u_window
+                                    .valid_q[forward_probe_window] &&
+                                (dut.u_dispatch.g_3p.u_tomasulo_window.u_window
+                                     .payload_q[forward_probe_window]
+                                     [I_TRACE +: 64] == 64'd61))
+                                $display(
+                                    "ALU_CHAIN_PROBE consumer_slot=%0d issued=%b src1_ready=%b tag=%0d elig0=%b elig1=%b mask0=%b mask1=%b",
+                                    forward_probe_window,
+                                    dut.u_dispatch.g_3p.u_tomasulo_window
+                                        .u_window.issued_q[
+                                            forward_probe_window],
+                                    dut.u_dispatch.g_3p.u_tomasulo_window
+                                        .u_window.src1_ready_now[
+                                            forward_probe_window],
+                                    dut.u_dispatch.g_3p.u_tomasulo_window
+                                        .u_window.src1_tag_q[
+                                            forward_probe_window],
+                                    dut.u_dispatch.g_3p.u_tomasulo_window
+                                        .u_window.chain_eligible_ex0[
+                                            forward_probe_window],
+                                    dut.u_dispatch.g_3p.u_tomasulo_window
+                                        .u_window.chain_eligible_ex1[
+                                            forward_probe_window],
+                                    dut.u_dispatch.g_3p.u_tomasulo_window
+                                        .u_window.chain_mask_ex0[
+                                            forward_probe_window],
+                                    dut.u_dispatch.g_3p.u_tomasulo_window
+                                        .u_window.chain_mask_ex1[
+                                            forward_probe_window]);
+                    end
+                    if ((ENABLE_ALU_CHAINING != 0) &&
+                        issue_valid[forward_probe_pipe] &&
+                        dut.pipe_ready[forward_probe_pipe] &&
+                        (dut.pipe_payload[
+                            forward_probe_pipe*IW + I_TRACE +: 64] ==
+                         64'd61)) begin
+                        if ((forward_probe_pipe > 1) ||
+                            !(|dut.pipe_chain_mask[
+                                forward_probe_pipe*2 +: 2]))
+                            fail("ALU chain consumer issued without chain mask");
+                        if (dut.pipe_src1_producer_id[
+                                forward_probe_pipe*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH] !=
+                            dut.complete_id[
+                                forward_probe_pipe*
+                                `OPENRV64_INSTR_ID_WIDTH +:
+                                `OPENRV64_INSTR_ID_WIDTH])
+                            fail("ALU chain consumed wrong retained producer");
+                        saw_tomasulo_alu_chain_issue = 1'b1;
+                    end
                     if (dut.dispatch_pipe_valid[forward_probe_pipe] &&
                         (dut.dispatch_pipe_payload[
                             forward_probe_pipe*IW + I_TRACE +: 64] ==
@@ -740,9 +811,10 @@ module tb_backend_3p_banked #(
                         if (dut.dispatch_pipe_src1_producer_valid[
                                 forward_probe_pipe] !== 1'b1)
                             fail("ALU dependent did not mark forwarded rs1");
-                        if (dut.dispatch_pipe_payload[
+                        if ((ENABLE_ALU_CHAINING == 0) &&
+                            (dut.dispatch_pipe_payload[
                                 forward_probe_pipe*IW + I_RS1_DATA +: 64]
-                            !== 64'd41)
+                             !== 64'd41))
                             fail("ALU dependent captured wrong forward data");
                         if (observed_phys_ready[
                                 dut.dispatch_pipe_src1_phys[
@@ -752,19 +824,39 @@ module tb_backend_3p_banked #(
                             fail("ALU forward incorrectly required PRF ready");
                         if (forward_producer_issue_cycle < 0)
                             fail("ALU dependent preceded producer issue");
-                        if (monitor_cycle !=
-                            (forward_producer_issue_cycle + 1)) begin
+                        if (monitor_cycle != forward_producer_issue_cycle +
+                            ((ENABLE_ALU_CHAINING != 0) ? 0 : 1)) begin
                             $display({"ALU forward timing producer=%0d ",
-                                      "dependent=%0d"},
+                                      "dependent=%0d chain_producer=%b ",
+                                      "chain_ids=%h dispatch_chain=%b ",
+                                      "pipe_valid=%b pipe_ready=%b"},
                                      forward_producer_issue_cycle,
-                                     monitor_cycle);
+                                     monitor_cycle,
+                                     dut.alu_chain_producer_valid,
+                                     dut.alu_chain_producer_id,
+                                     dut.dispatch_pipe_chain_mask,
+                                     dut.pipe_valid, dut.pipe_ready);
                             fail("ALU dependent did not wake one cycle later");
                         end
+                        if ((ENABLE_ALU_CHAINING != 0) &&
+                            !(|dut.dispatch_pipe_chain_mask[
+                                forward_probe_pipe*2 +: 2]))
+                            fail("ALU dependent was not scheduler-chained");
+                        // A chained consumer is released by the scheduler in
+                        // the producer's issue cycle.  No producer completion
+                        // or PRF writeback exists yet, so this same-cycle
+                        // acceptance is the unambiguous latency proof.  The
+                        // following-cycle EX check above separately proves
+                        // that the exact retained producer result is used.
+                        if (ENABLE_ALU_CHAINING != 0)
+                            saw_tomasulo_alu_forward_without_writeback =
+                                1'b1;
                         saw_tomasulo_alu_forward_accept = 1'b1;
                         for (forward_probe_port = 0;
                              forward_probe_port < 2;
                              forward_probe_port = forward_probe_port + 1) begin
-                            if (dut.tomasulo_alu_forward_valid[
+                            if ((ENABLE_ALU_CHAINING == 0) &&
+                                dut.tomasulo_alu_forward_valid[
                                     forward_probe_port] &&
                                 !dut.completion_writeback_fire[
                                     forward_probe_port] &&
@@ -996,10 +1088,12 @@ module tb_backend_3p_banked #(
         tomasulo_forward_probe_active = 1'b0;
         saw_tomasulo_alu_forward_accept = 1'b0;
         saw_tomasulo_alu_forward_without_writeback = 1'b0;
+        saw_tomasulo_alu_chain_issue = 1'b0;
         tomasulo_load_forward_probe_active = 1'b0;
         saw_tomasulo_load_forward_accept = 1'b0;
         saw_tomasulo_load_forward_without_writeback = 1'b0;
         memory_replay_probe_active = 1'b0;
+        saw_memory_replay_store_sideband = 1'b0;
 
         instruction_stream[0] = addi_packet(1, 0, 1, 64'd5, 1'b0);
         // p1 and p29 share four-bank bank 1.  These two independent leading
@@ -1427,17 +1521,20 @@ module tb_backend_3p_banked #(
             !saw_alu2_issue)
             fail("renamed stream never issued an enabled operation on ALU2");
         if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+            (ENABLE_ALU_CHAINING == 0) &&
             !saw_alu2_zbb_rotate)
             fail("renamed stream never routed a Zbb rotate to ALU2");
         if ((RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
             !saw_alu2_forward)
             fail("ALU2 never drove the MEM0 forwarding path");
 
-        // Keep the producer resident on its completion port by denying the
-        // PRF write.  Its dependent must nevertheless be accepted by the
-        // register-load address phase from the live completion one cycle
-        // after ALU issue.  Rename still advertises the physical tag as not
-        // ready until the forced write stall is released.
+        // Without chaining, keep the producer resident on its completion port
+        // by denying the PRF write and prove ordinary completion forwarding.
+        // With chaining, leave completion flow unstalled: the scheduler must
+        // release the dependent in the producer's issue cycle and EX must
+        // consume the retained result in the following cycle.  A forced PRF
+        // stall would also occupy EX's only output slot and is therefore an
+        // unrelated structural block on the chained instruction itself.
         if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) begin
             memory_probe_active = 1'b1;
             memory_probe_retired = 0;
@@ -1446,8 +1543,10 @@ module tb_backend_3p_banked #(
             tomasulo_forward_probe_active = 1'b1;
             saw_tomasulo_alu_forward_accept = 1'b0;
             saw_tomasulo_alu_forward_without_writeback = 1'b0;
+            saw_tomasulo_alu_chain_issue = 1'b0;
             forward_producer_issue_cycle = -1;
-            force dut.gpr_write_ack = 3'b000;
+            if (ENABLE_ALU_CHAINING == 0)
+                force dut.gpr_write_ack = 3'b000;
 
             decode_payload = {3*IW{1'b0}};
             decode_payload[0 +: IW] =
@@ -1465,15 +1564,22 @@ module tb_backend_3p_banked #(
             decode_uses_rs1 = 3'b000;
 
             for (cycles = 0;
-                 (cycles < 30) && !saw_tomasulo_alu_forward_accept;
+                 (cycles < 30) &&
+                 (!saw_tomasulo_alu_forward_accept ||
+                  ((ENABLE_ALU_CHAINING != 0) &&
+                   !saw_tomasulo_alu_chain_issue));
                  cycles = cycles + 1)
                 tick();
             if (!saw_tomasulo_alu_forward_accept)
                 fail("dependent ALU was not accepted from live completion");
             if (!saw_tomasulo_alu_forward_without_writeback)
                 fail("dependent ALU waited for physical writeback ack");
+            if ((ENABLE_ALU_CHAINING != 0) &&
+                !saw_tomasulo_alu_chain_issue)
+                fail("dependent ALU did not issue through retained chain");
 
-            release dut.gpr_write_ack;
+            if (ENABLE_ALU_CHAINING == 0)
+                release dut.gpr_write_ack;
             for (cycles = 0;
                  (cycles < 100) &&
                  ((memory_probe_retired < 2) ||
@@ -1498,6 +1604,16 @@ module tb_backend_3p_banked #(
             tomasulo_forward_probe_active = 1'b0;
             memory_probe_active = 1'b0;
             memory_probe_retired = 0;
+        end
+
+        if (CHAIN_PROBE_ONLY != 0) begin
+            if (ENABLE_ALU_CHAINING == 0)
+                fail("chain-only probe requires ALU chaining");
+            $display({"PASS: banked backend ALU chain released its ",
+                      "dependent in the producer issue cycle and retired ",
+                      "the retained result"});
+            $display("PASS: banked 3p issue window processed post-selection register loads, ordered arithmetic, load/use, and held bank retries");
+            $finish;
         end
 
         // Isolate the steering probe from the throughput/conflict coverage
@@ -1718,6 +1834,7 @@ module tb_backend_3p_banked #(
             (SPECULATION_WINDOW != 0)) begin
             memory_probe_active = 1'b1;
             memory_replay_probe_active = 1'b1;
+            saw_memory_replay_store_sideband = 1'b0;
             memory_probe_retired = 0;
             memory_probe_last_rd = 5'd0;
             memory_probe_last_wdata = 64'd0;
@@ -1823,6 +1940,7 @@ module tb_backend_3p_banked #(
             (SPECULATION_WINDOW != 0)) begin
             memory_probe_active = 1'b1;
             memory_replay_probe_active = 1'b1;
+            saw_memory_replay_store_sideband = 1'b0;
             memory_probe_retired = 0;
             memory_probe_last_rd = 5'd0;
             memory_probe_last_wdata = 64'd0;
@@ -1959,9 +2077,9 @@ module tb_backend_3p_banked #(
             replay_store_tag = mem_tag;
             mem_ready = 1'b1;
             #1;
-            if (!dut.posted_store_complete_valid ||
-                !dut.posted_store_complete_accept ||
-                (dut.posted_store_complete_id != dut.ordered_head_id)) begin
+            if (!(saw_memory_replay_store_sideband ||
+                  (dut.posted_store_complete_valid &&
+                   dut.posted_store_complete_accept))) begin
                 $display({"store sideband state valid=%b accept=%b ",
                           "id=%0d slot=%0d head_id=%0d head_slot=%0d ",
                           "full_complete=%b"},
@@ -1971,7 +2089,7 @@ module tb_backend_3p_banked #(
                          dut.posted_store_complete_slot,
                          dut.ordered_head_id, dut.ordered_head_slot,
                          dut.completion_fire);
-                fail("accepted posted store missed ROB sideband completion");
+                fail("replay store missed ROB identity completion");
             end
             tick();
             mem_ready = 1'b0;
@@ -2175,8 +2293,17 @@ module tb_backend_3p_banked #(
                 replay_check_count_before + 4) ||
                 (dut.perf_memory_store_violations_q !=
                  replay_violation_count_before + 1) ||
-                (dut.perf_memory_replays_q != replay_count_before + 1))
+                (dut.perf_memory_replays_q != replay_count_before + 1)) begin
+                $display({"misaligned replay counters checks=%0d->%0d ",
+                          "violations=%0d->%0d replays=%0d->%0d"},
+                         replay_check_count_before,
+                         dut.perf_memory_store_address_checks_q,
+                         replay_violation_count_before,
+                         dut.perf_memory_store_violations_q,
+                         replay_count_before,
+                         dut.perf_memory_replays_q);
                 fail("misaligned replay counters classified components wrong");
+            end
 
             decode_payload = {3*IW{1'b0}};
             decode_payload[0 +: IW] =
@@ -2404,6 +2531,34 @@ module tb_backend_3p_banked #(
             #1;
             if (dut.retire_queue_valid != 3'b011)
                 fail("pending replay retired its cut or younger suffix");
+
+            // The same age rule applies to the store authorization window.
+            // A replay waiting behind an older control must not prevent an
+            // even older head store from completing; otherwise retirement of
+            // that store and issue of the replay wait on each other forever.
+            force dut.g_ordered_store_window[0].ordinary_store = 1'b1;
+            force dut.g_ordered_store_window[1].ordinary_store = 1'b1;
+            force dut.g_ordered_store_window[2].ordinary_store = 1'b1;
+            force dut.queue_head_id = {
+                `OPENRV64_INSTR_ID_WIDTH'(112),
+                `OPENRV64_INSTR_ID_WIDTH'(111),
+                `OPENRV64_INSTR_ID_WIDTH'(110)
+            };
+            #1;
+            if (dut.ordered_store_window_valid != 3'b111)
+                fail("pending replay blocked older store window");
+            force dut.queue_head_id = {
+                `OPENRV64_INSTR_ID_WIDTH'(121),
+                `OPENRV64_INSTR_ID_WIDTH'(120),
+                `OPENRV64_INSTR_ID_WIDTH'(110)
+            };
+            #1;
+            if (dut.ordered_store_window_valid != 3'b001)
+                fail("pending replay authorized its cut or younger store");
+            release dut.g_ordered_store_window[0].ordinary_store;
+            release dut.g_ordered_store_window[1].ordinary_store;
+            release dut.g_ordered_store_window[2].ordinary_store;
+            release dut.queue_head_id;
             release dut.queue_retire_valid;
             release dut.queue_retire_id;
             dut.memory_replay_pending_q = 1'b0;

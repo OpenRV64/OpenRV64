@@ -12,6 +12,7 @@
 // operations wait until the rotate pipeline is empty.
 module openrv64_exec_pipe_ex0 #(
     parameter integer RETIRE_SLOT_WIDTH = 3,
+    parameter integer PRODUCER_TAG_WIDTH = `OPENRV64_INSTR_ID_WIDTH,
     parameter integer ENABLE_RV64M = 1,
     parameter integer ENABLE_RV64ZBB = 1,
     parameter integer ENABLE_LOCAL_FORWARDING = 1
@@ -29,6 +30,11 @@ module openrv64_exec_pipe_ex0 #(
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] issue_id_i,
     input  wire [RETIRE_SLOT_WIDTH-1:0] issue_slot_i,
     input  wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] issue_payload_i,
+    input  wire [1:0]                   chain_mask_i,
+    input  wire                         src1_producer_valid_i,
+    input  wire [PRODUCER_TAG_WIDTH-1:0] src1_producer_tag_i,
+    input  wire                         src2_producer_valid_i,
+    input  wire [PRODUCER_TAG_WIDTH-1:0] src2_producer_tag_i,
 
     output wire                         complete_valid_o,
     input  wire                         complete_ready_i,
@@ -113,24 +119,37 @@ module openrv64_exec_pipe_ex0 #(
 
     // EX0 has a deliberately local previous-completion bypass.
     // Dispatch is responsible for routing a qualified consumer back here.
-    wire local_forward_valid = (ENABLE_LOCAL_FORWARDING != 0) &&
+    wire retained_result_valid =
         complete_valid_q &&
         complete_payload_q[`OPENRV64_COMPLETE_REG_WRITE_BIT] &&
         !complete_payload_q[`OPENRV64_COMPLETE_ILLEGAL_BIT] &&
         !complete_payload_q[`OPENRV64_COMPLETE_EXCEPTION_BIT] &&
         (complete_payload_q[`OPENRV64_COMPLETE_RD_LSB +:
                             `RV64_REG_ADDR_WIDTH] != `RV64_REG_X0);
+    wire local_forward_valid = (ENABLE_LOCAL_FORWARDING != 0) &&
+        retained_result_valid;
     wire [`RV64_REG_ADDR_WIDTH-1:0] local_forward_rd =
         complete_payload_q[`OPENRV64_COMPLETE_RD_LSB +:
                            `RV64_REG_ADDR_WIDTH];
     wire [`RV64_XLEN-1:0] local_forward_data =
         complete_payload_q[`OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
+    wire chain_rs1_match = chain_mask_i[0] && retained_result_valid &&
+        src1_producer_valid_i &&
+        (src1_producer_tag_i == complete_id_q);
+    wire chain_rs2_match = chain_mask_i[1] && retained_result_valid &&
+        src2_producer_valid_i &&
+        (src2_producer_tag_i == complete_id_q);
+    wire chain_sources_ready =
+        (!chain_mask_i[0] || chain_rs1_match) &&
+        (!chain_mask_i[1] || chain_rs2_match);
     wire [`RV64_XLEN-1:0] operand_rs1 =
-        local_forward_valid && (rs1_addr == local_forward_rd) ?
-        local_forward_data : rs1_data;
+        chain_rs1_match ? local_forward_data :
+        (local_forward_valid && (rs1_addr == local_forward_rd) ?
+         local_forward_data : rs1_data);
     wire [`RV64_XLEN-1:0] operand_rs2 =
-        local_forward_valid && (rs2_addr == local_forward_rd) ?
-        local_forward_data : rs2_data;
+        chain_rs2_match ? local_forward_data :
+        (local_forward_valid && (rs2_addr == local_forward_rd) ?
+         local_forward_data : rs2_data);
 
     wire [`RV64_OPCODE_WIDTH-1:0] opcode = `RV64_OPCODE(instr);
     wire alu_uses_imm = (opcode == `RV64_OPCODE_LUI) ||
@@ -416,7 +435,7 @@ module openrv64_exec_pipe_ex0 #(
     wire output_available = !complete_valid_q || complete_ready_i;
     assign base_available_o = !worker_pending_q && output_available &&
                               !rotate_result_valid;
-    assign issue_ready_o = !worker_pending_q &&
+    assign issue_ready_o = chain_sources_ready && !worker_pending_q &&
         ((base_selected && output_available && !rotate_result_valid) ||
          (rotate_selected && ENABLE_RV64ZBB && rotate_ready) ||
          (m_selected && ENABLE_RV64M && m_ready && !rotate_busy &&
@@ -434,6 +453,20 @@ module openrv64_exec_pipe_ex0 #(
     assign zbb_result_ready = worker_pending_q && worker_zbb_q &&
                               zbb_result_valid && output_available;
     wire worker_result_ready = m_result_ready || zbb_result_ready;
+
+`ifndef SYNTHESIS
+    always @(posedge clk) begin
+        if (rst_n && !flush_i && issue_valid_i && (|chain_mask_i)) begin
+            if (!base_selected)
+                $fatal(1, "EX0 chain requested for non-base operation id=%0d",
+                       issue_id_i);
+            if (!chain_sources_ready)
+                $fatal(1,
+                       "EX0 chain producer mismatch consumer=%0d retained=%0d mask=%b",
+                       issue_id_i, complete_id_q, chain_mask_i);
+        end
+    end
+`endif
 
     assign complete_valid_o = complete_valid_q;
     assign complete_id_o = complete_id_q;
