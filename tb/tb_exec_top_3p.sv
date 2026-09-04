@@ -193,6 +193,10 @@ module tb_exec_top_3p #(
             {{2*ID_WIDTH{1'b0}}, ordered_head_id}),
         .ordered_store_window_slot_i(
             {{2*SLOT_WIDTH{1'b0}}, ordered_head_slot}),
+        .store_commit_valid_i(3'b000),
+        .store_commit_id_i({3*ID_WIDTH{1'b0}}),
+        .store_commit_slot_i({3*SLOT_WIDTH{1'b0}}),
+        .store_commit_accept_o(),
         .complete_valid_o(complete_valid),
         .complete_ready_i(complete_ready),
         .complete_id_o(complete_id),

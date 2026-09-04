@@ -150,6 +150,9 @@ sim-lsu-misaligned: $(LSU_MISALIGNED_SIM_BUILD)
 sim-lsq: $(LSQ_SIM_BUILD)
 	vvp $(LSQ_SIM_BUILD)
 
+sim-lsq-committed-store: $(LSQ_COMMITTED_STORE_SIM_BUILD)
+	vvp $(LSQ_COMMITTED_STORE_SIM_BUILD)
+
 sim-lsu-atomics: $(LSU_ATOMICS_SIM_BUILD)
 	vvp $(LSU_ATOMICS_SIM_BUILD)
 

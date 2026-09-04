@@ -266,6 +266,7 @@ module tb_top_3p_soc #(
     parameter integer ENABLE_ALU2 = 0,
     parameter integer ENABLE_PIPELINE_STATE_TRACE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
+    parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer ENABLE_FENCE_L2_ACK = 1,
     parameter integer M_MODE_PREFETCH_ENABLE = 0,
     parameter integer ENABLE_RV64ZBB = 1,
@@ -2879,6 +2880,7 @@ module tb_top_3p_soc #(
             BANKED_GPR_READ_PORTS_PER_BANK),
         .BANKED_GPR_NUM_BANKS(BANKED_GPR_NUM_BANKS),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+        .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .ENABLE_FENCE_L2_ACK(ENABLE_FENCE_L2_ACK),
         .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
         .ENABLE_L1I(1'b1),
@@ -9329,6 +9331,61 @@ module tb_top_3p_soc #(
                 .perf_store_spec_occupancy_cycles_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_store_max_occupancy_q);
+        $display(
+            "PERF_ICX_L2_STORE_COMMIT events=%0d cycles=%0d w1=%0d w2=%0d w3=%0d committed_nonempty=%0d committed_full=%0d committed_occupancy=%0d wait_access_entries=%0d inflight_entries=%0d max_committed=%0d depth=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_commit_events_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_commit_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_commit_w1_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_commit_w2_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_commit_w3_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_committed_nonempty_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_committed_full_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_committed_occupancy_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_committed_wait_access_entry_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_committed_inflight_entry_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_store_max_committed_occupancy_q,
+            STORE_QUEUE_DEPTH);
+        $display(
+            "PERF_ICX_L2_LSQ_CAPACITY load_full_cycles=%0d store_full_cycles=%0d any_full_cycles=%0d both_full_cycles=%0d alloc_block_cycles=%0d occupancy_entry_cycles=%0d max_occupancy=%0d load_over_committed_store=%0d store_pressure_priority=%0d load_depth=%0d store_depth=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_lsq_load_capacity_full_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_lsq_store_capacity_full_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_lsq_any_capacity_full_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_lsq_both_capacity_full_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_lsq_alloc_block_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_lsq_occupancy_entry_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_lsq_max_occupancy_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_lsq_load_over_committed_store_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_lsq_store_pressure_priority_cycles_q,
+            4,
+            STORE_QUEUE_DEPTH);
+        $display(
+            "PERF_ICX_L2_STORE_FORWARD committed_results=%0d committed_ready_entry_cycles=%0d committed_mask_block_entry_cycles=%0d",
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_forwarded_from_committed_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_committed_forward_ready_entry_cycles_q,
+            dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                .perf_load_committed_mask_block_entry_cycles_q);
         $display(
             "PERF_ICX_L2_SPEC_STORE_SQUASH branch_total=%0d before_xlate=%0d xlate_inflight=%0d xlate_done=%0d access_inflight=%0d killed_responses=%0d flushed=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq

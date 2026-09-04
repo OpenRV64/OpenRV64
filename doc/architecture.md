@@ -492,12 +492,14 @@ same-cycle CSR write or another control event. MRET, SRET, `FENCE.I`, and
 `SFENCE.VMA` restart the frontend and flush younger state.
 
 This provides precise integer, CSR, branch, load, synchronous store, and trap
-behavior. A store does not complete merely because the core-to-bus request was
-captured. It remains in the pre-retire store queue until a tagged response
-proves translation, PMP, and L1D store-buffer admission. Translation and
-protection failures therefore trap at the original store PC without
-architecturally retiring the store. The physical cache-line drain may remain
-posted below L1D; a failure after that committed boundary requires a separate
+behavior. An ordinary cacheable store becomes ROB-complete after translation
+and protection checks succeed; this does not make the write memory-visible.
+At architectural retirement, up to three store identities are committed into
+the LSQ. Those committed SQ entries no longer occupy the ROB and drain through
+the single L1D request port independently. Translation and protection failures
+still trap at the original store PC without retiring the store. Device stores,
+atomics, and naturally misaligned stores retain the ordered result path. A
+failure after cacheable-store retirement requires a separate asynchronous
 machine-check policy and is not a replayable page/PMP fault.
 
 ## Load/store and memory ordering
@@ -517,9 +519,19 @@ Loads and stores have independent allocation ports, but the containing LSU
 currently has one translation/L1D launch port. The second legacy 3P external
 memory port is tied off. An ordinary store may allocate and request translation
 speculatively. Translation and PMP return a tagged physical address without
-touching L1D. Only an exact match at the ordered retirement head permits the
-store's physical request to reach L1D. A successful physical response means
-L1D admitted the store into its ordered store buffer.
+touching L1D. A fault-free cacheable store reports identity-only ROB completion
+at that point. Its physical request remains prohibited until architectural
+retirement marks the SQ entry committed. Device stores and atomics still
+require exact-head authorization before their side effect and completion.
+
+Request arbitration treats an ordinary committed cacheable store as a
+background drain rather than as an age barrier. When both an eligible load and
+such a store want the single L1D request port, the load wins while the store
+partition has a free entry. A committed store wins under a full store
+partition to guarantee forward progress. Device stores, atomics, and legacy
+ordered stores retain age ordering. This port policy does not weaken alias
+checks: a same-granule load still requires full byte-mask coverage to forward,
+and otherwise waits on the store slow path.
 
 An ordinary load also translates before physical access. It waits behind every
 older store whose physical address is unknown. Once all relevant addresses are
@@ -542,10 +554,11 @@ data, and strobes on the same 512-bit ICX channels. No scalar LSU request uses
 an AXI ID or drives AXI directly. A redirect hides a canceled speculative load
 response, while an accepted store remains irrevocable and is drained.
 
-Core-bus request acceptance is not architectural completion. The store remains
-at the memory-ordering head until its tagged response. On success that response
-means the translated and PMP-approved store was admitted by L1D; retirement may
-then proceed while L1D drains the physical cache-line write independently.
+For an ordinary cacheable store, architectural retirement is the commit point
+between the speculative ROB and the non-speculative SQ. Core-bus request
+acceptance happens later and is not a retirement event. The LSQ retains the
+committed entry until its tagged L1D acknowledgement, preserving data for
+store-to-load forwarding and for a retry-free downstream drain.
 
 The static `L1D_CACHEABLE_BASE`/`L1D_CACHEABLE_SIZE` physical aperture
 classifies a translated load as cacheable RAM. It is not a complete PMA
@@ -567,14 +580,14 @@ RV64A drains simple MEM work and runs as a serialized ordered operation. It
 uses the core request/response contract rather than AXI exclusives. Atomics do
 not yet use the ordinary early-translation path.
 
-A redirect immediately removes younger LSQ entries that have not launched a
-request. A younger entry with an accepted translation or physical request
-retains its LSQ tag in a killed quarantine slot until the response is consumed;
-the response cannot complete architecturally and the finite-width tag cannot
-be reused early. A store whose physical request was accepted at the ordered
-head is already irrevocable and is retained through redirect. A full flush may
-also mark accepted reads canceled at the tagged memory endpoint while their
-underlying operations drain.
+A redirect immediately removes younger uncommitted LSQ entries that have not
+launched a request. A younger entry with an accepted translation or physical
+request retains its LSQ tag in a killed quarantine slot until the response is
+consumed; the response cannot complete architecturally and the finite-width
+tag cannot be reused early. A committed store is architectural state and is
+retained through both selective and full redirects, including a commit and
+redirect on the same clock edge. A full flush may also mark accepted reads
+canceled at the tagged memory endpoint while their underlying operations drain.
 
 ## Translation, protection, and physical bus
 

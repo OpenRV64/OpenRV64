@@ -302,6 +302,13 @@ $(LSQ_SIM_BUILD): $(LSQ_SIM_SRCS) rtl/core/exec/lsq.v
 	iverilog -g2012 -Wall -Irtl -o $(LSQ_SIM_BUILD) \
 		rtl/core/exec/lsq.v $(LSQ_SIM_SRCS)
 
+$(LSQ_COMMITTED_STORE_SIM_BUILD): $(LSQ_COMMITTED_STORE_SIM_SRCS) \
+		rtl/core/exec/lsq.v
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_lsq_committed_store \
+		-o $(LSQ_COMMITTED_STORE_SIM_BUILD) \
+		rtl/core/exec/lsq.v $(LSQ_COMMITTED_STORE_SIM_SRCS)
+
 $(LSU_ATOMICS_SIM_BUILD): $(LSU_ATOMICS_SIM_SRCS) \
 		rtl/core/exec/lsu/atomics.v rtl/core/exec/lsu/rv64-a.v
 	mkdir -p sim

@@ -186,7 +186,7 @@ that the instruction will retire in that cycle.
 | 20 | `MEMORY_ORDER` | device/store/atomic access requires ordered head |
 | 21 | `MEMORY_PORT` | translated entry has not won memory launch |
 | 22 | `MEMORY_RESPONSE` | memory request is outstanding |
-| 23 | `POSTED_STORE_ACK` | posted store result was sent; access completion remains |
+| 23 | `POSTED_STORE_ACK` | retired store request is outstanding; L1D acknowledgement remains |
 | 24 | `ROB_INCOMPLETE` | ROB entry has no completion |
 | 25 | `ROB_ORDER` | completed ROB entry is behind older work |
 | 26 | `RETIRE_BACKPRESSURE` | ordered retirement candidate is not accepted |
@@ -225,7 +225,7 @@ not listed below are zero.
 | REGREAD pending | 0 group valid, 2:1 lane valid, 6:3 operand-ready mask | operand-done mask `[3:0]` | 0 |
 | EXEC/COMPLETE/RETIRE | 0 valid, 1 ready/accept | completion/retirement result for COMPLETE/RETIRE | next PC for COMPLETE/RETIRE |
 | LSQ load | 0 valid, 1 immediate, 2 translation sent, 3 translation done, 4 access sent, 5 killed, 6 guard block, 7 order match, 8 forward ready/held | virtual address | physical address |
-| LSQ store | load phase bits plus 5 result sent, 6 access done, 7 killed, 8 order match, 9 atomic | virtual address | physical address |
+| LSQ store | load phase bits plus 5 result sent, 6 access done, 7 killed, 8 access authorized, 9 atomic, 10 committed | virtual address | physical address |
 | ROB | 0 present, 1 valid, 2 complete, 3 head | rs1 `[4:0]`, rs2 `[12:8]`, rd `[20:16]`, control/class bits `[32:24]`, new physical tag `[47:40]` | result data |
 
 The ROB control/class bits are: 24 register write, 25 uses rs1, 26 uses rs2,

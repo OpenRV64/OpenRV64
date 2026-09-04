@@ -38,6 +38,7 @@ module openrv64_exec_top_3p #(
     parameter integer ENABLE_LOCAL_FORWARDING = 1,
     parameter integer ENABLE_SPECULATIVE_JALR = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
+    parameter integer ENABLE_COMMITTED_STORE_QUEUE = 0,
     parameter integer ENABLE_ZICCLSM = 1,
     parameter integer LOAD_QUEUE_DEPTH = 4,
     parameter integer STORE_QUEUE_DEPTH = 4,
@@ -96,6 +97,12 @@ module openrv64_exec_top_3p #(
                                         ordered_store_window_id_i,
     input  wire [3*RETIRE_SLOT_WIDTH-1:0]
                                         ordered_store_window_slot_i,
+    input  wire [2:0]                   store_commit_valid_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        store_commit_id_i,
+    input  wire [3*RETIRE_SLOT_WIDTH-1:0]
+                                        store_commit_slot_i,
+    output wire [2:0]                   store_commit_accept_o,
     output wire                         store_barrier_request_o,
     input  wire                         store_barrier_busy_i,
 
@@ -616,6 +623,7 @@ module openrv64_exec_top_3p #(
         .LOAD_QUEUE_DEPTH(LOAD_QUEUE_DEPTH),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .ENABLE_ORDERED_STORE_WINDOW(ENABLE_POSTED_STORES),
+        .ENABLE_COMMITTED_STORE_QUEUE(ENABLE_COMMITTED_STORE_QUEUE),
         .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
         .COHERENT_ATOMICS(ENABLE_COHERENT_ATOMICS),
         .ENABLE_MEMORY_DISAMBIGUATION(ENABLE_MEMORY_DISAMBIGUATION),
@@ -665,6 +673,10 @@ module openrv64_exec_top_3p #(
             ordered_store_window_complete_i),
         .ordered_store_window_id_i(ordered_store_window_id_i),
         .ordered_store_window_slot_i(ordered_store_window_slot_i),
+        .store_commit_valid_i(store_commit_valid_i),
+        .store_commit_id_i(store_commit_id_i),
+        .store_commit_slot_i(store_commit_slot_i),
+        .store_commit_accept_o(store_commit_accept_o),
         .complete_valid_o(lsu_complete_valid),
         .complete_ready_i(lsu_complete_ready),
         .complete_id_o(lsu_complete_id),

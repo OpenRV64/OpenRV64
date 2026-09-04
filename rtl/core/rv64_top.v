@@ -1511,6 +1511,12 @@ module openrv64_rv64_top #(
         .ordered_store_window_id_3p_i(
             {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .ordered_store_window_slot_3p_i(9'd0),
+        .store_commit_valid_3p_i(3'b000),
+        .store_commit_id_3p_i(
+            {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .store_commit_slot_3p_i(
+            {3*3{1'b0}}),
+        .store_commit_accept_3p_o(),
         .store_barrier_busy_3p_i(1'b0),
         .complete_ready_3p_i(3'b000)
     );

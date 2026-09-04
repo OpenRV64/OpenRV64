@@ -70,6 +70,7 @@
 	sim-top-4pf-faults
 .PHONY: sim-decode-rv64c sim-decode-rv64-fd
 .PHONY: sim-exec-alu-rv64-m-fpga
+.PHONY: sim-lsq-committed-store
 .PHONY: sim-regfile sim-retire-3p-banked sim-backend-3p-banked \
 	sim-backend-3p-banked-tomasulo sim-backend-3p-banked-window
 .PHONY: sim-top-3p-banked

@@ -220,6 +220,10 @@ module lsq_l1d_store_performance_runner #(
         .ordered_store_window_id_i({3*ID_WIDTH{1'b0}}),
         .ordered_store_window_slot_i(
             {3*RETIRE_SLOT_WIDTH{1'b0}}),
+        .store_commit_valid_i(3'b000),
+        .store_commit_id_i({3*ID_WIDTH{1'b0}}),
+        .store_commit_slot_i({3*RETIRE_SLOT_WIDTH{1'b0}}),
+        .store_commit_accept_o(),
         .atomic_start_valid_o(),
         .atomic_start_tag_o(),
         .atomic_start_id_o(),

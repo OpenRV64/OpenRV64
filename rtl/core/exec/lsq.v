@@ -25,6 +25,7 @@ module openrv64_lsq #(
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer TAG_WIDTH = `OPENRV64_LSU_TAG_WIDTH,
     parameter integer ENABLE_ORDERED_STORE_WINDOW = 0,
+    parameter integer ENABLE_COMMITTED_STORE_QUEUE = 0,
     parameter integer ALLOW_UNRESOLVED_STORE_SPECULATION = 0,
     parameter [`RV64_XLEN-1:0] CACHEABLE_BASE = {`RV64_XLEN{1'b0}},
     parameter [`RV64_XLEN-1:0] CACHEABLE_SIZE = {`RV64_XLEN{1'b0}},
@@ -75,6 +76,15 @@ module openrv64_lsq #(
                                         ordered_store_window_id_i,
     input  wire [3*RETIRE_SLOT_WIDTH-1:0]
                                         ordered_store_window_slot_i,
+    // Architectural retirement commits as many as three ordinary stores in
+    // one cycle.  A committed store remains in this queue until L1D accepts
+    // and acknowledges it, but it no longer occupies the ROB.
+    input  wire [2:0]                   store_commit_valid_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        store_commit_id_i,
+    input  wire [3*RETIRE_SLOT_WIDTH-1:0]
+                                        store_commit_slot_i,
+    output wire [2:0]                   store_commit_accept_o,
 
     output wire                         atomic_start_valid_o,
     output wire [TAG_WIDTH-1:0]         atomic_start_tag_o,
@@ -114,9 +124,10 @@ module openrv64_lsq #(
     output wire [`RV64_XLEN-1:0]        req_wdata_o,
     output wire [7:0]                   req_wstrb_o,
 
-    // An ordinary cacheable store becomes architecturally complete when its
-    // irrevocable memory request is accepted.  Its result payload was seeded
-    // in retirement storage at allocation, so only identity is returned here.
+    // An ordinary cacheable store becomes ROB-complete once translation and
+    // protection checks have succeeded.  Its result payload was seeded in
+    // retirement storage at allocation, so only identity is returned here.
+    // The store may issue to L1D only after store_commit_* marks it retired.
     output wire                         posted_store_complete_valid_o,
     output wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
                                         posted_store_complete_id_o,
@@ -233,6 +244,7 @@ module openrv64_lsq #(
     reg store_xlate_page_fault_q [0:STORE_QUEUE_DEPTH-1];
     reg store_access_sent_q [0:STORE_QUEUE_DEPTH-1];
     reg store_result_sent_q [0:STORE_QUEUE_DEPTH-1];
+    reg store_committed_q [0:STORE_QUEUE_DEPTH-1];
     reg store_access_done_q [0:STORE_QUEUE_DEPTH-1];
     reg store_killed_q [0:STORE_QUEUE_DEPTH-1];
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
@@ -376,12 +388,59 @@ module openrv64_lsq #(
             assign store_window_authorized[store_window_gen] =
                 lane0_match || lane1_match || lane2_match;
             assign store_access_authorized[store_window_gen] =
+                ((ENABLE_COMMITTED_STORE_QUEUE != 0) &&
+                 store_cacheable[store_window_gen]) ?
+                store_committed_q[store_window_gen] :
                 ((ENABLE_ORDERED_STORE_WINDOW != 0) &&
                  store_cacheable[store_window_gen]) ?
                 store_window_authorized[store_window_gen] :
                 store_order_match[store_window_gen];
         end
     endgenerate
+
+    integer store_commit_lane_scan;
+    integer store_commit_entry_scan;
+    reg [2:0] store_commit_accept_r;
+    reg store_commit_match_r [0:STORE_QUEUE_DEPTH-1];
+    always @* begin
+        store_commit_accept_r = 3'b000;
+        for (store_commit_entry_scan = 0;
+             store_commit_entry_scan < STORE_QUEUE_DEPTH;
+             store_commit_entry_scan = store_commit_entry_scan + 1)
+            store_commit_match_r[store_commit_entry_scan] = 1'b0;
+        for (store_commit_lane_scan = 0;
+             store_commit_lane_scan < 3;
+             store_commit_lane_scan = store_commit_lane_scan + 1) begin
+            for (store_commit_entry_scan = 0;
+                 store_commit_entry_scan < STORE_QUEUE_DEPTH;
+                 store_commit_entry_scan =
+                     store_commit_entry_scan + 1) begin
+                    if (store_commit_valid_i[store_commit_lane_scan] &&
+                        store_valid_q[store_commit_entry_scan] &&
+                        !store_killed_q[store_commit_entry_scan] &&
+                        !store_atomic_q[store_commit_entry_scan] &&
+                        !store_immediate_q[store_commit_entry_scan] &&
+                        store_xlate_done_q[store_commit_entry_scan] &&
+                        !store_xlate_fault[store_commit_entry_scan] &&
+                        store_cacheable[store_commit_entry_scan] &&
+                        store_result_sent_q[store_commit_entry_scan] &&
+                        !store_committed_q[store_commit_entry_scan] &&
+                        (store_id_q[store_commit_entry_scan] ==
+                         store_commit_id_i[
+                             store_commit_lane_scan*
+                             `OPENRV64_INSTR_ID_WIDTH +:
+                             `OPENRV64_INSTR_ID_WIDTH]) &&
+                        (store_retire_q[store_commit_entry_scan] ==
+                         store_commit_slot_i[
+                             store_commit_lane_scan*RETIRE_SLOT_WIDTH +:
+                             RETIRE_SLOT_WIDTH])) begin
+                        store_commit_accept_r[store_commit_lane_scan] = 1'b1;
+                        store_commit_match_r[store_commit_entry_scan] = 1'b1;
+                    end
+            end
+        end
+    end
+    assign store_commit_accept_o = store_commit_accept_r;
 
     integer free_scan;
     reg load_free_found_r;
@@ -443,6 +502,7 @@ module openrv64_lsq #(
     reg load_forward_store_found_r [0:LOAD_QUEUE_DEPTH-1];
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
         load_forward_store_id_r [0:LOAD_QUEUE_DEPTH-1];
+    reg load_forward_store_committed_r [0:LOAD_QUEUE_DEPTH-1];
     reg [`RV64_XLEN-1:0]
         load_forward_data_r [0:LOAD_QUEUE_DEPTH-1];
     reg [7:0] load_forward_wstrb_r [0:LOAD_QUEUE_DEPTH-1];
@@ -463,6 +523,7 @@ module openrv64_lsq #(
             load_forward_store_found_r[load_guard_scan] = 1'b0;
             load_forward_store_id_r[load_guard_scan] =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            load_forward_store_committed_r[load_guard_scan] = 1'b0;
             load_forward_data_r[load_guard_scan] = {`RV64_XLEN{1'b0}};
             load_forward_wstrb_r[load_guard_scan] = 8'h00;
             load_request_mask_r[load_guard_scan] = access_byte_mask(
@@ -531,6 +592,9 @@ module openrv64_lsq #(
                                     load_guard_scan] = 1'b1;
                                 load_forward_store_id_r[load_guard_scan] =
                                     store_id_q[guard_scan];
+                                load_forward_store_committed_r[
+                                    load_guard_scan] =
+                                    store_committed_q[guard_scan];
                                 load_forward_data_r[load_guard_scan] =
                                     store_wdata_q[guard_scan];
                                 load_forward_wstrb_r[load_guard_scan] =
@@ -559,6 +623,7 @@ module openrv64_lsq #(
     reg forward_valid_q;
     reg [TAG_WIDTH-1:0] forward_load_index_q;
     reg [`RV64_XLEN-1:0] forward_data_q;
+    reg forward_store_committed_q;
     integer forward_scan;
     reg forward_capture_found_r;
     reg [TAG_WIDTH-1:0] forward_capture_index_r;
@@ -673,21 +738,39 @@ module openrv64_lsq #(
         (xlate_alloc_select_load ? load_alloc_vaddr_i : store_alloc_vaddr_i);
     wire xlate_req_fire = xlate_req_valid_o && xlate_req_ready_i;
 
-    // The memory port selects the oldest translated operation which can make
-    // progress.  Multiple loads may remain outstanding behind this one-cycle
-    // launch port.
+    // The memory port normally selects the oldest translated operation which
+    // can make progress.  In committed-store-queue mode, an ordinary
+    // committed store is a background drain: an eligible load takes the port
+    // unless the store partition is full.  Device/atomic ordering retains the
+    // age policy, and full-pressure priority guarantees store progress.
     integer request_scan;
     reg request_found_r;
     reg request_store_r;
     reg [TAG_WIDTH-1:0] request_index_r;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] request_id_r;
     reg request_candidate_r;
+    reg request_load_found_r;
+    reg [TAG_WIDTH-1:0] request_load_index_r;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] request_load_id_r;
+    reg request_store_found_r;
+    reg [TAG_WIDTH-1:0] request_store_index_r;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] request_store_id_r;
+    reg request_load_over_committed_store_r;
+    reg request_store_pressure_priority_r;
     always @* begin
         request_found_r = 1'b0;
         request_store_r = 1'b0;
         request_index_r = {TAG_WIDTH{1'b0}};
         request_id_r = {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
         request_candidate_r = 1'b0;
+        request_load_found_r = 1'b0;
+        request_load_index_r = {TAG_WIDTH{1'b0}};
+        request_load_id_r = {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        request_store_found_r = 1'b0;
+        request_store_index_r = {TAG_WIDTH{1'b0}};
+        request_store_id_r = {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        request_load_over_committed_store_r = 1'b0;
+        request_store_pressure_priority_r = 1'b0;
         for (request_scan = 0; request_scan < LOAD_QUEUE_DEPTH;
              request_scan = request_scan + 1) begin
             request_candidate_r =
@@ -704,13 +787,12 @@ module openrv64_lsq #(
                 (load_cacheable[request_scan] ||
                  load_order_match[request_scan]);
             if (request_candidate_r &&
-                (!request_found_r ||
-                 id_is_younger(request_id_r,
+                (!request_load_found_r ||
+                 id_is_younger(request_load_id_r,
                                load_id_q[request_scan]))) begin
-                request_found_r = 1'b1;
-                request_store_r = 1'b0;
-                request_index_r = request_scan;
-                request_id_r = load_id_q[request_scan];
+                request_load_found_r = 1'b1;
+                request_load_index_r = request_scan;
+                request_load_id_r = load_id_q[request_scan];
             end
         end
         for (request_scan = 0; request_scan < STORE_QUEUE_DEPTH;
@@ -725,14 +807,40 @@ module openrv64_lsq #(
                 !store_access_sent_q[request_scan] &&
                 store_access_authorized[request_scan];
             if (request_candidate_r &&
-                (!request_found_r ||
-                 id_is_younger(request_id_r, store_id_q[request_scan]))) begin
-                request_found_r = 1'b1;
-                request_store_r = 1'b1;
-                request_index_r = LOAD_QUEUE_DEPTH + request_scan;
-                request_id_r = store_id_q[request_scan];
+                (!request_store_found_r ||
+                 id_is_younger(request_store_id_r,
+                               store_id_q[request_scan]))) begin
+                request_store_found_r = 1'b1;
+                request_store_index_r = request_scan;
+                request_store_id_r = store_id_q[request_scan];
             end
         end
+        if (request_load_found_r && request_store_found_r) begin
+            if ((ENABLE_COMMITTED_STORE_QUEUE != 0) &&
+                store_cacheable[request_store_index_r] &&
+                store_committed_q[request_store_index_r]) begin
+                if (!store_free_found_r) begin
+                    request_store_r = 1'b1;
+                    request_store_pressure_priority_r = 1'b1;
+                end else begin
+                    request_store_r = 1'b0;
+                    request_load_over_committed_store_r =
+                        id_is_younger(request_load_id_r,
+                                      request_store_id_r);
+                end
+            end else begin
+                request_store_r = id_is_younger(
+                    request_load_id_r, request_store_id_r);
+            end
+        end else begin
+            request_store_r = request_store_found_r;
+        end
+        request_found_r = request_load_found_r || request_store_found_r;
+        request_index_r = request_store_r ?
+            (LOAD_QUEUE_DEPTH + request_store_index_r) :
+            request_load_index_r;
+        request_id_r = request_store_r ? request_store_id_r :
+                                         request_load_id_r;
     end
     wire [TAG_WIDTH-1:0] request_store_array_index =
         request_store_r ? (request_index_r - LOAD_QUEUE_DEPTH) :
@@ -760,13 +868,51 @@ module openrv64_lsq #(
     assign req_wstrb_o = request_store_r ?
         store_wstrb_q[request_store_array_index] : 8'h00;
     wire req_fire = req_valid_o && req_ready_i;
-    wire posted_store_complete = req_fire && request_store_r &&
+    integer store_complete_scan;
+    reg store_complete_found_r;
+    reg [TAG_WIDTH-1:0] store_complete_index_r;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0] store_complete_id_r;
+    always @* begin
+        store_complete_found_r = 1'b0;
+        store_complete_index_r = {TAG_WIDTH{1'b0}};
+        store_complete_id_r = {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+        for (store_complete_scan = 0;
+             store_complete_scan < STORE_QUEUE_DEPTH;
+             store_complete_scan = store_complete_scan + 1) begin
+            if (store_valid_q[store_complete_scan] &&
+                !store_killed_q[store_complete_scan] &&
+                !store_atomic_q[store_complete_scan] &&
+                !store_immediate_q[store_complete_scan] &&
+                store_xlate_done_q[store_complete_scan] &&
+                !store_xlate_fault[store_complete_scan] &&
+                store_cacheable[store_complete_scan] &&
+                !store_result_sent_q[store_complete_scan] &&
+                (!store_complete_found_r ||
+                 id_is_younger(store_complete_id_r,
+                               store_id_q[store_complete_scan]))) begin
+                store_complete_found_r = 1'b1;
+                store_complete_index_r = store_complete_scan;
+                store_complete_id_r = store_id_q[store_complete_scan];
+            end
+        end
+    end
+    wire early_store_complete =
+        (ENABLE_COMMITTED_STORE_QUEUE != 0) &&
+        store_complete_found_r && !flush_i && !squash_younger_i;
+    wire legacy_store_complete =
+        (ENABLE_COMMITTED_STORE_QUEUE == 0) &&
+        req_fire && request_store_r &&
         store_cacheable[request_store_array_index];
+    wire posted_store_complete = early_store_complete ||
+                                 legacy_store_complete;
+    wire [TAG_WIDTH-1:0] posted_store_complete_index =
+        early_store_complete ? store_complete_index_r :
+                               request_store_array_index;
     assign posted_store_complete_valid_o = posted_store_complete;
     assign posted_store_complete_id_o =
-        store_id_q[request_store_array_index];
+        store_id_q[posted_store_complete_index];
     assign posted_store_complete_slot_o =
-        store_retire_q[request_store_array_index];
+        store_retire_q[posted_store_complete_index];
     assign load_access_valid_o = req_fire && !request_store_r;
     assign load_access_id_o = load_id_q[request_load_array_index];
     assign load_access_slot_o = load_retire_q[request_load_array_index];
@@ -1089,6 +1235,7 @@ module openrv64_lsq #(
             forward_valid_q <= 1'b0;
             forward_load_index_q <= {TAG_WIDTH{1'b0}};
             forward_data_q <= {`RV64_XLEN{1'b0}};
+            forward_store_committed_q <= 1'b0;
             for (state_index = 0; state_index < LOAD_QUEUE_DEPTH;
                  state_index = state_index + 1) begin
                 load_valid_q[state_index] <= 1'b0;
@@ -1123,6 +1270,7 @@ module openrv64_lsq #(
                 store_xlate_page_fault_q[state_index] <= 1'b0;
                 store_access_sent_q[state_index] <= 1'b0;
                 store_result_sent_q[state_index] <= 1'b0;
+                store_committed_q[state_index] <= 1'b0;
                 store_access_done_q[state_index] <= 1'b0;
                 store_killed_q[state_index] <= 1'b0;
                 store_id_q[state_index] <=
@@ -1138,6 +1286,7 @@ module openrv64_lsq #(
             end
         end else if (flush_i) begin
             forward_valid_q <= 1'b0;
+            forward_store_committed_q <= 1'b0;
             // Full redirects cancel all loads.  ICX owns cancellation of
             // physical loads already in flight and suppresses their responses.
             for (state_index = 0; state_index < LOAD_QUEUE_DEPTH;
@@ -1150,15 +1299,20 @@ module openrv64_lsq #(
             for (state_index = 0; state_index < STORE_QUEUE_DEPTH;
                  state_index = state_index + 1) begin
                 if ((store_valid_q[state_index] &&
-                     store_access_sent_q[state_index]) ||
+                     (store_access_sent_q[state_index] ||
+                      store_committed_q[state_index] ||
+                      store_commit_match_r[state_index])) ||
                     (atomic_irrevocable_i && atomic_tag_is_store &&
                      (atomic_store_index == state_index))) begin
                     store_valid_q[state_index] <= 1'b1;
+                    if (store_commit_match_r[state_index])
+                        store_committed_q[state_index] <= 1'b1;
                 end else begin
                     store_valid_q[state_index] <= 1'b0;
                     store_xlate_sent_q[state_index] <= 1'b0;
                     store_access_sent_q[state_index] <= 1'b0;
                     store_result_sent_q[state_index] <= 1'b0;
+                    store_committed_q[state_index] <= 1'b0;
                     store_access_done_q[state_index] <= 1'b0;
                     store_killed_q[state_index] <= 1'b0;
                 end
@@ -1185,11 +1339,15 @@ module openrv64_lsq #(
                 forward_load_index_q <= forward_capture_index_r;
                 forward_data_q <=
                     load_forward_data_r[forward_capture_index_r];
+                forward_store_committed_q <=
+                    load_forward_store_committed_r[
+                        forward_capture_index_r];
             end else if (forward_result_fire ||
                          forward_slot_squashed_now ||
                          (forward_valid_q &&
                           !load_valid_q[forward_load_index_q])) begin
                 forward_valid_q <= 1'b0;
+                forward_store_committed_q <= 1'b0;
             end
             if (load_alloc_fire) begin
                 load_valid_q[load_free_index_r] <= 1'b1;
@@ -1229,6 +1387,7 @@ module openrv64_lsq #(
                 store_xlate_page_fault_q[store_free_array_index_r] <= 1'b0;
                 store_access_sent_q[store_free_array_index_r] <= 1'b0;
                 store_result_sent_q[store_free_array_index_r] <= 1'b0;
+                store_committed_q[store_free_array_index_r] <= 1'b0;
                 store_access_done_q[store_free_array_index_r] <= 1'b0;
                 store_killed_q[store_free_array_index_r] <= 1'b0;
                 store_id_q[store_free_array_index_r] <= store_alloc_id_i;
@@ -1257,12 +1416,19 @@ module openrv64_lsq #(
             if (req_fire) begin
                 if (request_store_r) begin
                     store_access_sent_q[request_store_array_index] <= 1'b1;
-                    if (store_cacheable[request_store_array_index])
+                    if ((ENABLE_COMMITTED_STORE_QUEUE == 0) &&
+                        store_cacheable[request_store_array_index])
                         store_result_sent_q[
                             request_store_array_index] <= 1'b1;
                 end else
                     load_access_sent_q[request_load_array_index] <= 1'b1;
             end
+            if (early_store_complete)
+                store_result_sent_q[store_complete_index_r] <= 1'b1;
+            for (state_index = 0; state_index < STORE_QUEUE_DEPTH;
+                 state_index = state_index + 1)
+                if (store_commit_match_r[state_index])
+                    store_committed_q[state_index] <= 1'b1;
             if (xlate_resp_fire) begin
                 if (xlate_resp_load_tag_valid) begin
                     load_xlate_sent_q[xlate_resp_load_index] <= 1'b0;
@@ -1296,6 +1462,7 @@ module openrv64_lsq #(
                     store_killed_q[resp_store_index] <= 1'b0;
                     store_access_sent_q[resp_store_index] <= 1'b0;
                     store_result_sent_q[resp_store_index] <= 1'b0;
+                    store_committed_q[resp_store_index] <= 1'b0;
                     store_access_done_q[resp_store_index] <= 1'b0;
                 end
             end
@@ -1304,6 +1471,7 @@ module openrv64_lsq #(
                 store_killed_q[store_done_index] <= 1'b0;
                 store_access_sent_q[store_done_index] <= 1'b0;
                 store_result_sent_q[store_done_index] <= 1'b0;
+                store_committed_q[store_done_index] <= 1'b0;
                 store_access_done_q[store_done_index] <= 1'b0;
             end
             if (result_fire) begin
@@ -1324,6 +1492,7 @@ module openrv64_lsq #(
                     store_valid_q[posted_store_done_index] <= 1'b0;
                     store_access_sent_q[posted_store_done_index] <= 1'b0;
                     store_result_sent_q[posted_store_done_index] <= 1'b0;
+                    store_committed_q[posted_store_done_index] <= 1'b0;
                     store_access_done_q[posted_store_done_index] <= 1'b0;
                 end
             end
@@ -1353,6 +1522,8 @@ module openrv64_lsq #(
                 for (state_index = 0; state_index < STORE_QUEUE_DEPTH;
                      state_index = state_index + 1) begin
                     if (store_valid_q[state_index] &&
+                        !store_committed_q[state_index] &&
+                        !store_commit_match_r[state_index] &&
                         ((squash_inclusive_i &&
                           (store_id_q[state_index] == squash_id_i)) ||
                          id_is_younger(store_id_q[state_index],
@@ -1370,6 +1541,7 @@ module openrv64_lsq #(
                             store_xlate_sent_q[state_index] <= 1'b0;
                             store_access_sent_q[state_index] <= 1'b0;
                             store_result_sent_q[state_index] <= 1'b0;
+                            store_committed_q[state_index] <= 1'b0;
                             store_access_done_q[state_index] <= 1'b0;
                         end
                     end
@@ -1392,6 +1564,7 @@ module openrv64_lsq #(
     wire slot_xlate_page_fault_q [0:DEPTH-1];
     wire slot_access_sent_q [0:DEPTH-1];
     wire slot_store_result_sent_q [0:DEPTH-1];
+    wire slot_store_committed_q [0:DEPTH-1];
     wire slot_access_done_q [0:DEPTH-1];
     wire slot_killed_q [0:DEPTH-1];
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] slot_id_q [0:DEPTH-1];
@@ -1435,6 +1608,7 @@ module openrv64_lsq #(
                 assign slot_access_sent_q[compatibility_gen] =
                     load_access_sent_q[compatibility_gen];
                 assign slot_store_result_sent_q[compatibility_gen] = 1'b0;
+                assign slot_store_committed_q[compatibility_gen] = 1'b0;
                 assign slot_access_done_q[compatibility_gen] = 1'b0;
                 assign slot_killed_q[compatibility_gen] =
                     load_killed_q[compatibility_gen];
@@ -1492,6 +1666,8 @@ module openrv64_lsq #(
                     store_access_sent_q[STORE_INDEX];
                 assign slot_store_result_sent_q[compatibility_gen] =
                     store_result_sent_q[STORE_INDEX];
+                assign slot_store_committed_q[compatibility_gen] =
+                    store_committed_q[STORE_INDEX];
                 assign slot_access_done_q[compatibility_gen] =
                     store_access_done_q[STORE_INDEX];
                 assign slot_killed_q[compatibility_gen] =
@@ -1533,6 +1709,7 @@ module openrv64_lsq #(
                 assign slot_xlate_page_fault_q[compatibility_gen] = 1'b0;
                 assign slot_access_sent_q[compatibility_gen] = 1'b0;
                 assign slot_store_result_sent_q[compatibility_gen] = 1'b0;
+                assign slot_store_committed_q[compatibility_gen] = 1'b0;
                 assign slot_access_done_q[compatibility_gen] = 1'b0;
                 assign slot_killed_q[compatibility_gen] = 1'b0;
                 assign slot_id_q[compatibility_gen] =
@@ -1582,6 +1759,8 @@ module openrv64_lsq #(
     integer perf_load_block_count_r;
     integer perf_load_inhibit_block_count_r;
     integer perf_load_forward_ready_count_r;
+    integer perf_load_committed_forward_ready_count_r;
+    integer perf_load_committed_mask_block_count_r;
     integer perf_load_squashed_count_r;
     integer perf_load_squashed_before_xlate_count_r;
     integer perf_load_squashed_xlate_inflight_count_r;
@@ -1589,6 +1768,10 @@ module openrv64_lsq #(
     integer perf_load_squashed_access_inflight_count_r;
     integer perf_store_valid_count_r;
     integer perf_store_spec_count_r;
+    integer perf_store_committed_count_r;
+    integer perf_store_committed_wait_access_count_r;
+    integer perf_store_committed_inflight_count_r;
+    integer perf_store_commit_count_r;
     integer perf_store_order_wait_count_r;
     integer perf_store_squashed_count_r;
     integer perf_store_squashed_before_xlate_count_r;
@@ -1601,6 +1784,8 @@ module openrv64_lsq #(
         perf_load_block_count_r = 0;
         perf_load_inhibit_block_count_r = 0;
         perf_load_forward_ready_count_r = 0;
+        perf_load_committed_forward_ready_count_r = 0;
+        perf_load_committed_mask_block_count_r = 0;
         perf_load_squashed_count_r = 0;
         perf_load_squashed_before_xlate_count_r = 0;
         perf_load_squashed_xlate_inflight_count_r = 0;
@@ -1608,6 +1793,10 @@ module openrv64_lsq #(
         perf_load_squashed_access_inflight_count_r = 0;
         perf_store_valid_count_r = 0;
         perf_store_spec_count_r = 0;
+        perf_store_committed_count_r = 0;
+        perf_store_committed_wait_access_count_r = 0;
+        perf_store_committed_inflight_count_r = 0;
+        perf_store_commit_count_r = 0;
         perf_store_order_wait_count_r = 0;
         perf_store_squashed_count_r = 0;
         perf_store_squashed_before_xlate_count_r = 0;
@@ -1642,6 +1831,19 @@ module openrv64_lsq #(
                      (forward_load_index_q == perf_scan)))
                     perf_load_forward_ready_count_r =
                         perf_load_forward_ready_count_r + 1;
+                if ((load_forward_ready_r[perf_scan] &&
+                     load_forward_store_committed_r[perf_scan]) ||
+                    (forward_valid_q &&
+                     (forward_load_index_q == perf_scan) &&
+                     forward_store_committed_q))
+                    perf_load_committed_forward_ready_count_r =
+                        perf_load_committed_forward_ready_count_r + 1;
+                if (load_guard_granule_block_r[perf_scan] &&
+                    !load_forward_unsafe_r[perf_scan] &&
+                    load_forward_store_found_r[perf_scan] &&
+                    load_forward_store_committed_r[perf_scan])
+                    perf_load_committed_mask_block_count_r =
+                        perf_load_committed_mask_block_count_r + 1;
             end
             if (squash_younger_i && load_valid_q[perf_scan] &&
                 ((squash_inclusive_i &&
@@ -1669,6 +1871,16 @@ module openrv64_lsq #(
                 perf_store_valid_count_r = perf_store_valid_count_r + 1;
                 if (!store_order_match[perf_scan])
                     perf_store_spec_count_r = perf_store_spec_count_r + 1;
+                if (store_committed_q[perf_scan]) begin
+                    perf_store_committed_count_r =
+                        perf_store_committed_count_r + 1;
+                    if (!store_access_sent_q[perf_scan])
+                        perf_store_committed_wait_access_count_r =
+                            perf_store_committed_wait_access_count_r + 1;
+                    else if (!store_access_done_q[perf_scan])
+                        perf_store_committed_inflight_count_r =
+                            perf_store_committed_inflight_count_r + 1;
+                end
                 if (!store_atomic_q[perf_scan] &&
                     store_xlate_done_q[perf_scan] &&
                     !store_xlate_fault[perf_scan] &&
@@ -1697,6 +1909,11 @@ module openrv64_lsq #(
                         perf_store_squashed_before_xlate_count_r + 1;
             end
         end
+        for (perf_scan = 0; perf_scan < 3;
+             perf_scan = perf_scan + 1)
+            if (store_commit_accept_o[perf_scan])
+                perf_store_commit_count_r =
+                    perf_store_commit_count_r + 1;
     end
 
     reg [63:0] perf_load_allocations_q;
@@ -1731,6 +1948,9 @@ module openrv64_lsq #(
     reg perf_load_inhibit_prev_q;
     reg [63:0] perf_load_forward_ready_cycles_q;
     reg [63:0] perf_load_forward_ready_entry_cycles_q;
+    reg [63:0] perf_load_forwarded_from_committed_q;
+    reg [63:0] perf_load_committed_forward_ready_entry_cycles_q;
+    reg [63:0] perf_load_committed_mask_block_entry_cycles_q;
     reg [63:0] perf_load_occupancy_cycles_q;
     reg [63:0] perf_load_spec_occupancy_cycles_q;
     reg [63:0] perf_load_max_occupancy_q;
@@ -1760,6 +1980,26 @@ module openrv64_lsq #(
     reg [63:0] perf_store_occupancy_cycles_q;
     reg [63:0] perf_store_spec_occupancy_cycles_q;
     reg [63:0] perf_store_max_occupancy_q;
+    reg [63:0] perf_store_commit_events_q;
+    reg [63:0] perf_store_commit_cycles_q;
+    reg [63:0] perf_store_commit_w1_cycles_q;
+    reg [63:0] perf_store_commit_w2_cycles_q;
+    reg [63:0] perf_store_commit_w3_cycles_q;
+    reg [63:0] perf_store_committed_nonempty_cycles_q;
+    reg [63:0] perf_store_committed_full_cycles_q;
+    reg [63:0] perf_store_committed_occupancy_cycles_q;
+    reg [63:0] perf_store_committed_wait_access_entry_cycles_q;
+    reg [63:0] perf_store_committed_inflight_entry_cycles_q;
+    reg [63:0] perf_store_max_committed_occupancy_q;
+    reg [63:0] perf_lsq_load_capacity_full_cycles_q;
+    reg [63:0] perf_lsq_store_capacity_full_cycles_q;
+    reg [63:0] perf_lsq_any_capacity_full_cycles_q;
+    reg [63:0] perf_lsq_both_capacity_full_cycles_q;
+    reg [63:0] perf_lsq_alloc_block_cycles_q;
+    reg [63:0] perf_lsq_occupancy_entry_cycles_q;
+    reg [63:0] perf_lsq_max_occupancy_q;
+    reg [63:0] perf_lsq_load_over_committed_store_cycles_q;
+    reg [63:0] perf_lsq_store_pressure_priority_cycles_q;
     reg [63:0] perf_atomic_starts_q;
     reg [63:0] perf_atomic_done_q;
     reg [63:0] perf_atomic_active_cycles_q;
@@ -1798,6 +2038,9 @@ module openrv64_lsq #(
             perf_load_inhibit_prev_q <= 1'b0;
             perf_load_forward_ready_cycles_q <= 0;
             perf_load_forward_ready_entry_cycles_q <= 0;
+            perf_load_forwarded_from_committed_q <= 0;
+            perf_load_committed_forward_ready_entry_cycles_q <= 0;
+            perf_load_committed_mask_block_entry_cycles_q <= 0;
             perf_load_occupancy_cycles_q <= 0;
             perf_load_spec_occupancy_cycles_q <= 0;
             perf_load_max_occupancy_q <= 0;
@@ -1827,6 +2070,26 @@ module openrv64_lsq #(
             perf_store_occupancy_cycles_q <= 0;
             perf_store_spec_occupancy_cycles_q <= 0;
             perf_store_max_occupancy_q <= 0;
+            perf_store_commit_events_q <= 0;
+            perf_store_commit_cycles_q <= 0;
+            perf_store_commit_w1_cycles_q <= 0;
+            perf_store_commit_w2_cycles_q <= 0;
+            perf_store_commit_w3_cycles_q <= 0;
+            perf_store_committed_nonempty_cycles_q <= 0;
+            perf_store_committed_full_cycles_q <= 0;
+            perf_store_committed_occupancy_cycles_q <= 0;
+            perf_store_committed_wait_access_entry_cycles_q <= 0;
+            perf_store_committed_inflight_entry_cycles_q <= 0;
+            perf_store_max_committed_occupancy_q <= 0;
+            perf_lsq_load_capacity_full_cycles_q <= 0;
+            perf_lsq_store_capacity_full_cycles_q <= 0;
+            perf_lsq_any_capacity_full_cycles_q <= 0;
+            perf_lsq_both_capacity_full_cycles_q <= 0;
+            perf_lsq_alloc_block_cycles_q <= 0;
+            perf_lsq_occupancy_entry_cycles_q <= 0;
+            perf_lsq_max_occupancy_q <= 0;
+            perf_lsq_load_over_committed_store_cycles_q <= 0;
+            perf_lsq_store_pressure_priority_cycles_q <= 0;
             perf_atomic_starts_q <= 0;
             perf_atomic_done_q <= 0;
             perf_atomic_active_cycles_q <= 0;
@@ -1878,6 +2141,9 @@ module openrv64_lsq #(
                 if (forward_result_fire)
                     perf_load_forwarded_q <=
                         perf_load_forwarded_q + 1'b1;
+                if (forward_result_fire && forward_store_committed_q)
+                    perf_load_forwarded_from_committed_q <=
+                        perf_load_forwarded_from_committed_q + 1'b1;
                 if (result_access_fault_o || result_page_fault_o)
                     perf_load_faults_q <= perf_load_faults_q + 1'b1;
             end
@@ -1931,6 +2197,12 @@ module openrv64_lsq #(
             perf_load_forward_ready_entry_cycles_q <=
                 perf_load_forward_ready_entry_cycles_q +
                 64'(perf_load_forward_ready_count_r);
+            perf_load_committed_forward_ready_entry_cycles_q <=
+                perf_load_committed_forward_ready_entry_cycles_q +
+                perf_load_committed_forward_ready_count_r;
+            perf_load_committed_mask_block_entry_cycles_q <=
+                perf_load_committed_mask_block_entry_cycles_q +
+                perf_load_committed_mask_block_count_r;
             perf_load_occupancy_cycles_q <=
                 perf_load_occupancy_cycles_q + perf_load_valid_count_r;
             perf_load_spec_occupancy_cycles_q <=
@@ -2015,6 +2287,68 @@ module openrv64_lsq #(
                 perf_store_spec_occupancy_cycles_q + perf_store_spec_count_r;
             if (perf_store_valid_count_r > perf_store_max_occupancy_q)
                 perf_store_max_occupancy_q <= perf_store_valid_count_r;
+            perf_store_commit_events_q <= perf_store_commit_events_q +
+                perf_store_commit_count_r;
+            if (perf_store_commit_count_r != 0)
+                perf_store_commit_cycles_q <=
+                    perf_store_commit_cycles_q + 1'b1;
+            if (perf_store_commit_count_r == 1)
+                perf_store_commit_w1_cycles_q <=
+                    perf_store_commit_w1_cycles_q + 1'b1;
+            else if (perf_store_commit_count_r == 2)
+                perf_store_commit_w2_cycles_q <=
+                    perf_store_commit_w2_cycles_q + 1'b1;
+            else if (perf_store_commit_count_r == 3)
+                perf_store_commit_w3_cycles_q <=
+                    perf_store_commit_w3_cycles_q + 1'b1;
+            if (perf_store_committed_count_r != 0)
+                perf_store_committed_nonempty_cycles_q <=
+                    perf_store_committed_nonempty_cycles_q + 1'b1;
+            if (perf_store_committed_count_r == STORE_QUEUE_DEPTH)
+                perf_store_committed_full_cycles_q <=
+                    perf_store_committed_full_cycles_q + 1'b1;
+            perf_store_committed_occupancy_cycles_q <=
+                perf_store_committed_occupancy_cycles_q +
+                perf_store_committed_count_r;
+            perf_store_committed_wait_access_entry_cycles_q <=
+                perf_store_committed_wait_access_entry_cycles_q +
+                perf_store_committed_wait_access_count_r;
+            perf_store_committed_inflight_entry_cycles_q <=
+                perf_store_committed_inflight_entry_cycles_q +
+                perf_store_committed_inflight_count_r;
+            if (perf_store_committed_count_r >
+                perf_store_max_committed_occupancy_q)
+                perf_store_max_committed_occupancy_q <=
+                    perf_store_committed_count_r;
+            if (!load_free_found_r)
+                perf_lsq_load_capacity_full_cycles_q <=
+                    perf_lsq_load_capacity_full_cycles_q + 1'b1;
+            if (!store_free_found_r)
+                perf_lsq_store_capacity_full_cycles_q <=
+                    perf_lsq_store_capacity_full_cycles_q + 1'b1;
+            if (!load_free_found_r || !store_free_found_r)
+                perf_lsq_any_capacity_full_cycles_q <=
+                    perf_lsq_any_capacity_full_cycles_q + 1'b1;
+            if (!load_free_found_r && !store_free_found_r)
+                perf_lsq_both_capacity_full_cycles_q <=
+                    perf_lsq_both_capacity_full_cycles_q + 1'b1;
+            if ((load_alloc_valid_i && !load_alloc_ready_o) ||
+                (store_alloc_valid_i && !store_alloc_ready_o))
+                perf_lsq_alloc_block_cycles_q <=
+                    perf_lsq_alloc_block_cycles_q + 1'b1;
+            perf_lsq_occupancy_entry_cycles_q <=
+                perf_lsq_occupancy_entry_cycles_q +
+                perf_load_valid_count_r + perf_store_valid_count_r;
+            if ((perf_load_valid_count_r + perf_store_valid_count_r) >
+                perf_lsq_max_occupancy_q)
+                perf_lsq_max_occupancy_q <=
+                    perf_load_valid_count_r + perf_store_valid_count_r;
+            if (request_load_over_committed_store_r)
+                perf_lsq_load_over_committed_store_cycles_q <=
+                    perf_lsq_load_over_committed_store_cycles_q + 1'b1;
+            if (request_store_pressure_priority_r)
+                perf_lsq_store_pressure_priority_cycles_q <=
+                    perf_lsq_store_pressure_priority_cycles_q + 1'b1;
             if (atomic_start_valid_o && !atomic_active_i)
                 perf_atomic_starts_q <= perf_atomic_starts_q + 1'b1;
             if (atomic_done_i)
@@ -2041,14 +2375,21 @@ module openrv64_lsq #(
 
     always @(posedge clk) begin
         if (rst_n && posted_store_complete &&
-            (!store_access_authorized[request_store_array_index] ||
-             store_atomic_q[request_store_array_index] ||
-             store_immediate_q[request_store_array_index] ||
-             store_xlate_fault[request_store_array_index]))
+            (store_atomic_q[posted_store_complete_index] ||
+             store_immediate_q[posted_store_complete_index] ||
+             store_xlate_fault[posted_store_complete_index] ||
+             !store_cacheable[posted_store_complete_index] ||
+             ((ENABLE_COMMITTED_STORE_QUEUE == 0) &&
+              !store_access_authorized[posted_store_complete_index])))
             $fatal(1,
                 "LSQ invalid posted store completion id=%0d slot=%0d",
                 posted_store_complete_id_o,
                 posted_store_complete_slot_o);
+        if (rst_n && (ENABLE_COMMITTED_STORE_QUEUE != 0) &&
+            (|(store_commit_valid_i & ~store_commit_accept_o)))
+            $fatal(1,
+                "LSQ committed store missing valid entry valid=%b accept=%b",
+                store_commit_valid_i, store_commit_accept_o);
         if (rst_n && posted_store_resp_fire &&
             (resp_access_fault_i || resp_page_fault_i))
             $fatal(1,
@@ -2075,7 +2416,7 @@ module openrv64_lsq #(
                              timeout_dump_index = timeout_dump_index + 1)
                             if (slot_valid_q[timeout_dump_index])
                                 $display(
-                                    "LSQ_TIMEOUT_ENTRY slot=%0d age=%0d id=%0d retire=%0d pc=%016h instr=%08h store=%b atomic=%b killed=%b vaddr=%016h paddr=%016h size=%0d xlate_sent=%b xlate_done=%b xlate_fault=%b access=%b result=%b done=%b cacheable=%b block=%b order=%b",
+                                    "LSQ_TIMEOUT_ENTRY slot=%0d age=%0d id=%0d retire=%0d pc=%016h instr=%08h store=%b atomic=%b killed=%b vaddr=%016h paddr=%016h size=%0d xlate_sent=%b xlate_done=%b xlate_fault=%b access=%b result=%b committed=%b done=%b cacheable=%b block=%b order=%b",
                                     timeout_dump_index,
                                     slot_timeout_age_q[timeout_dump_index],
                                     slot_id_q[timeout_dump_index],
@@ -2097,12 +2438,14 @@ module openrv64_lsq #(
                                     slot_access_sent_q[timeout_dump_index],
                                     slot_store_result_sent_q[
                                         timeout_dump_index],
+                                    slot_store_committed_q[
+                                        timeout_dump_index],
                                     slot_access_done_q[timeout_dump_index],
                                     slot_cacheable[timeout_dump_index],
                                     load_block_r[timeout_dump_index],
                                     slot_order_match[timeout_dump_index]);
                         $fatal(1,
-                            "LSQ state %0d timed out id=%0d retire=%0d store=%b killed=%b xlate_sent=%b xlate_done=%b access=%b result=%b done=%b cacheable=%b block=%b order=%b head_valid=%b head_id=%0d head_slot=%0d squash=%b squash_id=%0d",
+                            "LSQ state %0d timed out id=%0d retire=%0d store=%b killed=%b xlate_sent=%b xlate_done=%b access=%b result=%b committed=%b done=%b cacheable=%b block=%b order=%b head_valid=%b head_id=%0d head_slot=%0d squash=%b squash_id=%0d",
                             timeout_index, slot_id_q[timeout_index],
                             slot_retire_q[timeout_index],
                             slot_store_q[timeout_index],
@@ -2111,6 +2454,7 @@ module openrv64_lsq #(
                             slot_xlate_done_q[timeout_index],
                             slot_access_sent_q[timeout_index],
                             slot_store_result_sent_q[timeout_index],
+                            slot_store_committed_q[timeout_index],
                             slot_access_done_q[timeout_index],
                             slot_cacheable[timeout_index],
                             load_block_r[timeout_index],

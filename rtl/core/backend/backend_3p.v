@@ -338,6 +338,9 @@ module openrv64_backend_3p #(
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] posted_store_complete_id;
     wire [SLOT_WIDTH-1:0] posted_store_complete_slot;
     wire posted_store_complete_accept;
+    reg [RETIRE_DEPTH-1:0] posted_store_ready_q;
+    wire [2:0] store_commit_valid;
+    wire [2:0] store_commit_accept;
     wire [3*RETIRE_RESULT_WIDTH-1:0] complete_retire_result;
     wire [2:0] completion_prf_write_req;
     wire [3*PHYS_REG_ADDR_WIDTH-1:0] completion_prf_write_tag;
@@ -794,6 +797,53 @@ module openrv64_backend_3p #(
                 !head_result[`OPENRV64_RETIRE_RESULT_HALT_BIT];
         end
     endgenerate
+
+    // Only stores completed by the cacheable-store identity sideband remain
+    // resident in the LSQ after retirement.  Device stores and atomics retire
+    // through the normal result path and must not generate an LSQ commit.
+    genvar store_commit_lane;
+    generate
+        for (store_commit_lane = 0; store_commit_lane < 3;
+             store_commit_lane = store_commit_lane + 1) begin :
+                g_store_commit
+            wire [RETIRE_RECORD_WIDTH-1:0] retire_record =
+                queue_retire_record[
+                    store_commit_lane*RETIRE_RECORD_WIDTH +:
+                    RETIRE_RECORD_WIDTH];
+            wire [SLOT_WIDTH-1:0] retire_slot = queue_retire_slot[
+                store_commit_lane*SLOT_WIDTH +: SLOT_WIDTH];
+            assign store_commit_valid[store_commit_lane] =
+                (ENABLE_POSTED_STORES != 0) &&
+                retire_arch_o[store_commit_lane] &&
+                retire_record[`OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT] &&
+                !retire_record[`OPENRV64_RETIRE_ALLOC_MEM_READ_BIT] &&
+                !retire_record[`OPENRV64_RETIRE_ALLOC_HARD_BIT] &&
+                posted_store_ready_q[retire_slot];
+        end
+    endgenerate
+
+    integer posted_store_slot_scan;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n || flush_i) begin
+            posted_store_ready_q <= {RETIRE_DEPTH{1'b0}};
+        end else begin
+            for (posted_store_slot_scan = 0;
+                 posted_store_slot_scan < 3;
+                 posted_store_slot_scan = posted_store_slot_scan + 1) begin
+                if (queue_retire_accept[posted_store_slot_scan])
+                    posted_store_ready_q[queue_retire_slot[
+                        posted_store_slot_scan*SLOT_WIDTH +:
+                        SLOT_WIDTH]] <= 1'b0;
+                if (queue_alloc_accept[posted_store_slot_scan])
+                    posted_store_ready_q[allocation_slot[
+                        posted_store_slot_scan*SLOT_WIDTH +:
+                        SLOT_WIDTH]] <= 1'b0;
+            end
+            if (posted_store_complete_valid &&
+                posted_store_complete_accept)
+                posted_store_ready_q[posted_store_complete_slot] <= 1'b1;
+        end
+    end
 
     wire retire_exception;
     wire retire_halt;
@@ -1414,17 +1464,26 @@ module openrv64_backend_3p #(
                  (!(memory_replay_valid &&
                     (exec_ordered_issue_replay_id == redirect_id_o)) &&
                   !memory_id_is_younger(exec_ordered_issue_replay_id,
-                                        redirect_id_o))) &&
-                (!memory_replay_pending_q || memory_replay_valid ||
-                 memory_id_is_younger(memory_replay_id_q,
-                     exec_ordered_issue_replay_id))) begin
-                memory_replay_pending_q <= 1'b1;
-                memory_replay_ordered_issue_q <= 1'b1;
-                memory_replay_id_q <= exec_ordered_issue_replay_id;
-                memory_replay_slot_q <= exec_ordered_issue_replay_slot;
-                memory_replay_target_q <= exec_ordered_issue_replay_pc;
+                                        redirect_id_o)))) begin
                 perf_memory_ordered_issue_replays_q <=
                     perf_memory_ordered_issue_replays_q + 1'b1;
+                if (!memory_replay_pending_q || memory_replay_valid ||
+                    memory_id_is_younger(memory_replay_id_q,
+                        exec_ordered_issue_replay_id)) begin
+                    memory_replay_pending_q <= 1'b1;
+                    memory_replay_ordered_issue_q <= 1'b1;
+                    memory_replay_id_q <= exec_ordered_issue_replay_id;
+                    memory_replay_slot_q <= exec_ordered_issue_replay_slot;
+                    memory_replay_target_q <= exec_ordered_issue_replay_pc;
+                end else begin
+                    // The existing replay is the older inclusive cut, so it
+                    // also removes the younger packet blocking the execution
+                    // input.  Promote that cut instead of replacing it.  If
+                    // it remained a normal replay it could wait behind a
+                    // control dependent on the load hidden by that packet,
+                    // creating a circular wait.
+                    memory_replay_ordered_issue_q <= 1'b1;
+                end
             end
 
             if (exec_load_access_valid &&
@@ -5397,6 +5456,7 @@ module openrv64_backend_3p #(
             (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
             (ENABLE_SPECULATION_WINDOW != 0)),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+        .ENABLE_COMMITTED_STORE_QUEUE_3P(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM_3P(ENABLE_ZICCLSM),
         .STORE_QUEUE_DEPTH_3P(STORE_QUEUE_DEPTH),
         .ENABLE_COHERENT_ATOMICS_3P(ENABLE_COHERENT_ATOMICS),
@@ -5475,6 +5535,10 @@ module openrv64_backend_3p #(
             ordered_store_window_complete),
         .ordered_store_window_id_3p_i(queue_head_id),
         .ordered_store_window_slot_3p_i(queue_retire_slot),
+        .store_commit_valid_3p_i(store_commit_valid),
+        .store_commit_id_3p_i(queue_retire_id),
+        .store_commit_slot_3p_i(queue_retire_slot),
+        .store_commit_accept_3p_o(store_commit_accept),
         .store_barrier_request_3p_o(store_barrier_request_o),
         .store_barrier_busy_3p_i(store_barrier_busy_i),
         .complete_valid_3p_o(complete_valid),
@@ -5627,6 +5691,10 @@ module openrv64_backend_3p #(
             $fatal(1,
                 "posted store completion missed ROB id=%0d slot=%0d",
                 posted_store_complete_id, posted_store_complete_slot);
+        if (rst_n && (|(store_commit_valid & ~store_commit_accept)))
+            $fatal(1,
+                "retired cacheable store missed LSQ valid=%b accept=%b",
+                store_commit_valid, store_commit_accept);
     end
 `endif
 

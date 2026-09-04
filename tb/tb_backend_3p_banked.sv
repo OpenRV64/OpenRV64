@@ -2327,6 +2327,55 @@ module tb_backend_3p_banked #(
             if (dut.memory_replay_pending_q)
                 fail("target correction retained a younger ordered replay");
 
+            // If a younger ordered-head blockage arrives while an older
+            // normal replay is waiting for a control, keep the older cut but
+            // promote it to ordered.  The older inclusive cut also removes
+            // the younger blocked packet.  Replacing it loses the oldest
+            // recovery; leaving it normal can deadlock when the watched
+            // control depends on an older load hidden behind that packet.
+            dut.memory_replay_pending_q = 1'b1;
+            dut.memory_replay_ordered_issue_q = 1'b0;
+            dut.memory_replay_id_q = `OPENRV64_INSTR_ID_WIDTH'(120);
+            dut.memory_replay_slot_q = SLOT_WIDTH'(12);
+            dut.memory_replay_target_q = 64'h0000_0000_0000_1b00;
+            dut.memory_control_watch_valid_q[0] = 1'b1;
+            dut.memory_control_watch_id_q[0] =
+                `OPENRV64_INSTR_ID_WIDTH'(115);
+            force dut.exec_ordered_issue_replay_valid = 1'b1;
+            force dut.exec_ordered_issue_replay_id =
+                `OPENRV64_INSTR_ID_WIDTH'(130);
+            force dut.exec_ordered_issue_replay_slot = SLOT_WIDTH'(13);
+            force dut.exec_ordered_issue_replay_pc =
+                64'h0000_0000_0000_1c00;
+            #1;
+            if (dut.memory_replay_valid)
+                fail("normal replay ignored control before promotion");
+            tick();
+            release dut.exec_ordered_issue_replay_valid;
+            release dut.exec_ordered_issue_replay_id;
+            release dut.exec_ordered_issue_replay_slot;
+            release dut.exec_ordered_issue_replay_pc;
+            #1;
+            if (!dut.memory_replay_pending_q ||
+                !dut.memory_replay_ordered_issue_q ||
+                (dut.memory_replay_id_q !=
+                 `OPENRV64_INSTR_ID_WIDTH'(120)) ||
+                (dut.memory_replay_slot_q != SLOT_WIDTH'(12)) ||
+                (dut.memory_replay_target_q !=
+                 64'h0000_0000_0000_1b00))
+                fail("younger ordered blockage did not promote older replay");
+            if (!dut.memory_replay_valid ||
+                (redirect_id != `OPENRV64_INSTR_ID_WIDTH'(120)) ||
+                (redirect_target != 64'h0000_0000_0000_1b00))
+                fail("promoted older replay did not bypass control wait");
+            squash = 1'b1;
+            tick();
+            squash = 1'b0;
+            #1;
+            if (dut.memory_replay_pending_q)
+                fail("promoted older replay did not drain");
+            dut.memory_control_watch_valid_q[0] = 1'b0;
+
             // A normal collision replay waits behind an older unresolved
             // control.  That pending state must not suppress retirement of
             // the older prefix, which is what eventually resolves the wait.

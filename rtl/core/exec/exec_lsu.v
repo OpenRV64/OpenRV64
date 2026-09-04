@@ -18,6 +18,7 @@ module openrv64_exec_lsu #(
     parameter integer LOAD_QUEUE_DEPTH = 4,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer ENABLE_ORDERED_STORE_WINDOW = 0,
+    parameter integer ENABLE_COMMITTED_STORE_QUEUE = 0,
     parameter integer LSU_TAG_WIDTH = `OPENRV64_LSU_TAG_WIDTH,
     parameter integer ENABLE_ZICCLSM = 1,
     parameter integer COHERENT_ATOMICS = 0,
@@ -71,6 +72,12 @@ module openrv64_exec_lsu #(
                                         ordered_store_window_id_i,
     input  wire [3*RETIRE_SLOT_WIDTH-1:0]
                                         ordered_store_window_slot_i,
+    input  wire [2:0]                   store_commit_valid_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        store_commit_id_i,
+    input  wire [3*RETIRE_SLOT_WIDTH-1:0]
+                                        store_commit_slot_i,
+    output wire [2:0]                   store_commit_accept_o,
 
     output wire                         complete_valid_o,
     input  wire                         complete_ready_i,
@@ -597,6 +604,7 @@ module openrv64_exec_lsu #(
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .TAG_WIDTH(LSU_TAG_WIDTH),
         .ENABLE_ORDERED_STORE_WINDOW(ENABLE_ORDERED_STORE_WINDOW),
+        .ENABLE_COMMITTED_STORE_QUEUE(ENABLE_COMMITTED_STORE_QUEUE),
         .ALLOW_UNRESOLVED_STORE_SPECULATION(
             ENABLE_MEMORY_DISAMBIGUATION),
         .CACHEABLE_BASE(CACHEABLE_BASE),
@@ -651,6 +659,10 @@ module openrv64_exec_lsu #(
             ordered_store_window_complete_i),
         .ordered_store_window_id_i(ordered_store_window_id_i),
         .ordered_store_window_slot_i(ordered_store_window_slot_i),
+        .store_commit_valid_i(store_commit_valid_i),
+        .store_commit_id_i(store_commit_id_i),
+        .store_commit_slot_i(store_commit_slot_i),
+        .store_commit_accept_o(store_commit_accept_o),
         .atomic_start_valid_o(atomic_start_valid),
         .atomic_start_tag_o(atomic_start_tag),
         .atomic_start_id_o(atomic_start_id),

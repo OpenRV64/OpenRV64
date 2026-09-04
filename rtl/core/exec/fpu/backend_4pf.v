@@ -1580,6 +1580,11 @@ module openrv64_backend_4pf #(
         .ordered_store_window_id_3p_i(
             {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .ordered_store_window_slot_3p_i({3*SLOT_WIDTH{1'b0}}),
+        .store_commit_valid_3p_i(3'b000),
+        .store_commit_id_3p_i(
+            {3*`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .store_commit_slot_3p_i({3*SLOT_WIDTH{1'b0}}),
+        .store_commit_accept_3p_o(),
         .store_barrier_request_3p_o(store_barrier_request_o),
         .store_barrier_busy_3p_i(store_barrier_busy_i),
         .complete_valid_3p_o(complete_valid),

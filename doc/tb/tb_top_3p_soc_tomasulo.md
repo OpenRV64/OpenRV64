@@ -288,6 +288,9 @@ counters.  The primary groups for this profile are:
 | `PERF_ICX_L2_PIPE_RETIRE_ZERO` | mutually exclusive zero-retire attribution |
 | `PERF_ICX_L2_RETIRE_HEAD*` | instruction class and coarse state of an incomplete ROB head |
 | `PERF_ICX_L2_LSU`, `SPEC_LOAD*`, `SPEC_STORE*` | LSQ throughput, waits, squash, and outcome |
+| `PERF_ICX_L2_STORE_COMMIT` | store commit width plus committed-SQ occupancy and full cycles |
+| `PERF_ICX_L2_LSQ_CAPACITY` | load/store partition full cycles, allocation blockage, aggregate occupancy, and load-over-committed-store arbitration |
+| `PERF_ICX_L2_STORE_FORWARD` | forwarding and partial-mask slow-path activity involving committed stores |
 | `PERF_ICX_L2_FETCH*`, `REDIRECT*`, `POST_REDIRECT*` | frontend availability and redirect recovery |
 | `PERF_MEMORY*` | AXI/DDR queues, commands, rows, refresh, and utilization |
 
@@ -875,3 +878,103 @@ successive store acknowledgements.  Supporting more than one store
 acknowledgement per cycle would require a multi-entry L1D enqueue interface;
 delaying acknowledged stores merely to retire them as a batch would not add
 throughput.
+
+## Committed-store background drain and LSQ capacity
+
+The later committed-SQ path changes the architectural boundary.  A fault-free
+cacheable store becomes ROB-complete after translation and PMP checking.  Up
+to three retiring store identities can mark matching SQ entries committed in
+one cycle.  The entries then survive redirect recovery and drain to L1D in the
+background; device, atomic, misaligned, and faulting stores retain their
+ordered paths.
+
+Keeping the original globally-oldest load/store request selector was wrong for
+this model.  It allowed an ordinary committed store to take the sole L1D port
+from a ready unrelated load.  The current selector gives the ready load
+priority while at least one store slot remains free.  A committed store gets
+pressure priority when the store partition is full, preventing starvation.
+Same-granule loads still forward only when the youngest older store fully
+covers the load byte mask; partial coverage remains on the slow path.
+
+The warmed ten-iteration Sv39 CoreMark-derived comparison is:
+
+| Configuration | Cycles | IPC | LSQ allocation-block cycles |
+|---|---:|---:|---:|
+| pre-committed-SQ control, `...-20260903T225528Z` | 367,982 | 1.4280 | not instrumented |
+| SQ4, global age arbitration, `...-20260904T002931Z` | 371,479 | 1.4146 | 2,731 |
+| SQ4, background drain, `...-20260904T004838Z` | 361,784 | 1.4525 | 2,713 |
+| SQ8, background drain, `...-sq8-20260904T005150Z` | 361,143 | 1.4551 | 1,980 |
+
+For the SQ4 background-drain run, the load and store partitions were full for
+105 and 2,704 cycles respectively, both were never full together, and the
+committed subset alone was full for 63 cycles.  Loads took the port over an
+older committed store in 16,685 cycles; full-partition pressure forced a store
+in only three cycles.  There were 5,565 results forwarded from committed
+stores and only 60 committed-store partial-mask blocked entry-cycles.
+
+SQ8 lowers store-full cycles to 1,970 and committed-full cycles to two, but it
+improves total execution by only 641 cycles (0.18%) over SQ4.  That variant also
+widens the LSQ tag from three to four bits and raises the configured LSU
+outstanding namespace from eight to sixteen, so it is not a free four-entry
+storage-only change.  SQ4 remains the default pending synthesis/physical cost
+evidence.  These are deterministic Verilator workload results, not FPGA
+timing or resource measurements.
+
+## Linux bring-up: replay age inversion at the MEM0 input
+
+The full Linux run `linux-l1-tomasulo-1h-ddr3-20260903T193349Z` stopped making
+architectural progress near 17 million cycles.  At its 25,000,000-cycle
+checkpoint, hart 0 remained at `ffffffff8004eaec`, the retirement count was
+fixed at 10,867,411, and UART output was fixed at 6,868 bytes.  There was no
+panic, assertion, or fatal error; the backend was deadlocked with a 43-entry
+ROB and a full 32-entry scheduler.
+
+The requested exact 15,000,000-cycle pre-fix snapshot is
+`linux-l1-tomasulo-1h-ddr3-20260903T223714Z/checkpoint-15000000.vls`.  It is
+554,395,078 bytes, has SHA-256
+`7271d2617b4e37d38e7c0d2ec4669360e815a651bfc65f9c2e795192383c676d`,
+and was produced with the checkpoint-compatible simulator from the hung run.
+Its PC is `ffffffff8011e880`.  This snapshot predates the replay fix and must
+not be loaded into a rebuilt model merely because the serialized state layout
+appears unchanged.
+
+GDB inspection of the 25M checkpoint identified the circular wait:
+
+1. normal collision replay ID 568 was pending behind unresolved conditional
+   branch ID 567;
+2. branch ID 567 depended on the ROB-head load ID 566;
+3. load ID 566 was scheduler-ready and selected for MEM0;
+4. MEM0 instead retained younger naturally misaligned load ID 589, which could
+   not proceed until it became ordered head; and
+5. the ordered-replay capture rejected ID 589 because the already-pending
+   replay ID 568 was older, but left ID 568 marked as a normal replay, so none
+   of the three instructions could advance.
+
+Setting only `memory_replay_ordered_issue_q` in the restored checkpoint broke
+the cycle.  During the next million cycles, UART output advanced from 6,868 to
+6,926 bytes and the core reached `0000000080100b20`; the subsequent stop at
+26M was the imposed diagnostic timeout.
+
+The RTL now retains the older inclusive replay ID, slot, and target when a
+younger ordered-input blockage arrives, but promotes that existing cut to an
+ordered replay.  The older cut necessarily removes the younger packet held at
+MEM0 as well as every intervening instruction.  This avoids replacing the
+oldest recovery while allowing it to bypass the control wait that can be
+data-dependent on the blocked load.  Existing logic still preserves a
+simultaneous older one-shot execution redirect.
+
+The directed run `3p-banked-directed-20260903T234355Z` passes the added
+older-normal/younger-ordered inversion case and all existing replay/redirect
+precedence cases.  The source-current misaligned test
+`misaligned-order-replay-sv39-3p-tomasulo-ddr3-20260903T230325Z` passes at
+172,762 cycles after 31,966 ordered-input replay reports, and
+`lrsc-redirect-stress-sv39-3p-tomasulo-ddr3-20260903T230409Z` passes all 8,192
+atomic starts.
+
+The general atomic test currently fails case `0x41`, where an ordinary store
+must invalidate an LR reservation.  This is separate from the replay change:
+`atomic-sv39-3p-tomasulo-ddr3-20260903T225856Z` fails with the promotion and
+the exact A/B control `atomic-sv39-3p-tomasulo-ddr3-20260903T234243Z` fails at
+the same case and simulated time with only the promotion disabled.  The older
+`20260903T135855Z` atomic pass is not source-matched to the later store-prefix
+changes and is therefore not a valid control for this failure.

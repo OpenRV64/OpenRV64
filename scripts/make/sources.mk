@@ -315,6 +315,7 @@ PREFIX_ADDSUB_SIM_SRCS := tb/tb_prefix_addsub.sv
 EXEC_ALU_RV64I_SIM_SRCS := tb/tb_exec_alu_rv64-i.sv
 EXEC_ALU_RV64M_SIM_SRCS := tb/tb_exec_alu_rv64-m.sv
 LSQ_SIM_SRCS := tb/tb_lsq.sv
+LSQ_COMMITTED_STORE_SIM_SRCS := tb/tb_lsq_committed_store.sv
 LSU_ATOMICS_SIM_SRCS := tb/tb_lsu_atomics.sv
 EXEC_LSU_RV64I_SIM_SRCS := tb/tb_exec_lsu_rv64-i.sv
 EXEC_LSU_RV64A_SIM_SRCS := tb/tb_exec_lsu_rv64-a.sv

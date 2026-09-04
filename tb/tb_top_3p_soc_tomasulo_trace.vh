@@ -907,10 +907,20 @@ generate
                                          .u_lsq.store_access_sent_q[
                                              ttrace_slot] &&
                                      !dut.u_backend.u_exec.g_3p.u_exec.u_lsu
-                                         .u_lsq.store_order_match[
-                                             ttrace_slot])
-                                ttrace_reason =
-                                    `OPENRV64_TTRACE_REASON_MEMORY_ORDER;
+                                         .u_lsq.store_access_authorized[
+                                             ttrace_slot]) begin
+                                if (dut.u_backend.u_exec.g_3p.u_exec.u_lsu
+                                        .u_lsq.store_result_sent_q[
+                                            ttrace_slot] &&
+                                    !dut.u_backend.u_exec.g_3p.u_exec.u_lsu
+                                        .u_lsq.store_committed_q[
+                                            ttrace_slot])
+                                    ttrace_reason =
+                                        `OPENRV64_TTRACE_REASON_ROB_ORDER;
+                                else
+                                    ttrace_reason =
+                                        `OPENRV64_TTRACE_REASON_MEMORY_ORDER;
+                            end
                             else if (!dut.u_backend.u_exec.g_3p.u_exec.u_lsu
                                          .u_lsq.store_access_sent_q[
                                              ttrace_slot]) begin
@@ -979,7 +989,9 @@ generate
                                 `OPENRV64_TTRACE_STAGE_LSQ, ttrace_slot, 3,
                                 `OPENRV64_TTRACE_STATE_STORE, ttrace_reason,
                                 64'd0,
-                                {54'd0,
+                                {53'd0,
+                                 dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
+                                    .store_committed_q[ttrace_slot],
                                  dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                                     .store_atomic_q[ttrace_slot],
                                  dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq

@@ -21,6 +21,7 @@ module openrv64_exec_top #(
     parameter integer ENABLE_LOCAL_FORWARDING_3P = 1,
     parameter integer ENABLE_SPECULATIVE_JALR_3P = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
+    parameter integer ENABLE_COMMITTED_STORE_QUEUE_3P = 0,
     parameter integer ENABLE_ZICCLSM_3P = 1,
     parameter integer LOAD_QUEUE_DEPTH_3P = 4,
     parameter integer STORE_QUEUE_DEPTH_3P = 4,
@@ -234,6 +235,12 @@ module openrv64_exec_top #(
                                         ordered_store_window_id_3p_i,
     input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0]
                                         ordered_store_window_slot_3p_i,
+    input  wire [2:0]                   store_commit_valid_3p_i,
+    input  wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        store_commit_id_3p_i,
+    input  wire [3*RETIRE_SLOT_WIDTH_3P-1:0]
+                                        store_commit_slot_3p_i,
+    output wire [2:0]                   store_commit_accept_3p_o,
     output wire                         store_barrier_request_3p_o,
     input  wire                         store_barrier_busy_3p_i,
     output wire [2:0]                   complete_valid_3p_o,
@@ -308,6 +315,7 @@ module openrv64_exec_top #(
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             assign posted_store_complete_slot_3p_o =
                 {RETIRE_SLOT_WIDTH_3P{1'b0}};
+            assign store_commit_accept_3p_o = 3'b000;
             assign redirect_id_3p_o =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             assign redirect_slot_3p_o = {RETIRE_SLOT_WIDTH_3P{1'b0}};
@@ -385,6 +393,8 @@ module openrv64_exec_top #(
                 .ENABLE_LOCAL_FORWARDING(ENABLE_LOCAL_FORWARDING_3P),
                 .ENABLE_SPECULATIVE_JALR(ENABLE_SPECULATIVE_JALR_3P),
                 .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+                .ENABLE_COMMITTED_STORE_QUEUE(
+                    ENABLE_COMMITTED_STORE_QUEUE_3P),
                 .ENABLE_ZICCLSM(ENABLE_ZICCLSM_3P),
                 .LOAD_QUEUE_DEPTH(LOAD_QUEUE_DEPTH_3P),
                 .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH_3P),
@@ -435,6 +445,10 @@ module openrv64_exec_top #(
                     ordered_store_window_id_3p_i),
                 .ordered_store_window_slot_i(
                     ordered_store_window_slot_3p_i),
+                .store_commit_valid_i(store_commit_valid_3p_i),
+                .store_commit_id_i(store_commit_id_3p_i),
+                .store_commit_slot_i(store_commit_slot_3p_i),
+                .store_commit_accept_o(store_commit_accept_3p_o),
                 .store_barrier_request_o(store_barrier_request_3p_o),
                 .store_barrier_busy_i(store_barrier_busy_3p_i),
                 .complete_valid_o(complete_valid_3p_o),
@@ -710,6 +724,7 @@ module openrv64_exec_top #(
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             assign posted_store_complete_slot_3p_o =
                 {RETIRE_SLOT_WIDTH_3P{1'b0}};
+            assign store_commit_accept_3p_o = 3'b000;
         end
     endgenerate
 
