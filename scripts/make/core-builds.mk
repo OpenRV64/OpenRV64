@@ -191,6 +191,24 @@ $(FETCH_3W_PAIR1024_SIM_BUILD): $(FETCH_DEBUG_STUB_SRCS) \
 		$(FETCH_DEBUG_STUB_SRCS) rtl/core/fetch/fetch_3w.v \
 		$(FETCH_3W_PAIR1024_SIM_SRCS)
 
+$(FETCH_ISTREAM_SIM_BUILD): rtl/core/fetch/fetch_istream.v \
+		$(FETCH_ISTREAM_SIM_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(FETCH_ISTREAM_SIM_BUILD) \
+		rtl/core/fetch/fetch_istream.v $(FETCH_ISTREAM_SIM_SRCS)
+
+$(FETCH_STREAM_BTB_SIM_BUILD): rtl/core/fetch/stream_btb.v \
+		$(FETCH_STREAM_BTB_SIM_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(FETCH_STREAM_BTB_SIM_BUILD) \
+		rtl/core/fetch/stream_btb.v $(FETCH_STREAM_BTB_SIM_SRCS)
+
+$(DECODE_ISTREAM_3W_SIM_BUILD): rtl/core/decode/istream_3w.v \
+		$(DECODE_ISTREAM_3W_SIM_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(DECODE_ISTREAM_3W_SIM_BUILD) \
+		rtl/core/decode/istream_3w.v $(DECODE_ISTREAM_3W_SIM_SRCS)
+
 $(PREFIX_ADDSUB_SIM_BUILD): $(PREFIX_ADDSUB_SIM_SRCS) rtl/core/arith/prefix-addsub.v
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(PREFIX_ADDSUB_SIM_BUILD) $(PREFIX_ADDSUB_SIM_SRCS)

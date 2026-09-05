@@ -15,7 +15,9 @@
 `include "core/cmu/defs.v"
 `include "complex/protocol/defs.v"
 
-// Selectable two-wide generic or three-wide AXI frontend plus EX0/EX1/MEM.
+// Selectable two-wide generic or tagged native frontend plus EX0/EX1/MEM.
+// Native Tomasulo configurations use fetch_istream exclusively; the legacy
+// fetch_3w remains only for non-Tomasulo backends.
 module openrv64_rv64_top_3p #(
     parameter [63:0] RESET_VECTOR = 64'h0000_0000_0000_0000,
     parameter [`OPENRV64_BUS_CONFIG_WIDTH-1:0] BUS_CONFIG =
@@ -329,7 +331,56 @@ module openrv64_rv64_top_3p #(
     wire fetch3_cancel;
     wire fetch3_cancel_stash;
     wire [63:0] fetch3_stream_pc;
+    wire [3:0] fetch3_consumed_halfwords;
+    wire fetch3_istream_prediction_valid;
+    wire [63:0] fetch3_istream_control_pc;
+    wire [63:0] fetch3_istream_control_end_pc;
+    wire [63:0] fetch3_istream_prediction_successor;
+    wire fetch3_istream_prediction_taken;
+    wire [31:0] fetch3_istream_prediction_token;
+    wire fetch3_istream_prediction_accept;
     wire fetch_alt_restart_hit;
+    // Stable simulation-observation seam across the legacy and stream
+    // frontends.  Testbenches must not bind to implementation-specific
+    // fetch_3w hierarchy below g_fetch_axi.
+    wire fetch_observe_presentation_ready;
+    wire fetch_observe_current_pending;
+    wire fetch_observe_pending_any;
+    wire fetch_observe_ingress_hit;
+    wire fetch_observe_redirect_pending;
+    wire fetch_observe_alt_restart_context_match;
+    wire fetch_observe_alt_restart_target_pending;
+    wire fetch_observe_alt_restart_eligible;
+    wire fetch_observe_pair_predicted_valid;
+    wire fetch_observe_pair_unpredicted_valid;
+    wire fetch_observe_pair_stack_overflow;
+    wire fetch_observe_branch_sector_context_match;
+    wire fetch_observe_branch_predicted_source_valid;
+    wire fetch_observe_branch_unpredicted_source_valid;
+    wire fetch_observe_alt_sector_response_tap;
+    wire fetch_observe_alt_sector_predicted_tap;
+    wire fetch_observe_alt_sector_unpredicted_tap;
+    wire fetch_observe_pair_req_fire;
+    wire fetch_observe_alt_sector_background_deferred;
+    wire [31:0] fetch_observe_pair_saved_count;
+    wire [1:0] fetch_observe_alt_valid;
+    wire fetch_observe_branch_predicted_stashed;
+    wire fetch_observe_branch_unpredicted_stashed;
+    wire fetch_observe_alt_prefetch_aged;
+    wire fetch_observe_alt_fill_match;
+    wire fetch_observe_alt_free_found;
+    wire fetch_observe_stream_btb_lookup;
+    wire fetch_observe_stream_btb_response;
+    wire fetch_observe_stream_btb_hit;
+    wire fetch_observe_stream_btb_way1;
+    wire fetch_observe_stream_btb_train;
+    wire fetch_observe_stream_btb_update;
+    wire fetch_observe_stream_btb_insert;
+    wire fetch_observe_stream_btb_replacement;
+    wire fetch_observe_stream_btb_same_sector_second;
+    wire fetch_observe_stream_btb_same_sector_overflow;
+    wire fetch_observe_stream_transfer;
+    wire fetch_observe_stream_reject;
     wire use_icx_bus = (BUS_CONFIG == `OPENRV64_BUS_AXI);
 
     wire backend_redirect;
@@ -517,9 +568,100 @@ module openrv64_rv64_top_3p #(
         bp_predict_redirect ? bp_predict_target : RESET_VECTOR;
     wire fetch3_invalidate = reset_pending_q || except_vector_valid ||
                              control_restart;
+    // fetch_istream distinguishes an architectural/context restart from a
+    // speculative control-flow correction.  The latter must preserve its
+    // address-tagged blocks and outstanding fetches; routing it through the
+    // restart input turns every ordinary predictor correction into a cold
+    // frontend refill.
+    wire fetch3_stream_restart = reset_pending_q || except_vector_valid ||
+                                 control_restart;
+    wire fetch3_stream_redirect = control_redirect || bp_predict_redirect;
 
     generate
-        if (BUS_CONFIG == `OPENRV64_BUS_GEN) begin : g_fetch_gen
+        if ((BUS_CONFIG == `OPENRV64_BUS_GEN) &&
+            (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) begin :
+                g_fetch_unsupported
+            initial begin
+                $fatal(1,
+                    "Tomasulo requires the tagged native fetch interface");
+            end
+            assign fetch_pc_ready = 1'b0;
+            assign fetch_mem_valid = 1'b0;
+            assign fetch_mem_next_valid = 1'b0;
+            assign fetch_mem_addr = 64'd0;
+            assign fetch_mem_exec_addr = 64'd0;
+            assign fetch_redirect_replay = 1'b0;
+            assign fetch_decode_valid = 3'b000;
+            assign fetch_decode_bus =
+                {3*`RV64_FETCH_DECODE_BUS_WIDTH{1'b0}};
+            assign fetch_decode_trace = {3*64{1'b0}};
+            assign fetch_pipe_req_valid = 1'b0;
+            assign fetch_pipe_req_addr = 64'd0;
+            assign fetch_pipe_req_stash = 1'b0;
+            assign fetch_pipe_req_demand = 1'b0;
+            assign fetch_pipe_resp_ready = 1'b0;
+            assign fetch3_cancel = 1'b0;
+            assign fetch3_cancel_stash = 1'b1;
+            assign fetch3_stream_pc = 64'd0;
+            assign fetch3_consumed_halfwords = 4'd0;
+            assign {
+                fetch3_istream_prediction_valid,
+                fetch3_istream_control_pc,
+                fetch3_istream_control_end_pc,
+                fetch3_istream_prediction_successor,
+                fetch3_istream_prediction_taken,
+                fetch3_istream_prediction_token
+            } = 226'd0;
+            assign fetch_alt_restart_hit = 1'b0;
+            assign pair512_req_valid = 1'b0;
+            assign pair512_req_predicted_addr = 64'd0;
+            assign pair512_req_unpredicted_addr = 64'd0;
+            assign pair1024_req_valid = 1'b0;
+            assign pair1024_req_predicted_addr = 64'd0;
+            assign pair1024_req_unpredicted_addr = 64'd0;
+            assign {
+                fetch_observe_presentation_ready,
+                fetch_observe_current_pending,
+                fetch_observe_pending_any,
+                fetch_observe_ingress_hit,
+                fetch_observe_redirect_pending,
+                fetch_observe_alt_restart_context_match,
+                fetch_observe_alt_restart_target_pending,
+                fetch_observe_alt_restart_eligible,
+                fetch_observe_pair_predicted_valid,
+                fetch_observe_pair_unpredicted_valid,
+                fetch_observe_pair_stack_overflow,
+                fetch_observe_branch_sector_context_match,
+                fetch_observe_branch_predicted_source_valid,
+                fetch_observe_branch_unpredicted_source_valid,
+                fetch_observe_alt_sector_response_tap,
+                fetch_observe_alt_sector_predicted_tap,
+                fetch_observe_alt_sector_unpredicted_tap,
+                fetch_observe_pair_req_fire,
+                fetch_observe_alt_sector_background_deferred,
+                fetch_observe_branch_predicted_stashed,
+                fetch_observe_branch_unpredicted_stashed,
+                fetch_observe_alt_prefetch_aged,
+                fetch_observe_alt_fill_match,
+                fetch_observe_alt_free_found
+            } = 24'd0;
+            assign fetch_observe_pair_saved_count = 32'd0;
+            assign fetch_observe_alt_valid = 2'b00;
+            assign {
+                fetch_observe_stream_btb_lookup,
+                fetch_observe_stream_btb_response,
+                fetch_observe_stream_btb_hit,
+                fetch_observe_stream_btb_way1,
+                fetch_observe_stream_btb_train,
+                fetch_observe_stream_btb_update,
+                fetch_observe_stream_btb_insert,
+                fetch_observe_stream_btb_replacement,
+                fetch_observe_stream_btb_same_sector_second,
+                fetch_observe_stream_btb_same_sector_overflow,
+                fetch_observe_stream_transfer,
+                fetch_observe_stream_reject
+            } = 12'd0;
+        end else if (BUS_CONFIG == `OPENRV64_BUS_GEN) begin : g_fetch_gen
             openrv64_fetch #(
                 .ENABLE_TRACE(ENABLE_TRACE),
                 .ENABLE_PREDECODE_TARGETS(ENABLE_PREDECODE_TARGETS),
@@ -570,6 +712,15 @@ module openrv64_rv64_top_3p #(
             assign fetch3_cancel = 1'b0;
             assign fetch3_cancel_stash = 1'b1;
             assign fetch3_stream_pc = 64'd0;
+            assign fetch3_consumed_halfwords = 4'd0;
+            assign {
+                fetch3_istream_prediction_valid,
+                fetch3_istream_control_pc,
+                fetch3_istream_control_end_pc,
+                fetch3_istream_prediction_successor,
+                fetch3_istream_prediction_taken,
+                fetch3_istream_prediction_token
+            } = 226'd0;
             assign fetch_alt_restart_hit = 1'b0;
             assign pair512_req_valid = 1'b0;
             assign pair512_req_predicted_addr = 64'd0;
@@ -577,7 +728,276 @@ module openrv64_rv64_top_3p #(
             assign pair1024_req_valid = 1'b0;
             assign pair1024_req_predicted_addr = 64'd0;
             assign pair1024_req_unpredicted_addr = 64'd0;
+            assign {
+                fetch_observe_presentation_ready,
+                fetch_observe_current_pending,
+                fetch_observe_pending_any,
+                fetch_observe_ingress_hit,
+                fetch_observe_redirect_pending,
+                fetch_observe_alt_restart_context_match,
+                fetch_observe_alt_restart_target_pending,
+                fetch_observe_alt_restart_eligible,
+                fetch_observe_pair_predicted_valid,
+                fetch_observe_pair_unpredicted_valid,
+                fetch_observe_pair_stack_overflow,
+                fetch_observe_branch_sector_context_match,
+                fetch_observe_branch_predicted_source_valid,
+                fetch_observe_branch_unpredicted_source_valid,
+                fetch_observe_alt_sector_response_tap,
+                fetch_observe_alt_sector_predicted_tap,
+                fetch_observe_alt_sector_unpredicted_tap,
+                fetch_observe_pair_req_fire,
+                fetch_observe_alt_sector_background_deferred,
+                fetch_observe_branch_predicted_stashed,
+                fetch_observe_branch_unpredicted_stashed,
+                fetch_observe_alt_prefetch_aged,
+                fetch_observe_alt_fill_match,
+                fetch_observe_alt_free_found
+            } = 24'd0;
+            assign fetch_observe_pair_saved_count = 32'd0;
+            assign fetch_observe_alt_valid = 2'b00;
+            assign {
+                fetch_observe_stream_btb_lookup,
+                fetch_observe_stream_btb_response,
+                fetch_observe_stream_btb_hit,
+                fetch_observe_stream_btb_way1,
+                fetch_observe_stream_btb_train,
+                fetch_observe_stream_btb_update,
+                fetch_observe_stream_btb_insert,
+                fetch_observe_stream_btb_replacement,
+                fetch_observe_stream_btb_same_sector_second,
+                fetch_observe_stream_btb_same_sector_overflow,
+                fetch_observe_stream_transfer,
+                fetch_observe_stream_reject
+            } = 12'd0;
         end else begin : g_fetch_axi
+            if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) begin : g_istream
+                wire istream_valid;
+                wire [95:0] istream_data;
+                wire [5:0] istream_halfword_valid;
+                wire [5:0] istream_access_fault;
+                wire [5:0] istream_page_fault;
+                wire istream_advance_half;
+                wire [3:0] istream_consume_halfwords;
+                wire istream_btb_lookup_valid;
+                wire istream_btb_lookup_ready;
+                wire [63:0] istream_btb_lookup_pc;
+                wire [31:0] istream_btb_lookup_request_id;
+                wire istream_btb_response_valid;
+                wire istream_btb_response_ready;
+                wire [31:0] istream_btb_response_request_id;
+                wire istream_btb_response_hit;
+                wire [63:0] istream_btb_response_control_pc;
+                wire [63:0] istream_btb_response_control_end_pc;
+                wire [63:0] istream_btb_response_successor_pc;
+                wire istream_btb_response_taken;
+                wire [31:0] istream_btb_response_prediction_token;
+
+                // Fetch needs a next-control directory, not the exact-PC
+                // indirect-target BTB inside the execution predictor.  This
+                // two-way sector table supplies BTFNT/direct steering one
+                // cycle after the query; decode-time TAGE remains the
+                // correcting predictor.
+                openrv64_fetch_stream_btb #(
+                    .ENTRIES(BP_BTB_ENTRIES)
+                ) u_stream_btb (
+                    .clk(clk), .rst_n(rst_n),
+                    .lookup_valid_i(istream_btb_lookup_valid),
+                    .lookup_ready_o(istream_btb_lookup_ready),
+                    .lookup_pc_i(istream_btb_lookup_pc),
+                    .lookup_request_id_i(
+                        istream_btb_lookup_request_id),
+                    .response_valid_o(istream_btb_response_valid),
+                    .response_ready_i(istream_btb_response_ready),
+                    .response_request_id_o(
+                        istream_btb_response_request_id),
+                    .response_hit_o(istream_btb_response_hit),
+                    .response_control_pc_o(
+                        istream_btb_response_control_pc),
+                    .response_control_end_pc_o(
+                        istream_btb_response_control_end_pc),
+                    .response_successor_pc_o(
+                        istream_btb_response_successor_pc),
+                    .response_taken_o(istream_btb_response_taken),
+                    .response_prediction_token_o(
+                        istream_btb_response_prediction_token),
+                    .train_valid_i(branch_resolved &&
+                                   (SIM_BRANCH_ORACLE == 0)),
+                    .train_conditional_i(branch_conditional),
+                    .train_length_32_i(1'b1),
+                    .train_instr_i(branch_instr),
+                    .train_pc_i(branch_pc),
+                    .train_next_pc_i(branch_target),
+                    .diag_lookup_fire_o(
+                        fetch_observe_stream_btb_lookup),
+                    .diag_response_fire_o(
+                        fetch_observe_stream_btb_response),
+                    .diag_response_hit_o(
+                        fetch_observe_stream_btb_hit),
+                    .diag_response_way1_o(
+                        fetch_observe_stream_btb_way1),
+                    .diag_train_fire_o(
+                        fetch_observe_stream_btb_train),
+                    .diag_train_update_o(
+                        fetch_observe_stream_btb_update),
+                    .diag_train_insert_o(
+                        fetch_observe_stream_btb_insert),
+                    .diag_train_replacement_o(
+                        fetch_observe_stream_btb_replacement),
+                    .diag_train_same_sector_second_o(
+                        fetch_observe_stream_btb_same_sector_second),
+                    .diag_train_same_sector_overflow_o(
+                        fetch_observe_stream_btb_same_sector_overflow)
+                );
+
+                openrv64_fetch_istream #(
+                    .FETCH_DATA_WIDTH(L1I_FETCH_DATA_WIDTH),
+                    .DECODE_WIDTH(3)
+                ) u_fetch (
+                    .clk(clk), .rst_n(rst_n),
+                    .restart_i(fetch3_stream_restart),
+                    .restart_pc_i(fetch3_restart_pc),
+                    .redirect_i(fetch3_stream_redirect),
+                    .redirect_pc_i(fetch3_restart_pc),
+                    .invalidate_i(fetch3_invalidate),
+                    .flush_i(backend_halt),
+                    .stall_i(bp_fetch_stall_effective ||
+                             translation_barrier_busy),
+                    .cancel_o(fetch3_cancel),
+                    .req_valid_o(fetch_pipe_req_valid),
+                    .req_ready_i(fetch_pipe_req_ready),
+                    .req_addr_o(fetch_pipe_req_addr),
+                    .req_stash_o(fetch_pipe_req_stash),
+                    .req_demand_o(fetch_pipe_req_demand),
+                    .resp_valid_i(fetch_pipe_resp_valid),
+                    .resp_ready_o(fetch_pipe_resp_ready),
+                    .resp_addr_i(fetch_pipe_resp_addr),
+                    .resp_data_i(fetch_pipe_resp_data),
+                    .resp_access_fault_i(fetch_pipe_resp_access_fault),
+                    .resp_page_fault_i(fetch_pipe_resp_page_fault),
+                    .btb_lookup_valid_o(istream_btb_lookup_valid),
+                    .btb_lookup_ready_i(istream_btb_lookup_ready),
+                    .btb_lookup_pc_o(istream_btb_lookup_pc),
+                    .btb_lookup_request_id_o(
+                        istream_btb_lookup_request_id),
+                    .btb_response_valid_i(istream_btb_response_valid),
+                    .btb_response_request_id_i(
+                        istream_btb_response_request_id),
+                    // Preserve the existing no-predict M-mode containment.
+                    .btb_response_hit_i(istream_btb_response_hit &&
+                        (csr_priv_mode != `RV64_PRIV_M) &&
+                        (SIM_BRANCH_ORACLE == 0)),
+                    .btb_response_control_pc_i(
+                        istream_btb_response_control_pc),
+                    .btb_response_control_end_pc_i(
+                        istream_btb_response_control_end_pc),
+                    .btb_response_successor_pc_i(
+                        istream_btb_response_successor_pc),
+                    .btb_response_taken_i(
+                        istream_btb_response_taken),
+                    .btb_response_prediction_token_i(
+                        istream_btb_response_prediction_token),
+                    .btb_response_ready_o(istream_btb_response_ready),
+                    .istream_valid_o(istream_valid),
+                    .istream_data_o(istream_data),
+                    .istream_halfword_valid_o(
+                        istream_halfword_valid),
+                    .istream_access_fault_o(istream_access_fault),
+                    .istream_page_fault_o(istream_page_fault),
+                    .istream_advance_half_i(istream_advance_half),
+                    .istream_consume_halfwords_i(
+                        istream_consume_halfwords),
+                    .stream_pc_o(fetch3_stream_pc),
+                    .istream_prediction_valid_o(
+                        fetch3_istream_prediction_valid),
+                    .istream_control_pc_o(fetch3_istream_control_pc),
+                    .istream_control_end_pc_o(
+                        fetch3_istream_control_end_pc),
+                    .istream_prediction_successor_o(
+                        fetch3_istream_prediction_successor),
+                    .istream_prediction_taken_o(
+                        fetch3_istream_prediction_taken),
+                    .istream_prediction_token_o(
+                        fetch3_istream_prediction_token),
+                    .istream_prediction_accept_i(
+                        fetch3_istream_prediction_accept),
+                    .stream_generation_o(), .ftq_count_o(),
+                    .presentation_ready_o(
+                        fetch_observe_presentation_ready),
+                    .demand_pending_any_o(fetch_observe_pending_any),
+                    .current_block_pending_o(
+                        fetch_observe_current_pending),
+                    .predicted_transfer_valid_o(
+                        fetch_observe_stream_transfer),
+                    .predicted_reject_valid_o(
+                        fetch_observe_stream_reject),
+                    .predicted_transfer_source_pc_o(),
+                    .predicted_transfer_target_pc_o(),
+                    .predicted_transfer_token_o()
+                );
+
+                openrv64_decode_istream_3w #(
+                    .ENABLE_TRACE(ENABLE_TRACE),
+                    .ENABLE_PREDECODE_TARGETS(
+                        ENABLE_PREDECODE_TARGETS)
+                ) u_decode_istream (
+                    .clk(clk), .rst_n(rst_n),
+                    .flush_i(fetch3_restart || fetch3_invalidate ||
+                             backend_halt),
+                    .istream_valid_i(istream_valid),
+                    .istream_data_i(istream_data),
+                    .istream_halfword_valid_i(
+                        istream_halfword_valid),
+                    .istream_access_fault_i(istream_access_fault),
+                    .istream_page_fault_i(istream_page_fault),
+                    .stream_pc_i(fetch3_stream_pc),
+                    .istream_advance_half_o(istream_advance_half),
+                    .istream_consume_halfwords_o(
+                        istream_consume_halfwords),
+                    .consumed_halfwords_o(fetch3_consumed_halfwords),
+                    .decode_valid_o(fetch_decode_valid),
+                    .decode_ready_i(fetch_decode_ready),
+                    .decode_bus_o(fetch_decode_bus),
+                    .trace_id_i(ENABLE_TRACE ? trace_next_id_q : 64'd0),
+                    .trace_id_o(fetch_decode_trace)
+                );
+
+                assign fetch3_cancel_stash = fetch3_cancel;
+                assign fetch_alt_restart_hit = 1'b0;
+                assign pair512_req_valid = 1'b0;
+                assign pair512_req_predicted_addr = 64'd0;
+                assign pair512_req_unpredicted_addr = 64'd0;
+                assign pair1024_req_valid = 1'b0;
+                assign pair1024_req_predicted_addr = 64'd0;
+                assign pair1024_req_unpredicted_addr = 64'd0;
+
+                assign {
+                    fetch_observe_ingress_hit,
+                    fetch_observe_redirect_pending,
+                    fetch_observe_alt_restart_context_match,
+                    fetch_observe_alt_restart_target_pending,
+                    fetch_observe_alt_restart_eligible,
+                    fetch_observe_pair_predicted_valid,
+                    fetch_observe_pair_unpredicted_valid,
+                    fetch_observe_pair_stack_overflow,
+                    fetch_observe_branch_sector_context_match,
+                    fetch_observe_branch_predicted_source_valid,
+                    fetch_observe_branch_unpredicted_source_valid,
+                    fetch_observe_alt_sector_response_tap,
+                    fetch_observe_alt_sector_predicted_tap,
+                    fetch_observe_alt_sector_unpredicted_tap,
+                    fetch_observe_pair_req_fire,
+                    fetch_observe_alt_sector_background_deferred,
+                    fetch_observe_branch_predicted_stashed,
+                    fetch_observe_branch_unpredicted_stashed,
+                    fetch_observe_alt_prefetch_aged,
+                    fetch_observe_alt_fill_match,
+                    fetch_observe_alt_free_found
+                } = 21'd0;
+                assign fetch_observe_pair_saved_count = 32'd0;
+                assign fetch_observe_alt_valid = 2'b00;
+
+            end else begin : g_fetch_3w
             openrv64_fetch_3w #(
                 .ENABLE_CAROUSEL(ENABLE_FETCH_CAROUSEL),
                 .FETCH_DATA_WIDTH(L1I_FETCH_DATA_WIDTH),
@@ -663,6 +1083,91 @@ module openrv64_rv64_top_3p #(
                 .stream_pc_o(fetch3_stream_pc), .line_count_o(),
                 .alt_restart_hit_o(fetch_alt_restart_hit)
             );
+            wire legacy_decode_fire0 = fetch_decode_valid[0] &&
+                                       fetch_decode_ready[0];
+            wire legacy_decode_fire1 = fetch_decode_valid[1] &&
+                                       legacy_decode_fire0 &&
+                                       fetch_decode_ready[1];
+            wire legacy_decode_fire2 = fetch_decode_valid[2] &&
+                                       legacy_decode_fire1 &&
+                                       fetch_decode_ready[2];
+            wire [1:0] legacy_decode_count =
+                {1'b0, legacy_decode_fire0} +
+                {1'b0, legacy_decode_fire1} +
+                {1'b0, legacy_decode_fire2};
+            assign fetch3_consumed_halfwords =
+                {1'b0, legacy_decode_count, 1'b0};
+            assign fetch_observe_presentation_ready =
+                u_fetch.consume_line_hit;
+            assign fetch_observe_current_pending =
+                u_fetch.consume_line_pending;
+            assign fetch_observe_pending_any = u_fetch.demand_pending_any;
+            assign fetch_observe_ingress_hit =
+                u_fetch.consume_ingress_hit_r;
+            assign fetch_observe_redirect_pending =
+                u_fetch.redirect_line_pending_q;
+            assign fetch_observe_alt_restart_context_match =
+                u_fetch.u_debug.alt_restart_context_match_r;
+            assign fetch_observe_alt_restart_target_pending =
+                u_fetch.u_debug.alt_restart_target_pending_r;
+            assign fetch_observe_alt_restart_eligible =
+                u_fetch.alt_restart_eligible_i;
+            assign fetch_observe_pair_predicted_valid =
+                u_fetch.pair_predicted_valid_q;
+            assign fetch_observe_pair_unpredicted_valid =
+                u_fetch.pair_unpredicted_valid_q;
+            assign fetch_observe_pair_stack_overflow =
+                u_fetch.pair_stack_overflow;
+            assign fetch_observe_branch_sector_context_match =
+                u_fetch.branch_sector_context_match_r;
+            assign fetch_observe_branch_predicted_source_valid =
+                u_fetch.branch_predicted_sector_source_valid_r;
+            assign fetch_observe_branch_unpredicted_source_valid =
+                u_fetch.branch_unpredicted_sector_source_valid_r;
+            assign fetch_observe_alt_sector_response_tap =
+                u_fetch.alt_sector_response_tap_r;
+            assign fetch_observe_alt_sector_predicted_tap =
+                u_fetch.alt_sector_predicted_tap_r;
+            assign fetch_observe_alt_sector_unpredicted_tap =
+                u_fetch.alt_sector_unpredicted_tap_r;
+            assign fetch_observe_pair_req_fire = u_fetch.pair_req_fire;
+            assign fetch_observe_alt_sector_background_deferred =
+                u_fetch.alt_sector_background_deferred;
+            assign fetch_observe_pair_saved_count =
+                u_fetch.pair_saved_count;
+            assign fetch_observe_alt_valid = {
+                u_fetch.alt_valid_q[1], u_fetch.alt_valid_q[0]};
+            assign fetch_observe_branch_predicted_stashed =
+                u_fetch.branch_predicted_stashed_r;
+            assign fetch_observe_branch_unpredicted_stashed =
+                u_fetch.branch_unpredicted_stashed_r;
+            assign fetch_observe_alt_prefetch_aged =
+                u_fetch.alt_prefetch_aged_r;
+            assign fetch_observe_alt_fill_match = u_fetch.alt_fill_match_r;
+            assign fetch_observe_alt_free_found = u_fetch.alt_free_found_r;
+            assign {
+                fetch3_istream_prediction_valid,
+                fetch3_istream_control_pc,
+                fetch3_istream_control_end_pc,
+                fetch3_istream_prediction_successor,
+                fetch3_istream_prediction_taken,
+                fetch3_istream_prediction_token
+            } = 226'd0;
+            assign {
+                fetch_observe_stream_btb_lookup,
+                fetch_observe_stream_btb_response,
+                fetch_observe_stream_btb_hit,
+                fetch_observe_stream_btb_way1,
+                fetch_observe_stream_btb_train,
+                fetch_observe_stream_btb_update,
+                fetch_observe_stream_btb_insert,
+                fetch_observe_stream_btb_replacement,
+                fetch_observe_stream_btb_same_sector_second,
+                fetch_observe_stream_btb_same_sector_overflow,
+                fetch_observe_stream_transfer,
+                fetch_observe_stream_reject
+            } = 12'd0;
+            end
             assign fetch_pc_ready = 1'b0;
             assign fetch_mem_valid = 1'b0;
             assign fetch_mem_next_valid = 1'b0;
@@ -877,6 +1382,16 @@ module openrv64_rv64_top_3p #(
         !predecode_conditional[bp_live_lane] : decode_jump[bp_live_lane];
     wire bp_live_raw_indirect = bp_live_predecode ?
         1'b0 : decode_br_indirect[bp_live_lane];
+    // The stream BTB may be stale or may describe code at an aliased virtual
+    // address.  It is allowed to predict the direction/target incorrectly,
+    // but it may not invent a control boundary: decode validates the actual
+    // opcode before fetch transfers to the queued successor.
+    assign fetch3_istream_prediction_accept =
+        fetch3_istream_prediction_valid &&
+        frontend_control[bp_live_lane] &&
+        (bp_live_pc == fetch3_istream_control_pc) &&
+        (fetch3_istream_control_end_pc == (bp_live_pc + 64'd4)) &&
+        (decode_branch[bp_live_lane] || decode_jump[bp_live_lane]);
     wire [63:0] bp_live_imm = bp_live_fused_pcrel ?
         bp_live_fused_imm : bp_live_raw_imm;
     wire bp_live_branch = bp_live_fused_pcrel ?
@@ -908,6 +1423,7 @@ module openrv64_rv64_top_3p #(
     reg bp_dispatch_lookup_jump_q;
     reg bp_dispatch_lookup_indirect_q;
     reg bp_dispatch_preliminary_taken_q;
+    reg [63:0] bp_dispatch_preliminary_successor_q;
     wire bp_lookup_from_dispatch = BP_REGISTERED_LOOKUP &&
                                    bp_dispatch_valid_q;
     wire [1:0] bp_lane = bp_lookup_from_dispatch ? bp_dispatch_lane_q :
@@ -956,13 +1472,6 @@ module openrv64_rv64_top_3p #(
     // -> fetch-ready loop.
     wire bp_resident_prediction_accept;
     wire bp_pending_prediction_accept;
-    wire bp_response_predict_redirect = bp_sideband_lookup ?
-        bp_tage_resteer :
-        (bp_prediction_taken_effective && bp_branch_allocate);
-    assign bp_predict_redirect = bp_preliminary_redirect ||
-                                 bp_response_predict_redirect ||
-                                 bp_deferred_predict_redirect_q;
-
     openrv64_prefix_addsub u_bp_target (
         .a_i(bp_selected_pc), .b_i(bp_selected_imm), .sub_i(1'b0),
         .result_o(bp_direct_target)
@@ -973,11 +1482,32 @@ module openrv64_rv64_top_3p #(
                                       bp_direct_target);
     wire [63:0] bp_response_fallthrough_target =
         bp_selected_pc + 64'd4;
+    wire bp_live_stream_prediction_match =
+        fetch3_istream_prediction_accept;
+    wire [63:0] bp_live_preliminary_successor =
+        bp_live_stream_prediction_match ?
+            fetch3_istream_prediction_successor :
+        (bp_sideband_lookup && bp_live_preliminary_taken) ?
+            bp_direct_target : (bp_live_pc + 64'd4);
+    wire [63:0] bp_selected_preliminary_successor =
+        bp_lookup_from_dispatch ? bp_dispatch_preliminary_successor_q :
+                                  bp_live_preliminary_successor;
+    wire [63:0] bp_response_selected_successor =
+        bp_prediction_taken_effective ? bp_response_predict_target :
+                                        bp_response_fallthrough_target;
+    wire bp_response_path_mismatch =
+        bp_response_selected_successor !=
+        bp_selected_preliminary_successor;
+    wire bp_response_predict_redirect = bp_sideband_lookup ?
+        bp_tage_resteer :
+        (bp_branch_allocate && bp_response_path_mismatch);
+    assign bp_predict_redirect = bp_preliminary_redirect ||
+                                 bp_response_predict_redirect ||
+                                 bp_deferred_predict_redirect_q;
     assign bp_predict_target = bp_deferred_predict_redirect_q ?
         bp_deferred_predict_target_q :
         bp_preliminary_redirect ? bp_direct_target :
-        (bp_tage_resteer && !bp_prediction_taken_effective) ?
-            bp_response_fallthrough_target : bp_response_predict_target;
+        bp_response_selected_successor;
 
     openrv64_exec_bp #(
         .BP_TYPE(BP_TYPE),
@@ -1351,7 +1881,9 @@ module openrv64_rv64_top_3p #(
          (bp_live_jump && !bp_live_indirect));
     assign bp_preliminary_redirect = bp_sideband_lookup &&
         bp_live_control_fire && backend_decode_fire[bp_live_lane] &&
-        bp_live_preliminary_taken;
+        bp_live_preliminary_taken &&
+        (!bp_live_stream_prediction_match ||
+         (fetch3_istream_prediction_successor != bp_direct_target));
     wire bp_pending_control_fire = bp_sideband_lookup &&
         bp_dispatch_valid_q && !bp_dispatch_allocated_q &&
         bp_pending_live_match &&
@@ -1398,8 +1930,7 @@ module openrv64_rv64_top_3p #(
     // and discarded by fetch3_restart.
     assign bp_tage_resteer = bp_sideband_lookup &&
         bp_resident_prediction_accept &&
-        (bp_prediction_taken_effective !=
-         bp_dispatch_preliminary_taken_q);
+        bp_response_path_mismatch;
 
 `ifndef SYNTHESIS
     always @(posedge clk) begin
@@ -1421,9 +1952,10 @@ module openrv64_rv64_top_3p #(
         end else begin
             bp_deferred_predict_redirect_q <= 1'b0;
             if (bp_pending_prediction_accept &&
-                bp_prediction_taken_effective) begin
+                bp_response_path_mismatch) begin
                 bp_deferred_predict_redirect_q <= 1'b1;
-                bp_deferred_predict_target_q <= bp_response_predict_target;
+                bp_deferred_predict_target_q <=
+                    bp_response_selected_successor;
             end
         end
     end
@@ -1449,12 +1981,14 @@ module openrv64_rv64_top_3p #(
             bp_dispatch_lookup_jump_q <= 1'b0;
             bp_dispatch_lookup_indirect_q <= 1'b0;
             bp_dispatch_preliminary_taken_q <= 1'b0;
+            bp_dispatch_preliminary_successor_q <= 64'd0;
         end else if (bp_delayed_lookup) begin
             if (control_flush || control_redirect || halted_q ||
                 wfi_sleep_q) begin
                 bp_dispatch_valid_q <= 1'b0;
                 bp_dispatch_allocated_q <= 1'b0;
                 bp_dispatch_preliminary_taken_q <= 1'b0;
+                bp_dispatch_preliminary_successor_q <= 64'd0;
             end else begin
                 if (bp_branch_allocate) begin
                     bp_dispatch_valid_q <= 1'b0;
@@ -1485,13 +2019,22 @@ module openrv64_rv64_top_3p #(
                     bp_dispatch_lookup_indirect_q <= bp_live_indirect;
                     bp_dispatch_preliminary_taken_q <=
                         backend_decode_fire[bp_live_lane] &&
-                        bp_live_preliminary_taken;
+                        (bp_live_stream_prediction_match ?
+                         fetch3_istream_prediction_taken :
+                         bp_live_preliminary_taken);
+                    bp_dispatch_preliminary_successor_q <=
+                        bp_live_stream_prediction_match ?
+                            fetch3_istream_prediction_successor :
+                        (backend_decode_fire[bp_live_lane] &&
+                         bp_live_preliminary_taken) ?
+                            bp_direct_target : (bp_live_pc + 64'd4);
                 end
             end
         end else begin
             bp_dispatch_valid_q <= 1'b0;
             bp_dispatch_allocated_q <= 1'b0;
             bp_dispatch_preliminary_taken_q <= 1'b0;
+            bp_dispatch_preliminary_successor_q <= 64'd0;
         end
     end
     // M-mode may prefetch decoded direct conditional-branch paths without
@@ -2629,9 +3172,10 @@ module openrv64_rv64_top_3p #(
                 pc_q <= backend_redirect_target;
             else if (bp_predict_redirect)
                 pc_q <= bp_predict_target;
-            else if (use_icx_bus && (frontend_decode_count != 0))
+            else if (use_icx_bus &&
+                     (fetch3_consumed_halfwords != 0))
                 pc_q <= fetch3_stream_pc +
-                        ({62'd0, frontend_decode_count} << 2);
+                        ({60'd0, fetch3_consumed_halfwords} << 1);
             else if (!use_icx_bus && fetch_pc_valid)
                 pc_q <= pc_q + (pc_q[2] ? 64'd4 : 64'd8);
 

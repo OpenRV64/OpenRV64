@@ -18,6 +18,14 @@
       }
     },
     {
+      "module": "openrv64_fetch_stream_btb",
+      "source": "rtl/core/fetch/stream_btb.v",
+      "parameters": {
+        "ENTRIES": "256",
+        "REQUEST_ID_WIDTH": "32"
+      }
+    },
+    {
       "module": "openrv64_decode_top",
       "source": "rtl/core/decode/decode_top.v",
       "parameters": {

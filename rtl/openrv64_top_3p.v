@@ -8,10 +8,11 @@
 // Fixed three-pipe core boundary with a 256-bit AXI port and native ICX port.
 //
 // Unlike openrv64_top, this module has no backend or bus selector at its
-// external boundary.  Elaboration always selects fetch_3w, the EX0/EX1/MEM
-// backend, and the AXI-configured core bus.  L1I/L1D traffic uses native ICX;
-// AXI remains available only for explicit cacheless-L1I mode.  The
-// legacy blocking requester is tied off and is not part of this interface.
+// external boundary.  Elaboration selects the EX0/EX1/MEM backend and the
+// AXI-configured core bus; Tomasulo uses fetch_istream exclusively while the
+// identity backend retains fetch_3w.  L1I/L1D traffic uses native ICX; AXI
+// remains available only for explicit cacheless-L1I mode.  The legacy
+// blocking requester is tied off and is not part of this interface.
 module openrv64_top_3p #(
     parameter [63:0] RESET_VECTOR = `OPENRV64_SOC_RESET_VECTOR,
     parameter ENABLE_RV64M = 0,

@@ -36,6 +36,7 @@ CMU_SRCS := rtl/core/cmu/cmu.v
 DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v \
 	rtl/core/decode/defs/lsu-defs.v rtl/core/decode/defs/br-defs.v \
 	rtl/core/decode/defs/fusion-defs.v rtl/core/decode/fusion.v \
+	rtl/core/decode/istream_3w.v \
 	rtl/core/decode/early.v rtl/core/decode/decode_top.v \
 	rtl/core/decode/rv64-c.v \
 	rtl/core/decode/imm.v rtl/core/decode/alu.v \
@@ -51,7 +52,8 @@ RENAME_SRCS := rtl/core/rename/identity.v \
 	rtl/core/rename/tomasulo.v
 FETCH_SRCS := $(FETCH_DEBUG_STUB_SRCS) \
 	rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
-	rtl/core/fetch/fetch_3w.v
+	rtl/core/fetch/fetch_3w.v rtl/core/fetch/fetch_istream.v \
+	rtl/core/fetch/stream_btb.v
 L1_CACHE_SRCS := $(L1_DEBUG_STUB_SRCS) \
 	rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
 	rtl/core/cache/l1/l1i/array.v rtl/core/cache/l1/l1i/icx.v \
@@ -149,6 +151,7 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	$(CLOCK_GATE_SRC) rtl/core/rv64_top_3p.v $(BACKEND_SRCS) \
 	$(STAGE_SRCS) $(FETCH_DEBUG_STUB_SRCS) \
 	rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch_3w.v \
+	rtl/core/fetch/fetch_istream.v rtl/core/fetch/stream_btb.v \
 	$(BUS_DEBUG_STUB_SRCS) \
 	rtl/core/bus/bus-defs.v \
 	rtl/core/mtl/tlb.v rtl/core/mtl/micro_tlb.v \
@@ -316,6 +319,9 @@ FETCH_3W_CAROUSEL_SIM_SRCS := tb/tb_fetch_3w_carousel.sv
 FETCH_3W_SECTOR_SIM_SRCS := tb/tb_fetch_3w_sector.sv
 FETCH_3W_PAIR512_SIM_SRCS := tb/tb_fetch_3w_pair512.sv
 FETCH_3W_PAIR1024_SIM_SRCS := tb/tb_fetch_3w_pair1024.sv
+FETCH_ISTREAM_SIM_SRCS := tb/tb_fetch_istream.sv
+FETCH_STREAM_BTB_SIM_SRCS := tb/tb_fetch_stream_btb.sv
+DECODE_ISTREAM_3W_SIM_SRCS := tb/tb_decode_istream_3w.sv
 PREFIX_ADDSUB_SIM_SRCS := tb/tb_prefix_addsub.sv
 EXEC_ALU_RV64I_SIM_SRCS := tb/tb_exec_alu_rv64-i.sv
 EXEC_ALU_RV64M_SIM_SRCS := tb/tb_exec_alu_rv64-m.sv
