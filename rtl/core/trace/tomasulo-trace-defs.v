@@ -76,6 +76,7 @@
 `define OPENRV64_TTRACE_REASON_BP_LOOKUP               8'd38
 `define OPENRV64_TTRACE_REASON_BP_CAPACITY             8'd39
 `define OPENRV64_TTRACE_REASON_BP_TARGET               8'd40
+`define OPENRV64_TTRACE_REASON_LOAD_CONFLICT_RECORD    8'd41
 `define OPENRV64_TTRACE_REASON_UNKNOWN                 8'd255
 
 // Physical execution pipe.  NONE is used for records which are not assigned

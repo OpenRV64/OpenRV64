@@ -2,6 +2,7 @@
 `include "core/backend/backend-defs.v"
 `include "core/isa/rv64-i.v"
 `include "core/decode/defs/alu-defs.v"
+`include "core/trace/tomasulo-trace-defs.v"
 
 module tb_dispatch_load_conflict_record;
     localparam integer DEPTH = 8;
@@ -51,6 +52,9 @@ module tb_dispatch_load_conflict_record;
     reg [3*SW-1:0] allocation_slot;
     wire [2:0] allocation_valid;
     reg [3:0] pipe_ready;
+    reg [1:0] chain_producer_valid;
+    reg [2*IDW-1:0] chain_producer_id;
+    reg [2*PW-1:0] chain_producer_phys;
     wire [3:0] pipe_valid;
     wire [4*IDW-1:0] pipe_id;
     reg [2:0] completion_valid;
@@ -62,6 +66,7 @@ module tb_dispatch_load_conflict_record;
         .PHYSICAL_RENAME(1),
         .PHYS_REG_ADDR_WIDTH(PW),
         .ENABLE_SPECULATION(1),
+        .ENABLE_ALU_CHAINING(1),
         .ENABLE_LOAD_CONFLICT_RECORD(1),
         .DEPTH(DEPTH),
         .RETIRE_SLOT_WIDTH(SW),
@@ -102,9 +107,9 @@ module tb_dispatch_load_conflict_record;
         .allocation_valid_o(allocation_valid),
         .allocation_meta_o(),
         .pipe_ready_i(pipe_ready),
-        .chain_producer_valid_i(2'b00),
-        .chain_producer_id_i({2*IDW{1'b0}}),
-        .chain_producer_phys_i({2*PW{1'b0}}),
+        .chain_producer_valid_i(chain_producer_valid),
+        .chain_producer_id_i(chain_producer_id),
+        .chain_producer_phys_i(chain_producer_phys),
         .pipe_candidate_valid_o(),
         .pipe_squashed_o(),
         .pipe_age_rank_o(),
@@ -215,6 +220,7 @@ module tb_dispatch_load_conflict_record;
         input [IDW-1:0] store_id;
         input [IDW-1:0] load_id;
         input [63:0] load_pc;
+        input chain_load_base;
         begin
             allocation_id = {{IDW{1'b0}}, load_id, store_id};
             allocation_slot = {4'd0, 4'd1, 4'd0};
@@ -232,6 +238,22 @@ module tb_dispatch_load_conflict_record;
             rename_source_producer_valid = 6'b000001;
             rename_source_producer_id = {6*IDW{1'b0}};
             rename_source_producer_id[0 +: IDW] = IDW'(90);
+            rename_source_phys = {6*PW{1'b0}};
+            chain_producer_valid = 2'b00;
+            chain_producer_id = {2*IDW{1'b0}};
+            chain_producer_phys = {2*PW{1'b0}};
+            if (chain_load_base) begin
+                // The load base is produced by an older EX0 ALU operation
+                // entering execution in this cycle.  Translation means its
+                // PMA/cacheability decision is deferred to the LSQ.
+                rename_source_ready[2] = 1'b0;
+                rename_source_producer_valid[2] = 1'b1;
+                rename_source_producer_id[2*IDW +: IDW] = store_id - 1'b1;
+                rename_source_phys[2*PW +: PW] = PW'(7);
+                chain_producer_valid[0] = 1'b1;
+                chain_producer_id[0 +: IDW] = store_id - 1'b1;
+                chain_producer_phys[0 +: PW] = PW'(7);
+            end
             #1;
             if (decode_ready[1:0] != 2'b11)
                 fail("physical issue window rejected store/load pair");
@@ -252,6 +274,9 @@ module tb_dispatch_load_conflict_record;
         allocation_id = {3*IDW{1'b0}};
         allocation_slot = {3*SW{1'b0}};
         pipe_ready = 4'b1111;
+        chain_producer_valid = 2'b00;
+        chain_producer_id = {2*IDW{1'b0}};
+        chain_producer_phys = {2*PW{1'b0}};
         completion_valid = 3'b000;
         completion_id = {3*IDW{1'b0}};
         completion_payload = {3*OW{1'b0}};
@@ -263,7 +288,8 @@ module tb_dispatch_load_conflict_record;
 
         // Cold: the younger load may speculate around an unresolved ordinary
         // store because this load PC has not collided before.
-        admit_blocked_store_and_load(IDW'(10), IDW'(11), CONFLICT_PC);
+        admit_blocked_store_and_load(
+            IDW'(10), IDW'(11), CONFLICT_PC, 1'b0);
         if (!pipe_valid[`OPENRV64_EXEC_PIPE_MEM0] ||
             (pipe_id[`OPENRV64_EXEC_PIPE_MEM0*IDW +: IDW] != IDW'(11)) ||
             pipe_valid[`OPENRV64_EXEC_PIPE_MEM1])
@@ -288,7 +314,8 @@ module tb_dispatch_load_conflict_record;
 
         // Learned: the same load PC must remain resident behind a new older
         // unresolved store.  No address or byte comparison is attempted here.
-        admit_blocked_store_and_load(IDW'(20), IDW'(21), CONFLICT_PC);
+        admit_blocked_store_and_load(
+            IDW'(20), IDW'(21), CONFLICT_PC, 1'b0);
         if (pipe_valid[`OPENRV64_EXEC_PIPE_MEM0] ||
             pipe_valid[`OPENRV64_EXEC_PIPE_MEM1])
             fail("recorded load crossed unresolved older store");
@@ -323,11 +350,31 @@ module tb_dispatch_load_conflict_record;
         tick();
         flush = 1'b0;
         admit_blocked_store_and_load(
-            IDW'(30), IDW'(31), SAME_INDEX_OTHER_PC);
+            IDW'(30), IDW'(31), SAME_INDEX_OTHER_PC, 1'b1);
         if (!pipe_valid[`OPENRV64_EXEC_PIPE_MEM0] ||
             (pipe_id[`OPENRV64_EXEC_PIPE_MEM0*IDW +: IDW] != IDW'(31)) ||
             (dut.trace_load_conflict_record_hit_count != CW'(0)))
-            fail("same-index different-signature load falsely hit record");
+            fail("cold chained load did not bypass unresolved older store");
+        tick();
+
+        // Once this chained load site is trained, the history table becomes
+        // the decisive block.  Keep that distinct from generic memory order
+        // in the stable trace ABI.
+        flush = 1'b1;
+        load_conflict_train_valid = 1'b1;
+        load_conflict_train_pc = SAME_INDEX_OTHER_PC;
+        tick();
+        flush = 1'b0;
+        load_conflict_train_valid = 1'b0;
+        admit_blocked_store_and_load(
+            IDW'(40), IDW'(41), SAME_INDEX_OTHER_PC, 1'b1);
+        if (pipe_valid[`OPENRV64_EXEC_PIPE_MEM0] ||
+            pipe_valid[`OPENRV64_EXEC_PIPE_MEM1])
+            fail("trained chained load crossed unresolved older store");
+        if ((dut.trace_load_conflict_record_block_count != CW'(1)) ||
+            (dut.trace_entry_block_reason[1] !=
+             `OPENRV64_TTRACE_REASON_LOAD_CONFLICT_RECORD))
+            fail("trained load lacks dedicated conflict-record trace cause");
 
         $display("PASS: learned load conflict record blocks only matching load sites");
         $finish;

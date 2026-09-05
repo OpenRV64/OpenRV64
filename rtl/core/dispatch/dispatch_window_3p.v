@@ -20,9 +20,11 @@
 // until the following cycle.  Source values are captured either from the
 // architectural GPR, the youngest completed producer, or a matching tagged
 // completion.  Up to one instruction per physical pipe is then selected from
-// the ready entries.  Memory issue remains program ordered, but the oldest two
-// unissued memory operations may enter MEM0 and MEM1 together when they target
-// opposite lanes and both lanes accept the complete pair.  The optional
+// the ready entries.  Stores and non-speculatable memory remain program
+// ordered.  Ordinary translated loads may pass older ordinary stores unless
+// the load-conflict record identifies a previously colliding load site.  The
+// oldest two unissued memory operations may enter MEM0 and MEM1 together when
+// they target opposite lanes and both lanes accept the complete pair.  The optional
 // speculation mode lets replayable work pass an older conditional branch that
 // is still waiting for operands, and lets ordinary loads begin translation
 // past unresolved control.  The physically addressed LSQ admits the later
@@ -1383,6 +1385,7 @@ module openrv64_dispatch_window_3p #(
     reg trace_older_unissued_hard_valid;
     reg trace_older_persistent_hard_valid;
     reg trace_older_unissued_mem_valid;
+    reg trace_older_unissued_replayable_store_valid;
     reg trace_older_live_control_valid;
     reg trace_older_unresolved_conditional_valid;
     reg trace_older_unresolved_jalr_valid;
@@ -1392,6 +1395,8 @@ module openrv64_dispatch_window_3p #(
         trace_older_persistent_hard_id;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
         trace_older_unissued_mem_id;
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        trace_older_unissued_replayable_store_id;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
         trace_older_live_control_id;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
@@ -1467,6 +1472,7 @@ module openrv64_dispatch_window_3p #(
             trace_older_unissued_hard_valid = 1'b0;
             trace_older_persistent_hard_valid = 1'b0;
             trace_older_unissued_mem_valid = 1'b0;
+            trace_older_unissued_replayable_store_valid = 1'b0;
             trace_older_live_control_valid = 1'b0;
             trace_older_unresolved_conditional_valid = 1'b0;
             trace_older_unresolved_jalr_valid = 1'b0;
@@ -1475,6 +1481,8 @@ module openrv64_dispatch_window_3p #(
             trace_older_persistent_hard_id =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             trace_older_unissued_mem_id =
+                {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+            trace_older_unissued_replayable_store_id =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             trace_older_live_control_id =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
@@ -1536,8 +1544,18 @@ module openrv64_dispatch_window_3p #(
                         is_mem(payload_q[older_idx])) begin
                         older_unissued_mem = 1'b1;
                         if (is_replayable_unissued_store(
-                                payload_q[older_idx]))
+                                payload_q[older_idx])) begin
                             older_unissued_replayable_store = 1'b1;
+                            if (!trace_older_unissued_replayable_store_valid ||
+                                id_is_younger(
+                                    trace_older_unissued_replayable_store_id,
+                                    id_q[older_idx])) begin
+                                trace_older_unissued_replayable_store_valid =
+                                    1'b1;
+                                trace_older_unissued_replayable_store_id =
+                                    id_q[older_idx];
+                            end
+                        end
                         if (!(payload_q[older_idx][PAYLOAD_MEM_READ] &&
                               !payload_q[older_idx][PAYLOAD_MEM_WRITE]) &&
                             !is_replayable_unissued_store(
@@ -1792,7 +1810,11 @@ module openrv64_dispatch_window_3p #(
                 mem_pair_eligible[eligible_idx] = 1'b0;
             end
             if (is_mem(payload_q[eligible_idx]) && older_unissued_mem &&
-                !( !chain_mask_mem[eligible_idx][0] &&
+                // In Sv39, translation and the LSQ establish whether the
+                // access is cacheable after the chained base arrives.  Bare
+                // mode must retain ordering until that physical base exists.
+                !( (!translation_bypass_i ||
+                    !chain_mask_mem[eligible_idx][0]) &&
                    is_speculative_load_candidate(
                        payload_q[eligible_idx],
                        src1_data_now[eligible_idx]) &&
@@ -1801,7 +1823,13 @@ module openrv64_dispatch_window_3p #(
                      older_unissued_replayable_store))) begin
                 eligible[eligible_idx] = 1'b0;
                 chain_eligible_mem[eligible_idx] = 1'b0;
-                if (trace_load_conflict_record_hit[eligible_idx] &&
+                if ((!translation_bypass_i ||
+                     !chain_mask_mem[eligible_idx][0]) &&
+                    is_speculative_load_candidate(
+                        payload_q[eligible_idx],
+                        src1_data_now[eligible_idx]) &&
+                    !older_unissued_mem_blocks_load &&
+                    trace_load_conflict_record_hit[eligible_idx] &&
                     older_unissued_replayable_store)
                     trace_load_conflict_record_block[eligible_idx] = 1'b1;
             end
@@ -1939,17 +1967,35 @@ module openrv64_dispatch_window_3p #(
                     end
                 end else if (is_mem(payload_q[eligible_idx]) &&
                              older_live_control &&
-                             !is_speculative_load_candidate(
-                                 payload_q[eligible_idx],
-                                 src1_data_now[eligible_idx])) begin
+                             (chain_mask_mem[eligible_idx][0] ||
+                              !is_speculative_load_candidate(
+                                  payload_q[eligible_idx],
+                                  src1_data_now[eligible_idx]))) begin
                     trace_entry_gate_reason[eligible_idx] =
                         `OPENRV64_TTRACE_REASON_OLDER_CONTROL;
                     trace_entry_blocker_valid[eligible_idx] =
                         trace_older_live_control_valid;
                     trace_entry_blocker_id[eligible_idx] =
                         trace_older_live_control_id;
+                end else if (trace_load_conflict_record_block[
+                                 eligible_idx]) begin
+                    trace_entry_gate_reason[eligible_idx] =
+                        `OPENRV64_TTRACE_REASON_LOAD_CONFLICT_RECORD;
+                    trace_entry_blocker_valid[eligible_idx] =
+                        trace_older_unissued_replayable_store_valid;
+                    trace_entry_blocker_id[eligible_idx] =
+                        trace_older_unissued_replayable_store_id;
                 end else if (is_mem(payload_q[eligible_idx]) &&
-                             older_unissued_mem) begin
+                             older_unissued_mem &&
+                             !((!translation_bypass_i ||
+                                !chain_mask_mem[eligible_idx][0]) &&
+                               is_speculative_load_candidate(
+                                   payload_q[eligible_idx],
+                                   src1_data_now[eligible_idx]) &&
+                               !older_unissued_mem_blocks_load &&
+                               !(trace_load_conflict_record_hit[
+                                     eligible_idx] &&
+                                 older_unissued_replayable_store))) begin
                     trace_entry_gate_reason[eligible_idx] =
                         `OPENRV64_TTRACE_REASON_OLDER_MEMORY;
                     trace_entry_blocker_valid[eligible_idx] =

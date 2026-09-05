@@ -86,6 +86,7 @@ REASONS = {
     38: "BP_LOOKUP",
     39: "BP_CAPACITY",
     40: "BP_TARGET",
+    41: "LOAD_CONFLICT_RECORD",
     255: "UNKNOWN",
 }
 

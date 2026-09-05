@@ -215,6 +215,7 @@ that the instruction will retire in that cycle.
 | 38 | `BP_LOOKUP` | synchronous predictor response is pending in dispatch |
 | 39 | `BP_CAPACITY` | predictor in-flight resolution storage is full |
 | 40 | `BP_TARGET` | indirect control has no predicted target and awaits resolution |
+| 41 | `LOAD_CONFLICT_RECORD` | learned load-PC collision history suppresses bypass of an older ordinary store |
 | 255 | `UNKNOWN` | a live entry failed an unclassified gate; treat as a bug |
 
 For source, ordering, and barrier causes, `blocker_id` names an instruction
