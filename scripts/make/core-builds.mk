@@ -197,6 +197,12 @@ $(FETCH_ISTREAM_SIM_BUILD): rtl/core/fetch/fetch_istream.v \
 	iverilog -g2012 -Wall -Irtl -o $(FETCH_ISTREAM_SIM_BUILD) \
 		rtl/core/fetch/fetch_istream.v $(FETCH_ISTREAM_SIM_SRCS)
 
+$(FETCH_ISTREAM_BP9_SIM_BUILD): rtl/core/fetch/istream_bp9.v \
+		$(FETCH_ISTREAM_BP9_SIM_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -o $(FETCH_ISTREAM_BP9_SIM_BUILD) \
+		rtl/core/fetch/istream_bp9.v $(FETCH_ISTREAM_BP9_SIM_SRCS)
+
 $(FETCH_STREAM_BTB_SIM_BUILD): rtl/core/fetch/stream_btb.v \
 		$(FETCH_STREAM_BTB_SIM_SRCS)
 	mkdir -p sim

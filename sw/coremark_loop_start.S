@@ -8,33 +8,58 @@
 #define COREMARK_LOOP_OUTER_ITERATIONS 1
 #endif
 
-#if COREMARK_LOOP_OUTER_ITERATIONS < 1
-#error "COREMARK_LOOP_OUTER_ITERATIONS must be at least one"
+#ifndef COREMARK_LOOP_WARMUP_ITERATIONS
+#define COREMARK_LOOP_WARMUP_ITERATIONS 0
+#endif
+
+#ifndef COREMARK_LOOP_MEASURE_ITERATIONS
+#define COREMARK_LOOP_MEASURE_ITERATIONS COREMARK_LOOP_OUTER_ITERATIONS
+#endif
+
+#if COREMARK_LOOP_WARMUP_ITERATIONS < 0
+#error "COREMARK_LOOP_WARMUP_ITERATIONS cannot be negative"
+#endif
+
+#if COREMARK_LOOP_MEASURE_ITERATIONS < 1
+#error "COREMARK_LOOP_MEASURE_ITERATIONS must be at least one"
 #endif
 
 main:
     addi sp, sp, -16
     sd   ra, 8(sp)
-#if COREMARK_LOOP_OUTER_ITERATIONS != 1
     sd   s0, 0(sp)
-    li   s0, COREMARK_LOOP_OUTER_ITERATIONS
-#endif
 
     OPENRV64_START_TEST
 
-#if COREMARK_LOOP_OUTER_ITERATIONS == 1
-    call coremark_loop
-#else
+#if COREMARK_LOOP_WARMUP_ITERATIONS > 0
+    li   s0, COREMARK_LOOP_WARMUP_ITERATIONS
 1:
     call coremark_loop
     addi s0, s0, -1
     bnez s0, 1b
-    ld   s0, 0(sp)
+#endif
+
+    OPENRV64_START_TRACE
+
+#if COREMARK_LOOP_MEASURE_ITERATIONS == 1
+    call coremark_loop
+#else
+    li   s0, COREMARK_LOOP_MEASURE_ITERATIONS
+2:
+    call coremark_loop
+    addi s0, s0, -1
+    bnez s0, 2b
+#endif
+
+    OPENRV64_END_TRACE
+
+#if (COREMARK_LOOP_WARMUP_ITERATIONS + COREMARK_LOOP_MEASURE_ITERATIONS) != 1
     la   t0, coremark_loop_sink
     lwu  a0, 0(t0)
 #endif
 .globl coremark_vm_done
 coremark_vm_done:
+    ld   s0, 0(sp)
     ld   ra, 8(sp)
     addi sp, sp, 16
     ret

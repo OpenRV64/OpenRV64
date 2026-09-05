@@ -814,6 +814,7 @@ module openrv64_rv64_top_4pf #(
         .lookup_instr_i(bp_selected_instr),
         .lookup_pc_i(bp_selected_pc),
         .lookup_id_i(bp_selected_id),
+        .lookup_observational_i(1'b0),
         .lookup_allocate_i(bp_branch_allocate),
         .resolve_valid_i(branch_resolved),
         .resolve_branch_i(branch_conditional),

@@ -27,7 +27,7 @@ Run the trace-enabled derivative of the documented 64-ROB/32-scheduler
 profile:
 
 ```sh
-run/run run/cfg/coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-trace.cfg --foreground
+run/run run/cfg/coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-tage-warm4-measure1-trace.cfg --foreground
 ```
 
 The runner places these files directly in `run/log/<run-id>/`:
@@ -40,21 +40,23 @@ The runner places these files directly in `run/log/<run-id>/`:
 - the usual effective configuration, source hashes, dirty patch, build log,
   run log, and validation status.
 
-By default, capture waits for the retirement-side `START_TEST` marker emitted
-by `OPENRV64_START_TEST` in `sw/runtime/test_markers.inc`.  The marker is the
-two-instruction sequence `addi x0,x0,0x7a1; ebreak`; recognition occurs only
-at ordered retirement, the tagged `ebreak` has no architectural effect, and
-an untagged `ebreak` retains the normal breakpoint/termination behavior.  The
-default CoreMark entry emits one marker after its setup and before the measured
-loop.  Thus boot, translation setup, and cache/predictor state established
-before the marker are excluded from both the reported cycle/retirement interval
-and the trace.
+By default, capture waits for the retirement-side `START_TRACE` marker and
+stops at `END_TRACE`.  The CoreMark-loop harness first emits `START_TEST`, runs
+four unmeasured warm-up invocations, emits `START_TRACE`, runs one measured
+invocation, and emits `END_TRACE`.  Each command in
+`sw/runtime/test_markers.inc` is a distinct 32-bit hint followed by `ebreak`;
+recognition occurs only at ordered retirement, a tagged `ebreak` has no
+architectural effect, and an untagged `ebreak` retains normal
+breakpoint/termination behavior.  Boot, translation setup, warm-up execution,
+and predictor/cache training are therefore excluded from the reported interval
+and trace.
 
-When a marker is seen, the primary `PERF_ICX_L2` `cycles`, `retired`, and
-`IPC` fields use that interval.  `PERF_TEST_REGION` records both interval and
-whole-simulation totals.  The remaining detailed `PERF_*` diagnostic counters
-are still reset-to-end totals; they have not been converted to marker-relative
-deltas.
+When `START_TRACE` retires, the primary `PERF_ICX_L2` `cycles`, `retired`, and
+`IPC` fields restart; retirement of `END_TRACE` freezes them.  The cycle result
+is the difference between the two marker timestamps.  `PERF_TEST_REGION`
+records both interval and whole-simulation totals.  The remaining detailed
+`PERF_*` diagnostic counters are still reset-to-end totals; they have not been
+converted to marker-relative deltas.
 
 Set a non-negative `TRACE_START` to override marker gating with an absolute
 simulation cycle, for example to diagnose boot or frontend warmup.  A bounded
@@ -67,8 +69,8 @@ run/run run/cfg/coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-trace.cfg \
   CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_CYCLES=2000
 ```
 
-`TRACE_START=-1` means wait for `START_TEST`; this is the default.  `CYCLES=0`
-means record from the selected start through simulation end.  The default file
+`TRACE_START=-1` means wait for `START_TRACE` and stop at `END_TRACE`; this is
+the default.  `CYCLES=0` means no earlier cycle-count cutoff.  The default file
 flush interval is 1024 cycles and is configurable with
 `CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_FLUSH`.
 

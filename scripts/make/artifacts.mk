@@ -98,6 +98,7 @@ FETCH_3W_SECTOR_SIM_BUILD := sim/fetch_3w_sector_tb.vvp
 FETCH_3W_PAIR512_SIM_BUILD := sim/fetch_3w_pair512_tb.vvp
 FETCH_3W_PAIR1024_SIM_BUILD := sim/fetch_3w_pair1024_tb.vvp
 FETCH_ISTREAM_SIM_BUILD := sim/fetch_istream_tb.vvp
+FETCH_ISTREAM_BP9_SIM_BUILD := sim/fetch_istream_bp9_tb.vvp
 FETCH_STREAM_BTB_SIM_BUILD := sim/fetch_stream_btb_tb.vvp
 DECODE_ISTREAM_3W_SIM_BUILD := sim/decode_istream_3w_tb.vvp
 PREFIX_ADDSUB_SIM_BUILD := sim/prefix_addsub_tb.vvp

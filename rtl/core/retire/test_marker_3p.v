@@ -3,9 +3,9 @@
 `include "core/isa/rv64-i.v"
 `include "core/except/except-defs.v"
 
-// Retirement-side recognition for the repository-local START_TEST sequence:
+// Retirement-side recognition for repository-local test-control sequences:
 //
-//     addi x0, x0, 12'h7a1
+//     addi x0, x0, marker_id
 //     ebreak
 //
 // Recognition happens only across accepted, adjacent architectural PCs.  A
@@ -26,7 +26,9 @@ module openrv64_test_marker_3p #(
     input  wire [3*META_WIDTH-1:0]      queue_meta_i,
     input  wire [3*RESULT_WIDTH-1:0]    queue_result_i,
     output wire [3*RESULT_WIDTH-1:0]    queue_result_o,
-    output wire                         start_test_o
+    output wire                         start_test_o,
+    output wire                         start_trace_o,
+    output wire                         end_trace_o
 );
 
     localparam integer META_PC = `OPENRV64_RETIRE_ALLOC_PC_LSB;
@@ -36,9 +38,16 @@ module openrv64_test_marker_3p #(
     localparam integer RESULT_EXCEPTION =
         `OPENRV64_RETIRE_RESULT_EXCEPTION_BIT;
 
-    reg pending_hint_q;
+    localparam [1:0] MARKER_NONE = 2'd0;
+    localparam [1:0] MARKER_START_TEST = 2'd1;
+    localparam [1:0] MARKER_START_TRACE = 2'd2;
+    localparam [1:0] MARKER_END_TRACE = 2'd3;
+
+    reg [1:0] pending_hint_kind_q;
     reg [`RV64_XLEN-1:0] pending_hint_pc_q;
     reg start_test_q;
+    reg start_trace_q;
+    reg end_trace_q;
 
     wire [`RV64_XLEN-1:0] pc0 = queue_meta_i[
         0*META_WIDTH + META_PC +: `RV64_XLEN];
@@ -53,12 +62,27 @@ module openrv64_test_marker_3p #(
     wire [`RV64_INSTR_WIDTH-1:0] instr2 = queue_meta_i[
         2*META_WIDTH + META_INSTR +: `RV64_INSTR_WIDTH];
 
-    wire hint0 = queue_valid_i[0] &&
-        (instr0 == `OPENRV64_INSTR_START_TEST_HINT);
-    wire hint1 = queue_valid_i[1] &&
-        (instr1 == `OPENRV64_INSTR_START_TEST_HINT);
-    wire hint2 = queue_valid_i[2] &&
-        (instr2 == `OPENRV64_INSTR_START_TEST_HINT);
+    function automatic [1:0] marker_hint_kind;
+        input [`RV64_INSTR_WIDTH-1:0] instr;
+        begin
+            case (instr)
+                `OPENRV64_INSTR_START_TEST_HINT:
+                    marker_hint_kind = MARKER_START_TEST;
+                `OPENRV64_INSTR_START_TRACE_HINT:
+                    marker_hint_kind = MARKER_START_TRACE;
+                `OPENRV64_INSTR_END_TRACE_HINT:
+                    marker_hint_kind = MARKER_END_TRACE;
+                default: marker_hint_kind = MARKER_NONE;
+            endcase
+        end
+    endfunction
+
+    wire [1:0] hint_kind0 = queue_valid_i[0] ?
+        marker_hint_kind(instr0) : MARKER_NONE;
+    wire [1:0] hint_kind1 = queue_valid_i[1] ?
+        marker_hint_kind(instr1) : MARKER_NONE;
+    wire [1:0] hint_kind2 = queue_valid_i[2] ?
+        marker_hint_kind(instr2) : MARKER_NONE;
     wire ebreak0 = queue_valid_i[0] &&
         (instr0 == `RV64_INSTR_EBREAK);
     wire ebreak1 = queue_valid_i[1] &&
@@ -66,14 +90,35 @@ module openrv64_test_marker_3p #(
     wire ebreak2 = queue_valid_i[2] &&
         (instr2 == `RV64_INSTR_EBREAK);
 
-    wire tagged0 = (ENABLE != 0) && pending_hint_q && ebreak0 &&
+    wire tagged0 = (ENABLE != 0) &&
+        (pending_hint_kind_q != MARKER_NONE) && ebreak0 &&
         (pc0 == (pending_hint_pc_q + 64'd4));
-    wire tagged1 = (ENABLE != 0) && hint0 && ebreak1 &&
+    wire tagged1 = (ENABLE != 0) && (hint_kind0 != MARKER_NONE) && ebreak1 &&
         (pc1 == (pc0 + 64'd4));
-    wire tagged2 = (ENABLE != 0) && hint1 && ebreak2 &&
+    wire tagged2 = (ENABLE != 0) && (hint_kind1 != MARKER_NONE) && ebreak2 &&
         (pc2 == (pc1 + 64'd4));
     wire [2:0] tagged_ebreak = {tagged2, tagged1, tagged0};
-    wire start_test_accept = |(tagged_ebreak & queue_accept_i);
+    wire start_test_accept =
+        (tagged0 && queue_accept_i[0] &&
+         (pending_hint_kind_q == MARKER_START_TEST)) ||
+        (tagged1 && queue_accept_i[1] &&
+         (hint_kind0 == MARKER_START_TEST)) ||
+        (tagged2 && queue_accept_i[2] &&
+         (hint_kind1 == MARKER_START_TEST));
+    wire start_trace_accept =
+        (tagged0 && queue_accept_i[0] &&
+         (pending_hint_kind_q == MARKER_START_TRACE)) ||
+        (tagged1 && queue_accept_i[1] &&
+         (hint_kind0 == MARKER_START_TRACE)) ||
+        (tagged2 && queue_accept_i[2] &&
+         (hint_kind1 == MARKER_START_TRACE));
+    wire end_trace_accept =
+        (tagged0 && queue_accept_i[0] &&
+         (pending_hint_kind_q == MARKER_END_TRACE)) ||
+        (tagged1 && queue_accept_i[1] &&
+         (hint_kind0 == MARKER_END_TRACE)) ||
+        (tagged2 && queue_accept_i[2] &&
+         (hint_kind1 == MARKER_END_TRACE));
 
     function automatic [RESULT_WIDTH-1:0] marker_result;
         input [RESULT_WIDTH-1:0] raw_result;
@@ -100,26 +145,32 @@ module openrv64_test_marker_3p #(
         marker_result(queue_result_i[
             2*RESULT_WIDTH +: RESULT_WIDTH], tagged2);
     assign start_test_o = (ENABLE != 0) && start_test_q;
+    assign start_trace_o = (ENABLE != 0) && start_trace_q;
+    assign end_trace_o = (ENABLE != 0) && end_trace_q;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n || flush_i) begin
-            pending_hint_q <= 1'b0;
+            pending_hint_kind_q <= MARKER_NONE;
             pending_hint_pc_q <= {`RV64_XLEN{1'b0}};
             start_test_q <= 1'b0;
+            start_trace_q <= 1'b0;
+            end_trace_q <= 1'b0;
         end else begin
             start_test_q <= start_test_accept;
+            start_trace_q <= start_trace_accept;
+            end_trace_q <= end_trace_accept;
 
-            if (start_test_accept) begin
-                pending_hint_q <= 1'b0;
-                pending_hint_pc_q <= {`RV64_XLEN{1'b0}};
-            end else if (queue_accept_i[2]) begin
-                pending_hint_q <= hint2;
+            // The youngest accepted instruction determines split-group state.
+            // This preserves a new lane-2 hint when an older marker also
+            // completes in lanes 0-1 of the same retirement group.
+            if (queue_accept_i[2]) begin
+                pending_hint_kind_q <= hint_kind2;
                 pending_hint_pc_q <= pc2;
             end else if (queue_accept_i[1]) begin
-                pending_hint_q <= hint1;
+                pending_hint_kind_q <= hint_kind1;
                 pending_hint_pc_q <= pc1;
             end else if (queue_accept_i[0]) begin
-                pending_hint_q <= hint0;
+                pending_hint_kind_q <= hint_kind0;
                 pending_hint_pc_q <= pc0;
             end
         end

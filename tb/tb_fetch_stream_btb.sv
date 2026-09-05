@@ -14,6 +14,8 @@ module tb_fetch_stream_btb;
     wire response_hit;
     wire [63:0] response_control_pc;
     wire [63:0] response_control_end_pc;
+    wire response_conditional;
+    wire [63:0] response_target_pc;
     wire [63:0] response_successor_pc;
     wire response_taken;
     wire [31:0] response_prediction_token;
@@ -52,6 +54,8 @@ module tb_fetch_stream_btb;
         .response_hit_o(response_hit),
         .response_control_pc_o(response_control_pc),
         .response_control_end_pc_o(response_control_end_pc),
+        .response_conditional_o(response_conditional),
+        .response_target_pc_o(response_target_pc),
         .response_successor_pc_o(response_successor_pc),
         .response_taken_o(response_taken),
         .response_prediction_token_o(response_prediction_token),
@@ -176,6 +180,7 @@ module tb_fetch_stream_btb;
         query(64'h100, 32'h11);
         if (!response_hit || response_control_pc != 64'h108 ||
             response_control_end_pc != 64'h10c ||
+            !response_conditional || response_target_pc != backward_target ||
             response_successor_pc != backward_target || !response_taken)
             $fatal(1, "backward conditional BTFNT response mismatch");
         tick();
@@ -183,6 +188,7 @@ module tb_fetch_stream_btb;
         train_control(64'h10c, 1'b0, 32'h0000006f, 64'h200);
         query(64'h10a, 32'h12);
         if (!response_hit || response_control_pc != 64'h10c ||
+            response_conditional || response_target_pc != 64'h200 ||
             response_successor_pc != 64'h200 || !response_taken)
             $fatal(1, "same-sector second control selection mismatch");
         tick();

@@ -33,6 +33,8 @@ module openrv64_fetch_stream_btb #(
     output wire                         response_hit_o,
     output wire [`RV64_XLEN-1:0]        response_control_pc_o,
     output wire [`RV64_XLEN-1:0]        response_control_end_pc_o,
+    output wire                         response_conditional_o,
+    output wire [`RV64_XLEN-1:0]        response_target_pc_o,
     output wire [`RV64_XLEN-1:0]        response_successor_pc_o,
     output wire                         response_taken_o,
     output wire [REQUEST_ID_WIDTH-1:0]  response_prediction_token_o,
@@ -319,6 +321,9 @@ module openrv64_fetch_stream_btb #(
                                                   {`RV64_XLEN{1'b0}};
     assign response_control_end_pc_o = response_hit ?
         response_control_end_pc : {`RV64_XLEN{1'b0}};
+    assign response_conditional_o = response_hit && response_conditional;
+    assign response_target_pc_o = response_hit ? response_target :
+                                                {`RV64_XLEN{1'b0}};
     assign response_successor_pc_o = response_hit ?
         (response_taken ? response_target : response_control_end_pc) :
         {`RV64_XLEN{1'b0}};

@@ -23,7 +23,7 @@ generate
         // absolute artifact path; truncating its leading bytes makes $fopen
         // fail before simulation starts.
         reg [4095:0] ttrace_path;
-        // A negative start selects the retirement-side START_TEST marker.
+        // A negative start selects the retirement-side START_TRACE marker.
         // Non-negative values retain the absolute-cycle diagnostic override.
         integer ttrace_start_cycle;
         reg [31:0] ttrace_cycle_count;
@@ -188,7 +188,7 @@ generate
                     "schema,cycle,insn_id,core_id,pc,instr,stage,slot,lane,state,reason,blocker_id,flags,detail0,detail1");
                 if (ttrace_marker_mode)
                     $display(
-                        "PIPELINE_STATE_TRACE path=%0s start=START_TEST cycles=%0d",
+                        "PIPELINE_STATE_TRACE path=%0s start=START_TRACE cycles=%0d",
                         ttrace_path, ttrace_cycle_count);
                 else
                     $display(
@@ -207,11 +207,11 @@ generate
                 ttrace_cycle = dut.trace_cycle_q[31:0];
 
                 if (!ttrace_capture_active) begin
-                    if (ttrace_marker_mode && dut.backend_test_start) begin
+                    if (ttrace_marker_mode && dut.backend_trace_start) begin
                         ttrace_capture_active = 1'b1;
                         ttrace_capture_start_cycle = ttrace_cycle;
                         $display(
-                            "PIPELINE_STATE_TRACE_START cycle=%0d source=START_TEST",
+                            "PIPELINE_STATE_TRACE_START cycle=%0d source=START_TRACE",
                             ttrace_cycle);
                     end else if (!ttrace_marker_mode &&
                                  (ttrace_cycle >= ttrace_start_cycle)) begin
@@ -220,7 +220,16 @@ generate
                     end
                 end
 
-                if (ttrace_capture_active &&
+                if (ttrace_capture_active && ttrace_marker_mode &&
+                    dut.backend_trace_end) begin
+                    ttrace_capture_active = 1'b0;
+                    $fflush(ttrace_fd);
+                    $display(
+                        "PIPELINE_STATE_TRACE_END cycle=%0d interval_cycles=%0d rows=%0d source=END_TRACE",
+                        ttrace_cycle,
+                        ttrace_cycle - ttrace_capture_start_cycle,
+                        ttrace_rows);
+                end else if (ttrace_capture_active &&
                     ((ttrace_cycle_count == 0) ||
                      ((ttrace_cycle - ttrace_capture_start_cycle) <
                       ttrace_cycle_count))) begin

@@ -452,6 +452,14 @@ CORE_3P_ICX_L2_FETCH_CAROUSEL ?= 1
 CORE_3P_ICX_L2_CONFIDENCE_GATE ?= 1
 CORE_3P_ICX_L2_PAIR_STACK_DEPTH ?= 2
 CORE_3P_ICX_L2_BP_TYPE ?= $(BP_TYPE_DEFAULT)
+CORE_3P_ICX_L2_ENABLE_STREAM_BTB ?= 1
+ifeq ($(filter $(CORE_3P_ICX_L2_ENABLE_STREAM_BTB),0 1),)
+$(error CORE_3P_ICX_L2_ENABLE_STREAM_BTB must be 0 or 1)
+endif
+CORE_3P_ICX_L2_ENABLE_ISTREAM_BP9 ?= 1
+ifeq ($(filter $(CORE_3P_ICX_L2_ENABLE_ISTREAM_BP9),0 1),)
+$(error CORE_3P_ICX_L2_ENABLE_ISTREAM_BP9 must be 0 or 1)
+endif
 CORE_3P_ICX_L2_COMPLETION_FORWARD_MASK ?= 0
 CORE_3P_ICX_L2_BRANCH_FORWARD_MASK ?= 1
 CORE_3P_ICX_L2_FULL_FORWARDING ?= 0
@@ -571,7 +579,8 @@ endif
 CORE_3P_ICX_L2_PIPELINE_STATE_TRACE ?=
 CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_BZIP2 ?=
 CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_REPORT ?=
-# Negative waits for the retired START_TEST marker.  A non-negative value is
+# Negative waits for the retired START_TRACE marker and stops at END_TRACE.
+# A non-negative value is
 # an explicit absolute-cycle override for boot/front-end diagnostics.
 CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_START ?= -1
 # Zero records every cycle from the selected start through simulation end.
@@ -594,7 +603,7 @@ CORE_3P_ICX_L2_VERILATOR_DIR := \
 	$(CORE_3P_ICX_L2_VERILATOR_DIR)-ifw$(CORE_3P_ICX_L2_L1I_FETCH_WIDTH)
 endif
 CORE_3P_ICX_L2_VERILATOR_DIR := \
-	$(CORE_3P_ICX_L2_VERILATOR_DIR)/sq$(CORE_3P_ICX_L2_STORE_QUEUE_DEPTH)
+	$(CORE_3P_ICX_L2_VERILATOR_DIR)/sbtb$(CORE_3P_ICX_L2_ENABLE_STREAM_BTB)/ibp$(CORE_3P_ICX_L2_ENABLE_ISTREAM_BP9)/sq$(CORE_3P_ICX_L2_STORE_QUEUE_DEPTH)
 CORE_3P_ICX_L2_VERILATOR_DIR := \
 	$(CORE_3P_ICX_L2_VERILATOR_DIR)/tag$(CORE_3P_ICX_L2_LSU_TAG_WIDTH)x$(CORE_3P_ICX_L2_LSU_OUTSTANDING)
 ifeq ($(CORE_3P_ICX_L2_STORE_WAVE_TRACE),1)
@@ -946,12 +955,16 @@ UART_FIRMWARE_CFLAGS := -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany \
 	-ffreestanding -fno-builtin -fno-common -fno-pic \
 	-fno-stack-protector -fno-asynchronous-unwind-tables
 COREMARK_LOOP_OUTER_ITERATIONS ?= 1
+COREMARK_LOOP_WARMUP_ITERATIONS ?= 0
+COREMARK_LOOP_MEASURE_ITERATIONS ?= $(COREMARK_LOOP_OUTER_ITERATIONS)
 COREMARK_LOOP_CFLAGS := -march=rv64i -mabi=lp64 -mcmodel=medany \
 	-mno-relax -msmall-data-limit=0 -O2 -g -Wall -Wextra -Werror \
 	-ffreestanding -fno-builtin -fno-common -fno-pic \
 	-fno-stack-protector -fno-asynchronous-unwind-tables \
 	-ffunction-sections -fdata-sections \
-	-DCOREMARK_LOOP_OUTER_ITERATIONS=$(COREMARK_LOOP_OUTER_ITERATIONS)
+	-DCOREMARK_LOOP_OUTER_ITERATIONS=$(COREMARK_LOOP_OUTER_ITERATIONS) \
+	-DCOREMARK_LOOP_WARMUP_ITERATIONS=$(COREMARK_LOOP_WARMUP_ITERATIONS) \
+	-DCOREMARK_LOOP_MEASURE_ITERATIONS=$(COREMARK_LOOP_MEASURE_ITERATIONS)
 COREMARK_BARE_CFLAGS := -march=rv64im_zicsr -mabi=lp64 -mcmodel=medany \
 	-mno-relax -msmall-data-limit=0 -O2 -g -Wall -Wextra -Werror \
 	-Wno-unused-parameter -Wno-implicit-fallthrough \
@@ -964,7 +977,9 @@ COREMARK_VM_CFLAGS := -march=rv64i_zicsr_zifencei -mabi=lp64 \
 	-Wall -Wextra -Werror -ffreestanding -fno-builtin -fno-common \
 	-fno-pic -fno-stack-protector -fno-asynchronous-unwind-tables \
 	-ffunction-sections -fdata-sections \
-	-DCOREMARK_LOOP_OUTER_ITERATIONS=$(COREMARK_LOOP_OUTER_ITERATIONS)
+	-DCOREMARK_LOOP_OUTER_ITERATIONS=$(COREMARK_LOOP_OUTER_ITERATIONS) \
+	-DCOREMARK_LOOP_WARMUP_ITERATIONS=$(COREMARK_LOOP_WARMUP_ITERATIONS) \
+	-DCOREMARK_LOOP_MEASURE_ITERATIONS=$(COREMARK_LOOP_MEASURE_ITERATIONS)
 MEMCPY_ASFLAGS := -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany \
 	-mno-relax -nostdlib -nostartfiles
 FP_DAXPY_ASFLAGS := -march=rv64imafd_zicsr -mabi=lp64d \

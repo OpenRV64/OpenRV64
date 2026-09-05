@@ -99,6 +99,9 @@ sim-fetch-3w: $(FETCH_3W_SIM_BUILD) $(FETCH_3W_CAROUSEL_SIM_BUILD) \
 sim-fetch-istream: $(FETCH_ISTREAM_SIM_BUILD)
 	vvp $(FETCH_ISTREAM_SIM_BUILD)
 
+sim-fetch-istream-bp9: $(FETCH_ISTREAM_BP9_SIM_BUILD)
+	vvp $(FETCH_ISTREAM_BP9_SIM_BUILD)
+
 sim-fetch-stream-btb: $(FETCH_STREAM_BTB_SIM_BUILD)
 	vvp $(FETCH_STREAM_BTB_SIM_BUILD)
 

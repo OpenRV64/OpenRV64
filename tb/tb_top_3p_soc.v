@@ -247,6 +247,8 @@ module tb_top_3p_soc #(
     parameter integer FETCH_ALT_PAIR_STACK_DEPTH = 2,
     parameter [`OPENRV64_BP_TYPE_WIDTH-1:0] BP_TYPE =
         `OPENRV64_BP_DEFAULT,
+    parameter integer ENABLE_STREAM_BTB = 1,
+    parameter integer ENABLE_ISTREAM_BP9 = 1,
     parameter [2:0] COMPLETION_FORWARD_MASK = 3'b000,
     parameter [2:0] BRANCH_COMPLETION_FORWARD_MASK = 3'b001,
     parameter integer ENABLE_FULL_FORWARDING = 0,
@@ -821,8 +823,12 @@ module tb_top_3p_soc #(
     integer reported_retired;
     integer test_start_cycle;
     integer test_start_events;
+    integer test_trace_end_cycle;
+    integer test_trace_start_events;
+    integer test_trace_end_events;
     reg test_measurement_active;
     reg test_measurement_seen;
+    reg test_trace_measurement_seen;
     integer timeout_snapshot_idx;
     integer progress_interval_cycles;
     integer progress_next_cycle;
@@ -876,6 +882,10 @@ module tb_top_3p_soc #(
     integer stream_btb_same_sector_overflows;
     integer stream_btb_transfers;
     integer stream_btb_rejects;
+    integer stream_tage_candidates;
+    integer stream_tage_lookups;
+    integer stream_tage_responses;
+    integer stream_tage_taken;
     integer bp_ras_lookups;
     integer bp_ras_hits;
     integer bp_ras_misses;
@@ -2990,6 +3000,8 @@ module tb_top_3p_soc #(
             FETCH_ALT_CONFIDENCE_GATE),
         .FETCH_ALT_PAIR_STACK_DEPTH(FETCH_ALT_PAIR_STACK_DEPTH),
         .BP_TYPE(BP_TYPE),
+        .ENABLE_STREAM_BTB(ENABLE_STREAM_BTB),
+        .ENABLE_ISTREAM_BP9(ENABLE_ISTREAM_BP9),
         .BP_RAS_ENABLE(1'b1),
         .BP_RAS_DEPTH(8),
         .BP_BIMODAL_ENTRIES(32),
@@ -4850,8 +4862,12 @@ module tb_top_3p_soc #(
         reported_retired = 0;
         test_start_cycle = -1;
         test_start_events = 0;
+        test_trace_end_cycle = -1;
+        test_trace_start_events = 0;
+        test_trace_end_events = 0;
         test_measurement_active = 1'b0;
         test_measurement_seen = 1'b0;
+        test_trace_measurement_seen = 1'b0;
         progress_interval_cycles = 0;
         progress_next_cycle = 0;
         icx_requests = 0;
@@ -4895,6 +4911,10 @@ module tb_top_3p_soc #(
         stream_btb_same_sector_overflows = 0;
         stream_btb_transfers = 0;
         stream_btb_rejects = 0;
+        stream_tage_candidates = 0;
+        stream_tage_lookups = 0;
+        stream_tage_responses = 0;
+        stream_tage_taken = 0;
         bp_ras_lookups = 0;
         bp_ras_hits = 0;
         bp_ras_misses = 0;
@@ -5577,6 +5597,31 @@ module tb_top_3p_soc #(
                 test_start_cycle = cycles;
                 test_start_events = test_start_events + 1;
                 $display("START_TEST cycle=%0d", cycles);
+            end else if (dut.backend_trace_start) begin
+                if (test_trace_measurement_seen)
+                    $fatal(1, "duplicate START_TRACE marker");
+                test_measurement_active = 1'b1;
+                test_measurement_seen = 1'b1;
+                test_trace_measurement_seen = 1'b1;
+                test_cycles = 0;
+                test_retired = 0;
+                test_start_cycle = cycles;
+                test_trace_start_events = test_trace_start_events + 1;
+                $display("START_TRACE cycle=%0d", cycles);
+            end else if (dut.backend_trace_end) begin
+                if (!test_trace_measurement_seen ||
+                    !test_measurement_active)
+                    $fatal(1, "END_TRACE without active START_TRACE");
+                test_measurement_active = 1'b0;
+                test_trace_end_cycle = cycles;
+                // The requested result is the timestamp interval, not the
+                // number of loop iterations that happened strictly between
+                // the two marker-observation branches.
+                test_cycles = cycles - test_start_cycle;
+                test_trace_end_events = test_trace_end_events + 1;
+                $display(
+                    "END_TRACE cycle=%0d interval_cycles=%0d retired=%0d",
+                    cycles, test_cycles, test_retired);
             end else if (test_measurement_active) begin
                 test_cycles = test_cycles + 1;
                 test_retired = test_retired + dut.backend_retire_count;
@@ -7723,6 +7768,14 @@ module tb_top_3p_soc #(
                 stream_btb_transfers = stream_btb_transfers + 1;
             if (dut.fetch_observe_stream_reject)
                 stream_btb_rejects = stream_btb_rejects + 1;
+            if (dut.fetch_observe_istream_tage_candidate)
+                stream_tage_candidates = stream_tage_candidates + 1;
+            if (dut.fetch_observe_istream_tage_lookup)
+                stream_tage_lookups = stream_tage_lookups + 1;
+            if (dut.fetch_observe_istream_tage_response)
+                stream_tage_responses = stream_tage_responses + 1;
+            if (dut.fetch_observe_istream_tage_taken)
+                stream_tage_taken = stream_tage_taken + 1;
             if (dut.u_bp.diag_btb_lookup)
                 bp_btb_lookups = bp_btb_lookups + 1;
             if (dut.u_bp.diag_btb_hit)
@@ -8582,14 +8635,23 @@ module tb_top_3p_soc #(
         reported_retired = test_measurement_seen ? test_retired : retired;
         ipc = (reported_cycles != 0) ?
               $itor(reported_retired) / $itor(reported_cycles) : 0.0;
+        if (test_trace_measurement_seen &&
+            ((test_trace_start_events != 1) ||
+             (test_trace_end_events != 1)))
+            $fatal(1,
+                "incomplete trace marker interval start_events=%0d end_events=%0d",
+                test_trace_start_events, test_trace_end_events);
         $display(
-            "PERF_TEST_REGION seen=%0d start_events=%0d start_cycle=%0d total_cycles=%0d total_retired=%0d cycles=%0d retired=%0d IPC=%0.4f",
-            test_measurement_seen, test_start_events, test_start_cycle,
-            cycles, retired, reported_cycles, reported_retired, ipc);
+            "PERF_TEST_REGION seen=%0d start_events=%0d trace_start_events=%0d trace_end_events=%0d start_cycle=%0d end_cycle=%0d total_cycles=%0d total_retired=%0d cycles=%0d retired=%0d IPC=%0.4f",
+            test_measurement_seen, test_start_events,
+            test_trace_start_events, test_trace_end_events,
+            test_start_cycle, test_trace_end_cycle, cycles, retired,
+            reported_cycles, reported_retired, ipc);
         $display(
-            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d rename_mode=%0d fetch_istream=%0d phys_regs=%0d issue_window=%0d speculation_window=%0d alu2=%0d alu_chaining=%0d load_conflict_record=%0d decode_fusion=%0d oracle_branches=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d scheduler_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
+            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d stream_btb=%0d istream_bp9=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d rename_mode=%0d fetch_istream=%0d phys_regs=%0d issue_window=%0d speculation_window=%0d alu2=%0d alu_chaining=%0d load_conflict_record=%0d decode_fusion=%0d oracle_branches=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d scheduler_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_CAROUSEL,
-            FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
+            FETCH_ALT_CONFIDENCE_GATE, BP_TYPE, ENABLE_STREAM_BTB,
+            ENABLE_ISTREAM_BP9,
             COMPLETION_FORWARD_MASK, BRANCH_COMPLETION_FORWARD_MASK,
             ENABLE_FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
             RENAME_MODE,
@@ -8849,6 +8911,10 @@ module tb_top_3p_soc #(
             stream_btb_replacements, stream_btb_same_sector_seconds,
             stream_btb_same_sector_overflows, stream_btb_transfers,
             stream_btb_rejects);
+        $display(
+            "PERF_ICX_L2_STREAM_TAGE candidates=%0d lookups=%0d responses=%0d taken=%0d",
+            stream_tage_candidates, stream_tage_lookups,
+            stream_tage_responses, stream_tage_taken);
         $display(
             "PERF_ICX_L2_RAS_MISS_CAUSE empty=%0d order_pending=%0d pending_unresolved=%0d pending_resolved=%0d head_unresolved=%0d",
             bp_ras_miss_empty, bp_ras_miss_order_pending,

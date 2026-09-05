@@ -174,6 +174,8 @@ module openrv64_backend_3p #(
     output wire [2:0]                   retire_arch_o,
     output wire [2:0]                   retire_count_o,
     output wire                         test_start_o,
+    output wire                         test_trace_start_o,
+    output wire                         test_trace_end_o,
     output wire                         exception_o,
     output wire                         halt_o,
     output wire                         irq_o,
@@ -6118,7 +6120,7 @@ module openrv64_backend_3p #(
         .complete_read_record_o(queue_complete_record)
     );
 
-    // A tagged START_TEST EBREAK keeps its persistent dispatch barrier but
+    // A tagged test-control EBREAK keeps its persistent dispatch barrier but
     // retires without entering the breakpoint/halt path.  Conditioning the
     // compact result here gives banked and legacy retirement identical
     // behavior without widening the ROB record.
@@ -6135,7 +6137,9 @@ module openrv64_backend_3p #(
         .queue_meta_i(queue_retire_record),
         .queue_result_i(queue_retire_commit_raw),
         .queue_result_o(queue_retire_commit),
-        .start_test_o(test_start_o)
+        .start_test_o(test_start_o),
+        .start_trace_o(test_trace_start_o),
+        .end_trace_o(test_trace_end_o)
     );
 
 `ifndef SYNTHESIS

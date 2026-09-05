@@ -103,6 +103,7 @@ module openrv64_exec_bp_tage_btb #(
     input  wire [`RV64_INSTR_WIDTH-1:0] lookup_instr_i,
     input  wire [`RV64_XLEN-1:0]        lookup_pc_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] lookup_id_i,
+    input  wire                         lookup_observational_i,
     input  wire                         lookup_allocate_i,
     input  wire                         ras_prediction_valid_i,
     input  wire [`RV64_XLEN-1:0]        ras_prediction_target_i,
@@ -119,6 +120,15 @@ module openrv64_exec_bp_tage_btb #(
     output wire                         prediction_weak_o,
     output wire                         prediction_target_valid_o,
     output wire [`RV64_XLEN-1:0]        prediction_target_o,
+    // Raw registered direction response.  Unlike prediction_taken_o this is
+    // independent of the live lookup inputs, allowing the Tomasulo istream
+    // frontend to issue a new request while consuming the previous response.
+    // It is observational only; allocation and history updates still use the
+    // normal lookup/allocate interface below.
+    output wire                         direction_response_valid_o,
+    output wire [`RV64_XLEN-1:0]        direction_response_pc_o,
+    output wire                         direction_response_taken_o,
+    output wire                         direction_response_weak_o,
     output wire                         target_mispredict_o,
     output wire                         allocation_stall_o,
     output wire                         capacity_stall_o,
@@ -470,6 +480,7 @@ module openrv64_exec_bp_tage_btb #(
         launch_pc_tag[TAG3_BITS-1:0] ^ fold_tag3(speculative_history_q);
 
     reg lookup_response_valid_q;
+    reg lookup_response_observational_q;
     reg [`RV64_XLEN-1:0] lookup_response_pc_q;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] lookup_response_id_q;
     reg lookup_response_backward_q;
@@ -504,6 +515,7 @@ module openrv64_exec_bp_tage_btb #(
     // its projected allocation ID changes.  Reuse that PC-indexed response
     // and record the current lookup_id_i only when allocation is accepted.
     wire lookup_response_match = lookup_response_valid_q &&
+        !lookup_response_observational_q &&
         lookup_valid_i && lookup_branch_i &&
         (lookup_response_pc_q == lookup_pc_i);
     wire lookup_read_fire = lookup_valid_i && lookup_branch_i &&
@@ -716,10 +728,12 @@ module openrv64_exec_bp_tage_btb #(
         lookup_alternate_prediction : lookup_provider_prediction;
     wire conditional_prediction = lookup_response_match ?
         conditional_prediction_response : lookup_backward_i;
-    wire conditional_prediction_weak = !lookup_response_match ||
+    wire conditional_prediction_response_weak =
         ((lookup_provider == PROVIDER_BASE) ? lookup_base_weak :
          (lookup_provider_weak || (lookup_provider_useful == 0) ||
           (lookup_provider_prediction != lookup_alternate_prediction)));
+    wire conditional_prediction_weak = !lookup_response_match ||
+        conditional_prediction_response_weak;
 
     wire lookup_is_jal =
         `RV64_OPCODE(lookup_instr_i) == `RV64_OPCODE_JAL;
@@ -1193,6 +1207,11 @@ module openrv64_exec_bp_tage_btb #(
     assign prediction_target_valid_o = lookup_valid_i &&
                                        selected_target_valid;
     assign prediction_target_o = selected_target;
+    assign direction_response_valid_o = lookup_response_valid_q;
+    assign direction_response_pc_o = lookup_response_pc_q;
+    assign direction_response_taken_o = conditional_prediction_response;
+    assign direction_response_weak_o =
+        conditional_prediction_response_weak;
     assign target_mispredict_o = resolve_has_record &&
         inflight_target_valid_q[resolve_index] && resolve_taken_i &&
         (resolve_target_i != inflight_target_q[resolve_index]);
@@ -1236,6 +1255,7 @@ module openrv64_exec_bp_tage_btb #(
             age_table_q <= 0;
             age_index_q <= 0;
             lookup_response_valid_q <= 1'b0;
+            lookup_response_observational_q <= 1'b0;
             lookup_response_pc_q <= 0;
             lookup_response_id_q <= 0;
             lookup_response_backward_q <= 1'b0;
@@ -1338,6 +1358,8 @@ module openrv64_exec_bp_tage_btb #(
             end
 
             if (lookup_read_fire) begin
+                lookup_response_observational_q <=
+                    lookup_observational_i;
                 lookup_response_pc_q <= lookup_pc_i;
                 lookup_response_id_q <= lookup_id_i;
                 lookup_response_backward_q <= lookup_backward_i;

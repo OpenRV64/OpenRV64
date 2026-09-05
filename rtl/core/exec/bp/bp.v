@@ -71,6 +71,7 @@ module openrv64_exec_bp #(
     input  wire [`RV64_INSTR_WIDTH-1:0] lookup_instr_i,
     input  wire [`RV64_XLEN-1:0]        lookup_pc_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] lookup_id_i,
+    input  wire lookup_observational_i,
     input  wire lookup_allocate_i,
 
     input  wire resolve_valid_i,
@@ -90,6 +91,10 @@ module openrv64_exec_bp #(
     output wire prediction_weak_o,
     output wire prediction_target_valid_o,
     output wire [`RV64_XLEN-1:0] prediction_target_o,
+    output wire direction_response_valid_o,
+    output wire [`RV64_XLEN-1:0] direction_response_pc_o,
+    output wire direction_response_taken_o,
+    output wire direction_response_weak_o,
     output wire target_mispredict_o,
     output wire update_overflow_o,
     output wire fetch_stall_o,
@@ -190,6 +195,10 @@ module openrv64_exec_bp #(
     wire tage_prediction_weak;
     wire tage_prediction_target_valid;
     wire [`RV64_XLEN-1:0] tage_prediction_target;
+    wire tage_direction_response_valid;
+    wire [`RV64_XLEN-1:0] tage_direction_response_pc;
+    wire tage_direction_response_taken;
+    wire tage_direction_response_weak;
     wire tage_target_mispredict;
     wire tage_allocation_stall;
     wire tage_capacity_stall;
@@ -302,6 +311,7 @@ module openrv64_exec_bp #(
                 .lookup_instr_i(lookup_instr_i),
                 .lookup_pc_i(lookup_pc_i),
                 .lookup_id_i(lookup_id_i),
+                .lookup_observational_i(lookup_observational_i),
                 .lookup_allocate_i(lookup_allocate_i),
                 .ras_prediction_valid_i(ras_prediction_valid),
                 .ras_prediction_target_i(ras_prediction_target),
@@ -316,6 +326,13 @@ module openrv64_exec_bp #(
                 .prediction_weak_o(tage_prediction_weak),
                 .prediction_target_valid_o(tage_prediction_target_valid),
                 .prediction_target_o(tage_prediction_target),
+                .direction_response_valid_o(
+                    tage_direction_response_valid),
+                .direction_response_pc_o(tage_direction_response_pc),
+                .direction_response_taken_o(
+                    tage_direction_response_taken),
+                .direction_response_weak_o(
+                    tage_direction_response_weak),
                 .target_mispredict_o(tage_target_mispredict),
                 .allocation_stall_o(tage_allocation_stall),
                 .capacity_stall_o(tage_capacity_stall),
@@ -349,6 +366,10 @@ module openrv64_exec_bp #(
             assign tage_prediction_weak = 1'b0;
             assign tage_prediction_target_valid = 1'b0;
             assign tage_prediction_target = {`RV64_XLEN{1'b0}};
+            assign tage_direction_response_valid = 1'b0;
+            assign tage_direction_response_pc = {`RV64_XLEN{1'b0}};
+            assign tage_direction_response_taken = 1'b0;
+            assign tage_direction_response_weak = 1'b0;
             assign tage_target_mispredict = 1'b0;
             assign tage_allocation_stall = 1'b0;
             assign tage_capacity_stall = 1'b0;
@@ -544,6 +565,13 @@ module openrv64_exec_bp #(
         advanced_prediction_target :
         (use_tournament ? tournament_prediction_target :
          (use_tage ? tage_prediction_target : ras_prediction_target));
+    assign direction_response_valid_o = use_tage &&
+        tage_direction_response_valid;
+    assign direction_response_pc_o = tage_direction_response_pc;
+    assign direction_response_taken_o = use_tage &&
+        tage_direction_response_taken;
+    assign direction_response_weak_o = use_tage &&
+        tage_direction_response_weak;
     assign update_overflow_o = use_advanced ? advanced_update_overflow :
         (use_tournament ? tournament_update_overflow :
          (use_tage ? tage_update_overflow : policy_update_overflow));

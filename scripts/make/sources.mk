@@ -53,7 +53,7 @@ RENAME_SRCS := rtl/core/rename/identity.v \
 FETCH_SRCS := $(FETCH_DEBUG_STUB_SRCS) \
 	rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch.v \
 	rtl/core/fetch/fetch_3w.v rtl/core/fetch/fetch_istream.v \
-	rtl/core/fetch/stream_btb.v
+	rtl/core/fetch/stream_btb.v rtl/core/fetch/istream_bp9.v
 L1_CACHE_SRCS := $(L1_DEBUG_STUB_SRCS) \
 	rtl/cache/l1/l1.v rtl/cache/l1/wrapper.v \
 	rtl/core/cache/l1/l1i/array.v rtl/core/cache/l1/l1i/icx.v \
@@ -153,6 +153,7 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	$(STAGE_SRCS) $(FETCH_DEBUG_STUB_SRCS) \
 	rtl/core/fetch/fetch-defs.v rtl/core/fetch/fetch_3w.v \
 	rtl/core/fetch/fetch_istream.v rtl/core/fetch/stream_btb.v \
+	rtl/core/fetch/istream_bp9.v \
 	$(BUS_DEBUG_STUB_SRCS) \
 	rtl/core/bus/bus-defs.v \
 	rtl/core/mtl/tlb.v rtl/core/mtl/micro_tlb.v \
@@ -322,6 +323,7 @@ FETCH_3W_SECTOR_SIM_SRCS := tb/tb_fetch_3w_sector.sv
 FETCH_3W_PAIR512_SIM_SRCS := tb/tb_fetch_3w_pair512.sv
 FETCH_3W_PAIR1024_SIM_SRCS := tb/tb_fetch_3w_pair1024.sv
 FETCH_ISTREAM_SIM_SRCS := tb/tb_fetch_istream.sv
+FETCH_ISTREAM_BP9_SIM_SRCS := tb/tb_fetch_istream_bp9.sv
 FETCH_STREAM_BTB_SIM_SRCS := tb/tb_fetch_stream_btb.sv
 DECODE_ISTREAM_3W_SIM_SRCS := tb/tb_decode_istream_3w.sv
 PREFIX_ADDSUB_SIM_SRCS := tb/tb_prefix_addsub.sv

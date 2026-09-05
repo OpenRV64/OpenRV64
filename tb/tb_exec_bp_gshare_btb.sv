@@ -50,6 +50,7 @@ module tb_exec_bp_gshare_btb;
         .lookup_backward_i(lookup_backward),
         .lookup_instr_i(lookup_instr), .lookup_pc_i(lookup_pc),
         .lookup_id_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .lookup_observational_i(1'b0),
         .lookup_allocate_i(lookup_allocate),
         .resolve_valid_i(resolve_valid),
         .resolve_branch_i(resolve_branch),
