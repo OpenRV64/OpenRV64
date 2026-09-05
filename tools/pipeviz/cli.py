@@ -58,6 +58,20 @@ def main(argv=None):
                          "edges whose consumer issued exactly one cycle "
                          "after the producer's completion, by producer "
                          "class/latency and consumer PC")
+    ap.add_argument("--overlap", action="store_true",
+                    help="iteration overlap: period, lifetime, and "
+                         "iterations-in-flight, delimited by the "
+                         "hottest call site (or --overlap-pc)")
+    ap.add_argument("--overlap-pc", type=lambda x: int(x, 16),
+                    default=None, metavar="HEX",
+                    help="boundary PC for --overlap")
+    ap.add_argument("--pairs", action="store_true",
+                    help="back-to-back dependent pairs by static PC "
+                         "pair: chained/fusion candidates, with "
+                         "adjacency and near-miss columns")
+    ap.add_argument("--same-unit", action="store_true",
+                    help="restrict --pairs to producer/consumer of "
+                         "the same class (alu->alu, ...)")
     ap.add_argument("--head", action="store_true",
                     help="retire-head residency: which instructions sit "
                          "at the ROB head, tenure by PC and class, split "
@@ -96,7 +110,8 @@ def main(argv=None):
                         issue_blocked_report, retire_blocked_report,
                         control_report, src1_report, chains_report,
                         health_report, bubbles_report, head_report,
-                        wakeup_report)
+                        wakeup_report, pairs_report,
+                        overlap_report)
 
     t0 = time.time()
     progress = None
@@ -154,6 +169,16 @@ def main(argv=None):
         if did_something:
             print()
         print(head_report(trace, hist=args.hist))
+        did_something = True
+    if args.overlap:
+        if did_something:
+            print()
+        print(overlap_report(trace, boundary_pc=args.overlap_pc))
+        did_something = True
+    if args.pairs:
+        if did_something:
+            print()
+        print(pairs_report(trace, same_unit=args.same_unit))
         did_something = True
     if args.wakeup:
         if did_something:

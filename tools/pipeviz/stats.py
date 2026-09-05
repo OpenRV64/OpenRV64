@@ -639,6 +639,148 @@ def wakeup_report(trace, top=12):
     return "\n".join(out)
 
 
+def overlap_report(trace, boundary_pc=None):
+    """Iteration overlap: how many loop iterations are in flight.
+
+    Iterations are delimited by successive retired instances of a
+    boundary PC (default: the most frequent retired jump -- the hot
+    call site).  For each iteration: first issue, last completion.
+    The overlap of consecutive iterations and the Little's-law
+    concurrency say whether the machine advances through iterations
+    or runs them as a relay."""
+    if boundary_pc is None:
+        counts = {}
+        for r in trace.insns.values():
+            if r.retired and r.is_jump:
+                counts[r.pc] = counts.get(r.pc, 0) + 1
+        if not counts:
+            return "overlap: no retired jumps to use as a boundary"
+        boundary_pc = max(counts, key=counts.get)
+    calls = sorted(r.uid for r in trace.insns.values()
+                   if r.pc == boundary_pc and r.retired)
+    byuid = dict((r.uid, r) for r in trace.insns.values()
+                 if r.retired and r.issue_cycle is not None)
+    iters = []
+    for k in range(len(calls) - 1):
+        rs = [byuid[u] for u in range(calls[k], calls[k + 1])
+              if u in byuid]
+        if len(rs) < 5:
+            continue
+        fi = min(r.issue_cycle for r in rs)
+        lc = max(r.complete_cycle or r.issue_cycle for r in rs)
+        iters.append((fi, lc))
+    if len(iters) < 8:
+        return ("overlap: boundary %x yields only %d iterations"
+                % (boundary_pc, len(iters)))
+    periods = [b[0] - a[0] for a, b in zip(iters, iters[1:])
+               if 0 < b[0] - a[0] <= 200]
+    overlaps = [a[1] - b[0] for a, b in zip(iters, iters[1:])
+                if 0 < b[0] - a[0] <= 200]
+    spans = [lc - fi for fi, lc in iters]
+
+    def st(vs):
+        vs = sorted(vs)
+        n = len(vs)
+        return "p50=%-4d p90=%-4d mean=%.1f" % (
+            vs[n // 2], vs[n * 9 // 10], sum(vs) / float(n))
+
+    conc = (sum(spans) /
+            float(max(lc for _, lc in iters) - min(fi for fi, _ in iters)))
+    serial = sum(1 for o in overlaps if o <= 0)
+    out = []
+    out.append("iteration overlap (boundary pc %x, %d iterations):"
+               % (boundary_pc, len(iters)))
+    out.append("  period (start-to-start):   %s" % st(periods))
+    out.append("  lifetime (issue span):     %s" % st(spans))
+    out.append("  overlap (prev end - next start): %s" % st(overlaps))
+    out.append("  fully serial handoffs: %d (%.0f%%)"
+               % (serial, _pct(serial, len(overlaps))))
+    out.append("  avg iterations in flight (Little): %.2f" % conc)
+    return "\n".join(out)
+
+
+def pairs_report(trace, same_unit=False, top=24):
+    """Back-to-back dependent pairs: dependence edges where the
+    consumer issued the very next cycle after its producer (gap == 1
+    -- chained execution, visible in the trace).  Grouped by static
+    (producer pc, consumer pc), so a hot pair -- a fusion or chaining
+    candidate -- shows as one row with a big count.  The gap==2 column
+    is the near-miss population: pairs that one more cycle of wakeup
+    or forwarding would convert.
+
+    same_unit=True keeps only pairs whose ends are the same class
+    (alu->alu, load->load, ...) -- candidates that live in one unit.
+    """
+    from .model import ROB_D0_REG_WRITE
+    retired = sorted((r.uid, r) for r in trace.insns.values()
+                     if r.retired and r.rob_info is not None)
+    last_writer = [None] * 32
+    pairs = {}       # (ppc,cpc) -> [n, b2b, near, p_insn, c_insn, pk, ck]
+    cls_pair = {}    # (pk,ck) -> [n, b2b]
+    for uid, r in retired:
+        if r.issue_cycle is not None:
+            ck = _insn_class(r.instr)
+            for reg in (r.rs1, r.rs2):
+                if not reg or last_writer[reg] is None:
+                    continue
+                p = last_writer[reg]
+                if p.issue_cycle is None:
+                    continue
+                pk = _insn_class(p.instr)
+                if p.exec_worker_cycles:
+                    pk = "muldiv"
+                g = r.issue_cycle - p.issue_cycle
+                c = cls_pair.setdefault((pk, ck), [0, 0, 0])
+                c[0] += 1
+                if g == 1:
+                    c[1] += 1
+                if r.uid == p.uid + 1:
+                    c[2] += 1
+                e = pairs.setdefault((p.pc, r.pc),
+                                     [0, 0, 0, p.instr, r.instr, pk, ck,
+                                      0])
+                e[0] += 1
+                if g == 1:
+                    e[1] += 1
+                elif g == 2:
+                    e[2] += 1
+                if r.uid == p.uid + 1:
+                    e[7] += 1
+        if (r.rob_info >> ROB_D0_REG_WRITE) & 1 and r.rd:
+            last_writer[r.rd] = r
+
+    out = []
+    a = out.append
+    a("back-to-back dependent pairs (consumer issued producer+1)%s:"
+      % (", same-unit only" if same_unit else ""))
+    a("")
+    a("  by class pair (dependence edges / issued b2b / istream-adjacent):")
+    for (pk, ck), (n, b, adj) in sorted(cls_pair.items(),
+                                        key=lambda kv: -kv[1][2]):
+        if same_unit and pk != ck:
+            continue
+        a("    %-8s -> %-8s %9s edges  %8s b2b  %8s adjacent" % (
+            pk, ck, "{:,}".format(n), "{:,}".format(b),
+            "{:,}".format(adj)))
+    a("")
+    a("  top static pairs by istream adjacency (decode-fusible):")
+    a("    %-10s %-10s  %-10s %-10s %-13s %7s %7s %6s %6s %6s" % (
+        "prod pc", "insn", "cons pc", "insn", "classes", "edges",
+        "b2b", "b2b%", "gap2", "adj"))
+    rows = [(k, v) for k, v in pairs.items()
+            if not same_unit or v[5] == v[6]]
+    for (ppc, cpc), (n, b, near, pi, ci, pk, ck, adj) in sorted(
+            rows, key=lambda kv: (-kv[1][7], -kv[1][1]))[:top]:
+        a("    %-10x %08x   %-10x %08x   %-13s %7s %7s %5.1f%% %6s %6s" % (
+            ppc, pi, cpc, ci, "%s->%s" % (pk, ck), "{:,}".format(n),
+            "{:,}".format(b), _pct(b, n), "{:,}".format(near),
+            "{:,}".format(adj)))
+    a("")
+    a("  (b2b = chained in this trace; gap2 = one cycle short; adj = "
+      "adjacent in program order -- decode-fusible)")
+    return "\n".join(out)
+
+
 def bubbles_report(trace, phases=10, width=3):
     """Where pipeline width is lost, and why -- one unified view.
 
