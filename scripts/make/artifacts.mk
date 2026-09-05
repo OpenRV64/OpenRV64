@@ -161,6 +161,7 @@ FD_UOP_HARNESS_COMPACT_MUL_SIM_BUILD := \
 	sim/fd_uop_harness_compact_mul_tb.vvp
 RETIRE_3P_SIM_BUILD := sim/retire_3p_tb.vvp
 RETIRE_3P_BANKED_SIM_BUILD := sim/retire_3p_banked_tb.vvp
+TEST_MARKER_3P_SIM_BUILD := sim/test_marker_3p_tb.vvp
 BACKEND_3P_SIM_BUILD := sim/backend_3p_tb.vvp
 BACKEND_3P_BANKED_SIM_BUILD := sim/backend_3p_banked_tb.vvp
 BACKEND_3P_BANKED_TOMASULO_SIM_BUILD := \

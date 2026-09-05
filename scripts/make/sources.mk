@@ -130,7 +130,8 @@ EXCEPT_SRCS := rtl/core/except/except-defs.v rtl/core/except/except.v \
 	rtl/core/except/vector.v
 STAGE_SRCS := rtl/core/stage/stage.v rtl/core/stage/elastic_buffer.v
 RETIRE_SRCS := rtl/core/retire/retire.v rtl/core/retire/retire_queue_3p.v \
-	rtl/core/retire/retire_records_3p.v rtl/core/retire/retire_3p.v \
+	rtl/core/retire/retire_records_3p.v rtl/core/retire/test_marker_3p.v \
+	rtl/core/retire/retire_3p.v \
 	rtl/core/retire/retire_3p_banked.v
 TRACE_SRCS := rtl/core/trace/trace-defs.v \
 	rtl/core/trace/tomasulo-trace-defs.v
@@ -185,6 +186,7 @@ CORE_3P_AXI_SRCS := $(CORE_DEBUG_STUB_SRCS) \
 	rtl/core/exec/lsu/rv64-a.v rtl/core/exec/br.v $(BP_SRC) \
 	rtl/core/exec/system/csr.v rtl/core/retire/retire_queue_3p.v \
 	rtl/core/retire/retire_records_3p.v \
+	rtl/core/retire/test_marker_3p.v \
 	rtl/core/retire/retire_3p.v rtl/core/retire/retire_3p_banked.v \
 	$(EXCEPT_SRCS) $(TRACE_SRCS)
 CLINT_SRCS := rtl/clint/clint.v

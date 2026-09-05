@@ -313,12 +313,6 @@ module openrv64_fetch_istream #(
         ((PREDICT_LOOKAHEAD_SECTORS - 1) * SECTOR_BYTES);
     wire btb_tail_open = active_q && (ftq_count_q != 0) &&
         ftq_valid_q[ftq_tail_q] && !ftq_end_valid_q[ftq_tail_q];
-    assign btb_lookup_valid_o = btb_tail_open && !btb_outstanding_q &&
-        (ftq_count_q < FTQ_DEPTH) && (btb_scan_pc_q <= tail_scan_limit) &&
-        !restart_i && !redirect_i && !flush_i && !stall_i;
-    assign btb_lookup_pc_o = btb_scan_pc_q;
-    assign btb_lookup_request_id_o = btb_next_request_id_q;
-    wire btb_lookup_fire = btb_lookup_valid_o && btb_lookup_ready_i;
     wire btb_response_match = btb_response_valid_i && btb_outstanding_q &&
         (btb_response_request_id_i == btb_outstanding_request_id_q);
     wire btb_response_slot_live =
@@ -352,6 +346,47 @@ module openrv64_fetch_istream #(
         btb_response_control_length_valid &&
         !btb_response_successor_pc_i[0] &&
         (ftq_count_q < FTQ_DEPTH);
+
+    // The directory itself accepts a lookup every cycle.  Retire its current
+    // synchronous miss and launch the next sector on the same cycle, instead
+    // of imposing an artificial empty cycle between requests.  A hit creates
+    // a new FTQ segment.  It may chain directly only when closing the sole FTQ
+    // entry; once a speculative segment is already queued, hit chaining waits
+    // for registered topology rather than recursively outrunning recovery.
+    wire btb_pipeline_response = btb_response_match &&
+        btb_response_slot_live && !predicted_reject_fire &&
+        (!btb_append_segment || (ftq_count_q == 1));
+    wire [`RV64_XLEN-1:0] btb_pipeline_next_pc = btb_append_segment ?
+        btb_response_successor_pc_i :
+        ({btb_outstanding_pc_q[`RV64_XLEN-1:SECTOR_BYTE_BITS],
+          {SECTOR_BYTE_BITS{1'b0}}} + SECTOR_BYTES);
+    wire [FTQ_INDEX_WIDTH-1:0] btb_pipeline_next_slot =
+        btb_append_segment ?
+            ((ftq_tail_q + 1'b1) & (FTQ_DEPTH - 1)) :
+            btb_outstanding_slot_q;
+    wire [`RV64_XLEN-1:0] btb_pipeline_scan_base =
+        btb_append_segment ? btb_response_successor_pc_i : tail_scan_base;
+    wire [`RV64_XLEN-1:0] btb_pipeline_scan_limit =
+        btb_pipeline_scan_base +
+        ((PREDICT_LOOKAHEAD_SECTORS - 1) * SECTOR_BYTES);
+    wire btb_pipeline_room = btb_append_segment ?
+        (predicted_transfer_fire ||
+         (ftq_count_q < (FTQ_DEPTH - 1))) :
+        (predicted_transfer_fire || (ftq_count_q < FTQ_DEPTH));
+    wire btb_pipeline_lookup = btb_pipeline_response &&
+        btb_pipeline_room &&
+        (btb_pipeline_next_pc <= btb_pipeline_scan_limit);
+    wire btb_idle_lookup = btb_tail_open && !btb_outstanding_q &&
+        (ftq_count_q < FTQ_DEPTH) && (btb_scan_pc_q <= tail_scan_limit);
+    assign btb_lookup_valid_o =
+        (btb_pipeline_lookup || btb_idle_lookup) &&
+        !restart_i && !redirect_i && !flush_i && !stall_i;
+    assign btb_lookup_pc_o = btb_pipeline_lookup ?
+        btb_pipeline_next_pc : btb_scan_pc_q;
+    assign btb_lookup_request_id_o = btb_next_request_id_q;
+    wire [FTQ_INDEX_WIDTH-1:0] btb_lookup_slot =
+        btb_pipeline_lookup ? btb_pipeline_next_slot : ftq_tail_q;
+    wire btb_lookup_fire = btb_lookup_valid_o && btb_lookup_ready_i;
     wire [`RV64_XLEN-1:0] stream_rebuild_pc = restart_i ?
         restart_pc_i : redirect_pc_i;
     wire [`RV64_XLEN-1:0] consumed_sector_pc = {
@@ -779,14 +814,6 @@ module openrv64_fetch_istream #(
                 ftq_end_valid_q[reset_index] <= 1'b0;
             end
         end else begin
-            if (btb_lookup_fire) begin
-                btb_outstanding_q <= 1'b1;
-                btb_outstanding_request_id_q <= btb_next_request_id_q;
-                btb_outstanding_pc_q <= btb_scan_pc_q;
-                btb_outstanding_slot_q <= ftq_tail_q;
-                btb_outstanding_generation_q <= generation_q;
-                btb_next_request_id_q <= btb_next_request_id_q + 1'b1;
-            end
             if (btb_response_match) begin
                 btb_outstanding_q <= 1'b0;
                 if (btb_append_segment) begin
@@ -819,6 +846,16 @@ module openrv64_fetch_istream #(
                         {SECTOR_BYTE_BITS{1'b0}}
                     } + SECTOR_BYTES;
                 end
+            end
+            // This follows response retirement deliberately: a pipelined
+            // response/lookup pair leaves the newly launched request live.
+            if (btb_lookup_fire) begin
+                btb_outstanding_q <= 1'b1;
+                btb_outstanding_request_id_q <= btb_next_request_id_q;
+                btb_outstanding_pc_q <= btb_lookup_pc_o;
+                btb_outstanding_slot_q <= btb_lookup_slot;
+                btb_outstanding_generation_q <= generation_q;
+                btb_next_request_id_q <= btb_next_request_id_q + 1'b1;
             end
 
             if (predicted_transfer_fire) begin

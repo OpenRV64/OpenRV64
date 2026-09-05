@@ -46,6 +46,7 @@ module openrv64_rv64_top_3p #(
     parameter ENABLE_ALU2 = 0,
     parameter ENABLE_ALU_CHAINING = 0,
     parameter ENABLE_LOAD_CONFLICT_RECORD = 0,
+    parameter integer ENABLE_TEST_MARKERS = 0,
     parameter ENABLE_DECODE_FUSION = 0,
     parameter ENABLE_POSTED_STORES = 1,
     parameter ENABLE_ZICCLSM = 1,
@@ -268,6 +269,7 @@ module openrv64_rv64_top_3p #(
     reg [63:0] pc_q;
     reg [63:0] trace_cycle_q;
     reg [63:0] trace_next_id_q;
+    reg [1:0] trace_frontend_reserved_q;
     reg [63:0] dbg_pc_q;
     reg [31:0] dbg_instr_q;
     reg halted_q;
@@ -425,6 +427,7 @@ module openrv64_rv64_top_3p #(
     wire [63:0] backend_retire_wdata;
     wire [2:0] backend_retire_arch;
     wire [2:0] backend_retire_count;
+    wire backend_test_start;
     wire backend_wfi =
         (ENABLE_WFI_SLEEP != 0) &&
         (|backend_retire_arch) &&
@@ -1901,16 +1904,24 @@ module openrv64_rv64_top_3p #(
     // The fetch trace IDs are a rolling base for the currently presented
     // prefix.  Ordinary partial consumption advances by the accepted count,
     // which keeps an unaccepted lane's ID stable when it shifts down.  A
-    // fetch restart replaces the entire presented prefix, so consume every ID
-    // that was exposed even when only an older control lane was accepted.
-    // Otherwise a squashed frontend candidate's ID can be reused for an
-    // unrelated instruction at the restart target.
-    wire [1:0] frontend_presented_count =
+    // Fetch IDs are projected as base+lane.  A predicted control may discard
+    // a younger suffix without consuming it, while retaining older lanes.
+    // Remember the highest projected lane until the surviving prefix drains;
+    // otherwise that discarded suffix ID is reused at the control target.
+    wire [1:0] frontend_visible_count =
         {1'b0, fetch_decode_valid[0]} +
         {1'b0, fetch_decode_valid[1]} +
         {1'b0, fetch_decode_valid[2]};
+    wire [1:0] frontend_reserved_now =
+        (frontend_visible_count > trace_frontend_reserved_q) ?
+            frontend_visible_count : trace_frontend_reserved_q;
+    wire frontend_all_visible_consumed =
+        (frontend_visible_count != 0) &&
+        (frontend_decode_count == frontend_visible_count);
     wire [1:0] frontend_trace_id_count = fetch3_restart ?
-        frontend_presented_count : frontend_decode_count;
+        frontend_reserved_now :
+        frontend_all_visible_consumed ? frontend_reserved_now :
+                                        frontend_decode_count;
     wire bp_sideband_response_ready = bp_sideband_lookup &&
         bp_dispatch_valid_q && !bp_decode_stall &&
         !control_flush && !control_redirect;
@@ -2318,6 +2329,7 @@ module openrv64_rv64_top_3p #(
         .ENABLE_ALU2(ENABLE_ALU2),
         .ENABLE_ALU_CHAINING(ENABLE_ALU_CHAINING),
         .ENABLE_LOAD_CONFLICT_RECORD(ENABLE_LOAD_CONFLICT_RECORD),
+        .ENABLE_TEST_MARKERS(ENABLE_TEST_MARKERS),
         .ISSUE_WINDOW_DEPTH(ISSUE_WINDOW_DEPTH),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
@@ -2427,6 +2439,7 @@ module openrv64_rv64_top_3p #(
         .branch_retire_age_addr_o(branch_retire_age_addr),
         .retire_arch_o(backend_retire_arch),
         .retire_count_o(backend_retire_count),
+        .test_start_o(backend_test_start),
         .exception_o(backend_exception), .halt_o(backend_halt),
         .irq_o(backend_irq), .mret_o(backend_mret), .sret_o(backend_sret),
         .fence_i_o(backend_fence_i), .sfence_vma_o(backend_sfence_vma),
@@ -3146,6 +3159,7 @@ module openrv64_rv64_top_3p #(
             pc_q <= RESET_VECTOR;
             trace_cycle_q <= 64'd0;
             trace_next_id_q <= 64'd1;
+            trace_frontend_reserved_q <= 2'd0;
             dbg_pc_q <= RESET_VECTOR;
             dbg_instr_q <= `RV64_INSTR_NOP;
             halted_q <= 1'b0;
@@ -3181,10 +3195,18 @@ module openrv64_rv64_top_3p #(
 
             if (ENABLE_TRACE) begin
                 trace_cycle_q <= trace_cycle_q + 64'd1;
-                if (use_icx_bus && (frontend_trace_id_count != 0))
-                    trace_next_id_q <= trace_next_id_q +
-                                       frontend_trace_id_count;
-                else if (!use_icx_bus && fetch_pc_valid)
+                if (use_icx_bus) begin
+                    if (frontend_trace_id_count != 0)
+                        trace_next_id_q <= trace_next_id_q +
+                                           frontend_trace_id_count;
+                    if (fetch3_restart || frontend_all_visible_consumed)
+                        trace_frontend_reserved_q <= 2'd0;
+                    else if (frontend_decode_count != 0)
+                        trace_frontend_reserved_q <=
+                            frontend_reserved_now - frontend_decode_count;
+                    else
+                        trace_frontend_reserved_q <= frontend_reserved_now;
+                end else if (fetch_pc_valid)
                     trace_next_id_q <= trace_next_id_q +
                                        (pc_q[2] ? 64'd1 : 64'd2);
             end

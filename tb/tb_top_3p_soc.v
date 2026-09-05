@@ -815,6 +815,14 @@ module tb_top_3p_soc #(
     integer cycles;
     integer max_cycles;
     integer retired;
+    integer test_cycles;
+    integer test_retired;
+    integer reported_cycles;
+    integer reported_retired;
+    integer test_start_cycle;
+    integer test_start_events;
+    reg test_measurement_active;
+    reg test_measurement_seen;
     integer timeout_snapshot_idx;
     integer progress_interval_cycles;
     integer progress_next_cycle;
@@ -2932,6 +2940,7 @@ module tb_top_3p_soc #(
         .ENABLE_ALU2(ENABLE_ALU2),
         .ENABLE_ALU_CHAINING(ENABLE_ALU_CHAINING),
         .ENABLE_LOAD_CONFLICT_RECORD(ENABLE_LOAD_CONFLICT_RECORD),
+        .ENABLE_TEST_MARKERS(1),
         .ENABLE_DECODE_FUSION(ENABLE_DECODE_FUSION),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
@@ -4835,6 +4844,14 @@ module tb_top_3p_soc #(
         done_pc = 0;
         done_pc_valid = 1'b0;
         retired = 0;
+        test_cycles = 0;
+        test_retired = 0;
+        reported_cycles = 0;
+        reported_retired = 0;
+        test_start_cycle = -1;
+        test_start_events = 0;
+        test_measurement_active = 1'b0;
+        test_measurement_seen = 1'b0;
         progress_interval_cycles = 0;
         progress_next_cycle = 0;
         icx_requests = 0;
@@ -5550,6 +5567,20 @@ module tb_top_3p_soc #(
              cycles = cycles + 1) begin
             @(posedge clk);
             #1;
+            if (dut.backend_test_start) begin
+                if (test_measurement_active)
+                    $fatal(1, "duplicate START_TEST marker");
+                test_measurement_active = 1'b1;
+                test_measurement_seen = 1'b1;
+                test_cycles = 0;
+                test_retired = 0;
+                test_start_cycle = cycles;
+                test_start_events = test_start_events + 1;
+                $display("START_TEST cycle=%0d", cycles);
+            end else if (test_measurement_active) begin
+                test_cycles = test_cycles + 1;
+                test_retired = test_retired + dut.backend_retire_count;
+            end
             if ((pipeline_trace_start_cycle >= 0) &&
                 (cycles >= pipeline_trace_start_cycle) &&
                 (cycles < pipeline_trace_start_cycle +
@@ -8547,7 +8578,14 @@ module tb_top_3p_soc #(
                     fence_external_requests_q,
                     fence_external_completions_q);
         end
-        ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
+        reported_cycles = test_measurement_seen ? test_cycles : cycles;
+        reported_retired = test_measurement_seen ? test_retired : retired;
+        ipc = (reported_cycles != 0) ?
+              $itor(reported_retired) / $itor(reported_cycles) : 0.0;
+        $display(
+            "PERF_TEST_REGION seen=%0d start_events=%0d start_cycle=%0d total_cycles=%0d total_retired=%0d cycles=%0d retired=%0d IPC=%0.4f",
+            test_measurement_seen, test_start_events, test_start_cycle,
+            cycles, retired, reported_cycles, reported_retired, ipc);
         $display(
             "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d rename_mode=%0d fetch_istream=%0d phys_regs=%0d issue_window=%0d speculation_window=%0d alu2=%0d alu_chaining=%0d load_conflict_record=%0d decode_fusion=%0d oracle_branches=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d scheduler_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_CAROUSEL,
@@ -8564,7 +8602,7 @@ module tb_top_3p_soc #(
             `OPENRV64_3P_RESULT_READY_CONTROL_RELEASE, RETIRE_DEPTH,
             ISSUE_WINDOW_DEPTH,
             ENABLE_POSTED_STORES, DDR3_ENABLE, MEMORY_TIMING_MODEL,
-            cycles, retired, ipc,
+            reported_cycles, reported_retired, ipc,
             dut.u_backend.debug_arch_a0, L1I_CACHE_BYTES,
             L1I_FETCH_DATA_WIDTH, L1D_CACHE_BYTES, L2_BYTES, L2_WAYS,
             RAM_BYTES);

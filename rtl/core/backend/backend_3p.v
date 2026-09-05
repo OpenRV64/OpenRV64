@@ -34,6 +34,7 @@ module openrv64_backend_3p #(
     parameter integer ENABLE_ALU2 = 0,
     parameter integer ENABLE_ALU_CHAINING = 0,
     parameter integer ENABLE_LOAD_CONFLICT_RECORD = 0,
+    parameter integer ENABLE_TEST_MARKERS = 0,
     parameter integer ISSUE_WINDOW_DEPTH = 16,
     parameter integer RENAME_MODE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
@@ -172,6 +173,7 @@ module openrv64_backend_3p #(
 
     output wire [2:0]                   retire_arch_o,
     output wire [2:0]                   retire_count_o,
+    output wire                         test_start_o,
     output wire                         exception_o,
     output wire                         halt_o,
     output wire                         irq_o,
@@ -630,6 +632,7 @@ module openrv64_backend_3p #(
     wire [2:0] queue_retire_accept;
     wire [3*`OPENRV64_INSTR_ID_WIDTH-1:0] queue_retire_id;
     wire [3*RETIRE_RECORD_WIDTH-1:0] queue_retire_record;
+    wire [3*RETIRE_RESULT_WIDTH-1:0] queue_retire_commit_raw;
     wire [3*RETIRE_RESULT_WIDTH-1:0] queue_retire_commit;
     wire [3*64-1:0] queue_retire_trace;
     wire [3*SLOT_WIDTH-1:0] queue_retire_slot;
@@ -6109,10 +6112,30 @@ module openrv64_backend_3p #(
         .complete_result_i(complete_retire_result),
         .read_slot_i(queue_retire_slot),
         .read_record_o(queue_retire_record),
-        .read_result_o(queue_retire_commit),
+        .read_result_o(queue_retire_commit_raw),
         .read_trace_o(queue_retire_trace),
         .complete_read_slot_i(complete_slot),
         .complete_read_record_o(queue_complete_record)
+    );
+
+    // A tagged START_TEST EBREAK keeps its persistent dispatch barrier but
+    // retires without entering the breakpoint/halt path.  Conditioning the
+    // compact result here gives banked and legacy retirement identical
+    // behavior without widening the ROB record.
+    openrv64_test_marker_3p #(
+        .ENABLE(ENABLE_TEST_MARKERS),
+        .META_WIDTH(RETIRE_RECORD_WIDTH),
+        .RESULT_WIDTH(RETIRE_RESULT_WIDTH)
+    ) u_test_marker (
+        .clk(clk),
+        .rst_n(rst_n),
+        .flush_i(flush_i),
+        .queue_valid_i(queue_retire_valid),
+        .queue_accept_i(queue_retire_accept),
+        .queue_meta_i(queue_retire_record),
+        .queue_result_i(queue_retire_commit_raw),
+        .queue_result_o(queue_retire_commit),
+        .start_test_o(test_start_o)
     );
 
 `ifndef SYNTHESIS

@@ -248,6 +248,7 @@ module tb_fetch_istream;
     initial begin
         reg [15:0] partial_halfword;
         integer stale_lookup_timeout;
+        reg [31:0] chained_lookup_request_id;
 
         clk = 1'b0;
         rst_n = 1'b0;
@@ -296,12 +297,37 @@ module tb_fetch_istream;
         btb_lookup_ready = 1'b1;
         tick();
         btb_response_valid = 1'b1;
+        btb_response_hit = 1'b0;
+        #1;
+        if (!btb_lookup_valid || (btb_lookup_pc != 64'h10) ||
+            (btb_lookup_request_id == btb_response_request_id))
+            $fatal(1,
+                "BTB miss did not pipeline the next-sector lookup");
+        tick();
+        btb_response_valid = 1'b0;
+
+        // A hit closing the sole FTQ entry may launch its successor directly.
+        btb_lookup_ready = 1'b0;
+        restart = 1'b1;
+        tick();
+        restart = 1'b0;
+        wait_request(64'h0, 1'b0);
+        while (!btb_lookup_valid || (btb_lookup_pc != 64'h0)) tick();
+        btb_response_request_id = btb_lookup_request_id;
+        btb_lookup_ready = 1'b1;
+        tick();
+        btb_response_valid = 1'b1;
         btb_response_hit = 1'b1;
         btb_response_control_pc = 64'h0a;
         btb_response_control_end_pc = 64'h0e;
         btb_response_successor_pc = 64'h100;
         btb_response_taken = 1'b1;
         btb_response_prediction_token = 32'h55;
+        #1;
+        if (!btb_lookup_valid || (btb_lookup_pc != 64'h100) ||
+            (btb_lookup_request_id == btb_response_request_id))
+            $fatal(1,
+                "sole-entry BTB hit did not pipeline the successor lookup");
         tick();
         btb_response_valid = 1'b0;
 
@@ -486,6 +512,40 @@ module tb_fetch_istream;
         if ((stream_pc != 64'h0e) || istream_prediction_valid ||
             (ftq_count != 1))
             $fatal(1, "late BTB response installed a consumed boundary");
+
+        // Do not combinationally recurse through a second predicted segment.
+        // That response may append normally, but the next lookup must observe
+        // the registered FTQ topology.
+        restart_pc = 64'h0;
+        btb_lookup_ready = 1'b0;
+        restart = 1'b1;
+        tick();
+        restart = 1'b0;
+        while (!btb_lookup_valid || (btb_lookup_pc != 64'h0)) tick();
+        btb_response_request_id = btb_lookup_request_id;
+        btb_lookup_ready = 1'b1;
+        tick();
+        btb_response_valid = 1'b1;
+        btb_response_hit = 1'b1;
+        btb_response_control_pc = 64'h0a;
+        btb_response_control_end_pc = 64'h0e;
+        btb_response_successor_pc = 64'h100;
+        #1;
+        if (!btb_lookup_valid || (btb_lookup_pc != 64'h100))
+            $fatal(1, "sole-entry hit did not chain in depth test");
+        chained_lookup_request_id = btb_lookup_request_id;
+        tick();
+        btb_response_request_id = chained_lookup_request_id;
+        btb_response_control_pc = 64'h10a;
+        btb_response_control_end_pc = 64'h10e;
+        btb_response_successor_pc = 64'h200;
+        #1;
+        if (btb_lookup_valid)
+            $fatal(1, "BTB recursively chained through speculative FTQ state");
+        tick();
+        btb_response_valid = 1'b0;
+        if (ftq_count != 3)
+            $fatal(1, "registered second hit did not append normally");
 
         // Fetch preserves raw data and supplies fault qualification; decode
         // decides how to represent the fault and must not depend on fake NOPs.

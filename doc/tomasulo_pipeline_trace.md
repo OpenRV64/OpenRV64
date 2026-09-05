@@ -40,8 +40,25 @@ The runner places these files directly in `run/log/<run-id>/`:
 - the usual effective configuration, source hashes, dirty patch, build log,
   run log, and validation status.
 
-The default records the complete run and can be large.  Bound the sampled
-window without bypassing the managed runner:
+By default, capture waits for the retirement-side `START_TEST` marker emitted
+by `OPENRV64_START_TEST` in `sw/runtime/test_markers.inc`.  The marker is the
+two-instruction sequence `addi x0,x0,0x7a1; ebreak`; recognition occurs only
+at ordered retirement, the tagged `ebreak` has no architectural effect, and
+an untagged `ebreak` retains the normal breakpoint/termination behavior.  The
+default CoreMark entry emits one marker after its setup and before the measured
+loop.  Thus boot, translation setup, and cache/predictor state established
+before the marker are excluded from both the reported cycle/retirement interval
+and the trace.
+
+When a marker is seen, the primary `PERF_ICX_L2` `cycles`, `retired`, and
+`IPC` fields use that interval.  `PERF_TEST_REGION` records both interval and
+whole-simulation totals.  The remaining detailed `PERF_*` diagnostic counters
+are still reset-to-end totals; they have not been converted to marker-relative
+deltas.
+
+Set a non-negative `TRACE_START` to override marker gating with an absolute
+simulation cycle, for example to diagnose boot or frontend warmup.  A bounded
+absolute window can be selected without bypassing the managed runner:
 
 ```sh
 run/run run/cfg/coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-trace.cfg \
@@ -50,7 +67,8 @@ run/run run/cfg/coremark-sv39-3p-tomasulo-rob64-sched32-ddr3-trace.cfg \
   CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_CYCLES=2000
 ```
 
-`CYCLES=0` means record from `START` through simulation end.  The default file
+`TRACE_START=-1` means wait for `START_TEST`; this is the default.  `CYCLES=0`
+means record from the selected start through simulation end.  The default file
 flush interval is 1024 cycles and is configurable with
 `CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_FLUSH`.
 

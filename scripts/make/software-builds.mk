@@ -143,7 +143,8 @@ $(FP_FAULTS_MEMH): $(FP_FAULTS_BIN) tools/bin2mem.py
 		--size $(FP_FAULTS_MEMH_BYTES) --word-bytes 32
 
 $(COREMARK_LOOP_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
-		sw/runtime/c_start.inc sw/coremark_loop_start.S \
+		sw/runtime/c_start.inc sw/runtime/test_markers.inc \
+		sw/coremark_loop_start.S \
 		sw/coremark_loop.c sw/openrv64.ld
 	$(RISCV_CC) $(COREMARK_LOOP_CFLAGS) -nostdlib \
 		-Wl,--build-id=none,--gc-sections,-Map,$(COREMARK_LOOP_MAP) \
@@ -251,7 +252,8 @@ $(COREMARK_BARE_RUN_DISASM): $(COREMARK_BARE_RUN_ELF)
 	$(RISCV_OBJDUMP) -d -M no-aliases $< > $@
 
 $(CORE_3P_MAGIC_ELF): $(OPENRV64_MAKEFILES) sw/runtime/bare.S \
-		sw/runtime/c_start.inc sw/coremark_loop_start.S \
+		sw/runtime/c_start.inc sw/runtime/test_markers.inc \
+		sw/coremark_loop_start.S \
 		sw/coremark_loop.c sw/openrv64-magic.ld
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(COREMARK_LOOP_CFLAGS) -nostdlib \
@@ -268,7 +270,8 @@ $(CORE_3P_MAGIC_MEMH): $(CORE_3P_MAGIC_BIN) tools/bin2mem.py
 		--size $(CORE_3P_MAGIC_SRAM_BYTES) --word-bytes 32
 
 $(CORE_3P_VM_ELF): $(OPENRV64_MAKEFILES) sw/runtime/sv39.S \
-		sw/runtime/c_start.inc sw/runtime/openrv64-sv39.ld \
+		sw/runtime/c_start.inc sw/runtime/test_markers.inc \
+		sw/runtime/openrv64-sv39.ld \
 		sw/coremark_loop_start.S sw/coremark_loop.c
 	mkdir -p $(dir $@)
 	$(RISCV_CC) $(COREMARK_VM_CFLAGS) -nostdlib \

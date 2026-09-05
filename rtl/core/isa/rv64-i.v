@@ -165,4 +165,10 @@
 `define RV64_INSTR_ECALL 32'h0000_0073
 `define RV64_INSTR_EBREAK 32'h0010_0073
 
+// Repository-local test-control tag.  ADDI x0,x0,imm is an architectural
+// HINT, so this word has no GPR side effect.  When test-marker support is
+// enabled, an immediately following 32-bit EBREAK names START_TEST instead
+// of taking the ordinary breakpoint/halt path.
+`define OPENRV64_INSTR_START_TEST_HINT 32'h7a10_0013
+
 `endif

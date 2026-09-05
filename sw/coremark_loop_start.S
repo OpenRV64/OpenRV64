@@ -1,5 +1,6 @@
 .section .text.startup, "ax", @progbits
 .option norvc
+#include "runtime/test_markers.inc"
 .globl main
 .type main, @function
 
@@ -14,11 +15,16 @@
 main:
     addi sp, sp, -16
     sd   ra, 8(sp)
+#if COREMARK_LOOP_OUTER_ITERATIONS != 1
+    sd   s0, 0(sp)
+    li   s0, COREMARK_LOOP_OUTER_ITERATIONS
+#endif
+
+    OPENRV64_START_TEST
+
 #if COREMARK_LOOP_OUTER_ITERATIONS == 1
     call coremark_loop
 #else
-    sd   s0, 0(sp)
-    li   s0, COREMARK_LOOP_OUTER_ITERATIONS
 1:
     call coremark_loop
     addi s0, s0, -1

@@ -18,10 +18,19 @@ generate
             2*$clog2(PHYS_REG_COUNT + 1);
 
         integer ttrace_fd;
-        reg [1023:0] ttrace_path;
-        reg [31:0] ttrace_start_cycle;
+        // Managed run IDs can exceed 128 bytes once configuration qualifiers
+        // are included.  Keep enough packed-string storage for the complete
+        // absolute artifact path; truncating its leading bytes makes $fopen
+        // fail before simulation starts.
+        reg [4095:0] ttrace_path;
+        // A negative start selects the retirement-side START_TEST marker.
+        // Non-negative values retain the absolute-cycle diagnostic override.
+        integer ttrace_start_cycle;
         reg [31:0] ttrace_cycle_count;
         integer ttrace_flush_cycles;
+        reg ttrace_marker_mode;
+        reg ttrace_capture_active;
+        reg [31:0] ttrace_capture_start_cycle;
         reg [63:0] ttrace_rows;
         integer ttrace_lane;
         integer ttrace_slot;
@@ -157,7 +166,7 @@ generate
 
         initial begin
             ttrace_fd = 0;
-            ttrace_start_cycle = 32'd0;
+            ttrace_start_cycle = -1;
             ttrace_cycle_count = 32'd0;
             ttrace_flush_cycles = 1024;
             ttrace_rows = 64'd0;
@@ -167,6 +176,9 @@ generate
                                 ttrace_cycle_count)) begin end
             if ($value$plusargs("pipeline_state_trace_flush=%d",
                                 ttrace_flush_cycles)) begin end
+            ttrace_marker_mode = (ttrace_start_cycle < 0);
+            ttrace_capture_active = 1'b0;
+            ttrace_capture_start_cycle = 32'd0;
             if ($value$plusargs("pipeline_state_trace=%s", ttrace_path)) begin
                 ttrace_fd = $fopen(ttrace_path, "w");
                 if (ttrace_fd == 0)
@@ -174,9 +186,15 @@ generate
                            ttrace_path);
                 $fdisplay(ttrace_fd,
                     "schema,cycle,insn_id,core_id,pc,instr,stage,slot,lane,state,reason,blocker_id,flags,detail0,detail1");
-                $display("PIPELINE_STATE_TRACE path=%0s start=%0d cycles=%0d",
-                         ttrace_path, ttrace_start_cycle,
-                         ttrace_cycle_count);
+                if (ttrace_marker_mode)
+                    $display(
+                        "PIPELINE_STATE_TRACE path=%0s start=START_TEST cycles=%0d",
+                        ttrace_path, ttrace_cycle_count);
+                else
+                    $display(
+                        "PIPELINE_STATE_TRACE path=%0s start=%0d cycles=%0d",
+                        ttrace_path, ttrace_start_cycle,
+                        ttrace_cycle_count);
             end
         end
 
@@ -187,9 +205,24 @@ generate
                         "openrv64-pipeline-state-v2 cycle overflow: %016h",
                         dut.trace_cycle_q);
                 ttrace_cycle = dut.trace_cycle_q[31:0];
-                if ((ttrace_cycle >= ttrace_start_cycle) &&
+
+                if (!ttrace_capture_active) begin
+                    if (ttrace_marker_mode && dut.backend_test_start) begin
+                        ttrace_capture_active = 1'b1;
+                        ttrace_capture_start_cycle = ttrace_cycle;
+                        $display(
+                            "PIPELINE_STATE_TRACE_START cycle=%0d source=START_TEST",
+                            ttrace_cycle);
+                    end else if (!ttrace_marker_mode &&
+                                 (ttrace_cycle >= ttrace_start_cycle)) begin
+                        ttrace_capture_active = 1'b1;
+                        ttrace_capture_start_cycle = ttrace_start_cycle;
+                    end
+                end
+
+                if (ttrace_capture_active &&
                     ((ttrace_cycle_count == 0) ||
-                     ((ttrace_cycle - ttrace_start_cycle) <
+                     ((ttrace_cycle - ttrace_capture_start_cycle) <
                       ttrace_cycle_count))) begin
                     // Fetch output and combinational decode/admission gate.
                     for (ttrace_lane = 0; ttrace_lane < 3;

@@ -571,8 +571,10 @@ endif
 CORE_3P_ICX_L2_PIPELINE_STATE_TRACE ?=
 CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_BZIP2 ?=
 CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_REPORT ?=
-CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_START ?= 0
-# Zero records every cycle from START through the end of simulation.
+# Negative waits for the retired START_TEST marker.  A non-negative value is
+# an explicit absolute-cycle override for boot/front-end diagnostics.
+CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_START ?= -1
+# Zero records every cycle from the selected start through simulation end.
 CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_CYCLES ?= 0
 CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_FLUSH ?= 1024
 CORE_3P_ICX_L2_STORE_WAVE_TRACE ?= 0

@@ -73,7 +73,8 @@
 .PHONY: sim-decode-fusion
 .PHONY: sim-exec-alu-rv64-m-fpga
 .PHONY: sim-lsq-committed-store
-.PHONY: sim-regfile sim-retire-3p-banked sim-backend-3p-banked \
+.PHONY: sim-regfile sim-retire-3p-banked sim-test-marker-3p \
+	sim-backend-3p-banked \
 	sim-backend-3p-banked-tomasulo sim-backend-3p-banked-window
 .PHONY: sim-top-3p-banked
 .PHONY: sim-vec sim-rv64-i-vec sim-exec-vec sim-exec-vec-lsu \

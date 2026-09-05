@@ -115,6 +115,13 @@ $(RETIRE_3P_BANKED_SIM_BUILD): rtl/core/retire/retire_3p.v \
 		rtl/core/retire/retire_3p.v \
 		rtl/core/retire/retire_3p_banked.v tb/tb_retire_3p_banked.sv
 
+$(TEST_MARKER_3P_SIM_BUILD): rtl/core/retire/test_marker_3p.v \
+		tb/tb_test_marker_3p.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_test_marker_3p \
+		-o $(TEST_MARKER_3P_SIM_BUILD) \
+		rtl/core/retire/test_marker_3p.v tb/tb_test_marker_3p.sv
+
 $(BACKEND_3P_SIM_BUILD): tb/tb_backend_3p.sv $(BACKEND_SRCS) \
 	$(DISPATCH_SRCS) $(REG_SRCS) $(EXEC_SRCS) $(RETIRE_SRCS) \
 	$(EXCEPT_SRCS) $(ISA_SRCS) $(ARITH_DEPS)
