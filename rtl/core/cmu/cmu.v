@@ -24,7 +24,7 @@ module openrv64_cmu #(
     output reg                              csr_valid_o,
     output reg                              csr_writable_o,
 
-    input  wire [1:0]                       retire_count_i,
+    input  wire [2:0]                       retire_count_i,
     input  wire [`OPENRV64_CMU_EVENT_COUNT-1:0] event_pulses_i
 );
 
@@ -95,7 +95,7 @@ module openrv64_cmu #(
     wire [`RV64_XLEN-1:0] minstret_read_value = minstret_q +
         (mcountinhibit_q[`RV64_MCOUNTER_IR_BIT] ?
          {`RV64_XLEN{1'b0}} :
-         {{(`RV64_XLEN-2){1'b0}}, retire_count_i});
+         {{(`RV64_XLEN-3){1'b0}}, retire_count_i});
 
     function [EVENT_INCREMENT_WIDTH-1:0] count_events;
         input [EVENT_COUNT-1:0] events;
@@ -241,10 +241,10 @@ module openrv64_cmu #(
 
             if (!mcountinhibit_q[`RV64_MCOUNTER_CY_BIT])
                 mcycle_q <= mcycle_q + 64'd1;
-            if ((retire_count_i != 2'd0) &&
+            if ((retire_count_i != 3'd0) &&
                 !mcountinhibit_q[`RV64_MCOUNTER_IR_BIT])
                 minstret_q <= minstret_q +
-                    {{(`RV64_XLEN-2){1'b0}}, retire_count_i};
+                    {{(`RV64_XLEN-3){1'b0}}, retire_count_i};
 
             for (reset_index = 0; reset_index < HPM_COUNTERS;
                  reset_index = reset_index + 1) begin

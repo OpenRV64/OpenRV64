@@ -338,7 +338,7 @@ module openrv64_rv64_top_4pf #(
     wire [4:0] backend_retire_rd;
     wire [63:0] backend_retire_wdata;
     wire [2:0] backend_retire_arch;
-    wire [1:0] backend_retire_count;
+    wire [2:0] backend_retire_count;
     wire backend_wfi =
         (|backend_retire_arch) &&
         (backend_retire_instr == `RV64_INSTR_WFI);

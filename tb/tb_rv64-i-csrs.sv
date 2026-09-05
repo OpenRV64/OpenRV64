@@ -24,7 +24,7 @@ module tb_rv64i_csrs;
     logic [`RV64_XLEN-1:0] trap_tval;
     logic mret;
     logic sret;
-    logic [1:0] retire_count;
+    logic [2:0] retire_count;
     logic [`OPENRV64_CMU_EVENT_COUNT-1:0] perf_events;
     logic irq_software;
     logic irq_timer;

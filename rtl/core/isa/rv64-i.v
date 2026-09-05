@@ -100,6 +100,19 @@
 `define RV64_FUNCT3_BLTU 3'b110
 `define RV64_FUNCT3_BGEU 3'b111
 
+// Full-pattern predicates used by decode-side macro-fusion.  Keep the
+// architectural encodings here while fusion classes remain in decode/defs.
+`define RV64_INSTR_IS_AUIPC(instr) \
+    (`RV64_OPCODE(instr) == `RV64_OPCODE_AUIPC)
+`define RV64_INSTR_IS_ADDI(instr) \
+    ((`RV64_OPCODE(instr) == `RV64_OPCODE_OP_IMM) && \
+     (`RV64_FUNCT3(instr) == `RV64_FUNCT3_ADD_SUB))
+`define RV64_INSTR_IS_JALR(instr) \
+    ((`RV64_OPCODE(instr) == `RV64_OPCODE_JALR) && \
+     (`RV64_FUNCT3(instr) == `RV64_FUNCT3_JALR))
+`define RV64_INSTR_IS_NOP(instr) \
+    ((instr) == `RV64_INSTR_NOP)
+
 // Loads and stores.
 `define RV64_FUNCT3_LB 3'b000
 `define RV64_FUNCT3_LH 3'b001

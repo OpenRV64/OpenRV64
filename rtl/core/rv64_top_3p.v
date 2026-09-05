@@ -8,6 +8,7 @@
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/lsu-defs.v"
 `include "core/decode/defs/br-defs.v"
+`include "core/decode/defs/fusion-defs.v"
 `include "core/exec/bp/defs.v"
 `include "core/except/except-defs.v"
 `include "core/trace/trace-defs.v"
@@ -42,6 +43,8 @@ module openrv64_rv64_top_3p #(
     parameter ENABLE_SPECULATION_WINDOW = 0,
     parameter ENABLE_ALU2 = 0,
     parameter ENABLE_ALU_CHAINING = 0,
+    parameter ENABLE_LOAD_CONFLICT_RECORD = 0,
+    parameter ENABLE_DECODE_FUSION = 0,
     parameter ENABLE_POSTED_STORES = 1,
     parameter ENABLE_ZICCLSM = 1,
     parameter integer STORE_QUEUE_DEPTH = 4,
@@ -370,7 +373,7 @@ module openrv64_rv64_top_3p #(
     wire [4:0] backend_retire_rd;
     wire [63:0] backend_retire_wdata;
     wire [2:0] backend_retire_arch;
-    wire [1:0] backend_retire_count;
+    wire [2:0] backend_retire_count;
     wire backend_wfi =
         (ENABLE_WFI_SLEEP != 0) &&
         (|backend_retire_arch) &&
@@ -738,6 +741,9 @@ module openrv64_rv64_top_3p #(
     wire [2:0] decode_word;
     wire [2:0] decode_system;
     wire [2:0] decode_fence;
+    wire [2:0] decode_fusion_candidate;
+    wire [3*`OPENRV64_FUSION_CANDIDATE_WIDTH-1:0]
+        decode_fusion_candidate_class;
     wire [3*`RV64_ALU_EXT_WIDTH-1:0] decode_alu_ext;
     wire [3*`RV64_ALU_OP_WIDTH-1:0] decode_alu_op;
     wire [3*`RV64_LSU_OP_WIDTH-1:0] decode_lsu_op;
@@ -807,8 +813,16 @@ module openrv64_rv64_top_3p #(
                     decode_lane*`RV64_BR_OP_WIDTH +: `RV64_BR_OP_WIDTH]),
                 .br_link_o(),
                 .br_indirect_o(decode_br_indirect[decode_lane]),
+                .fusion_candidate_o(
+                    decode_fusion_candidate[decode_lane]),
+                .fusion_candidate_class_o(
+                    decode_fusion_candidate_class[
+                        decode_lane*`OPENRV64_FUSION_CANDIDATE_WIDTH +:
+                        `OPENRV64_FUSION_CANDIDATE_WIDTH]),
                 .subdecode_needed_o(),
-                .extension_decode_possible_o()
+                .extension_decode_possible_o(),
+                .extension_candidate_o(), .extension_instr_o(),
+                .extension_payload_o()
             );
         end
     endgenerate
@@ -839,21 +853,38 @@ module openrv64_rv64_top_3p #(
                              (bp_live_lane == 2'd1) ? decode_pc1 : decode_pc2;
     wire [31:0] bp_live_instr = (bp_live_lane == 2'd0) ? instr0 :
                                 (bp_live_lane == 2'd1) ? instr1 : instr2;
+    wire [63:0] bp_live_trace =
+        fetch_decode_trace[bp_live_lane*64 +: 64];
+    wire [1:0] bp_live_allocation_lane;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] bp_live_id =
         backend_decode_allocation_id[0 +: `OPENRV64_INSTR_ID_WIDTH] +
-        {{(`OPENRV64_INSTR_ID_WIDTH-2){1'b0}}, bp_stage_output_count} +
-        {{(`OPENRV64_INSTR_ID_WIDTH-2){1'b0}}, bp_live_lane};
+        {{(`OPENRV64_INSTR_ID_WIDTH-2){1'b0}},
+         bp_live_allocation_lane};
+    // A matched AUIPC/JALR pair is still identified by the original JALR
+    // instruction for RAS push/pop semantics, but its predictor-facing class
+    // and target come from the fused output.  The assignments are below the
+    // fusion adapter, which already carries the cross-bundle candidate state.
+    wire bp_live_fused_pcrel;
+    wire [63:0] bp_live_fused_imm;
     wire [63:0] bp_live_decode_imm =
         decode_imm[bp_live_lane*64 +: 64];
-    wire [63:0] bp_live_imm = bp_live_predecode ?
+    wire [63:0] bp_live_raw_imm = bp_live_predecode ?
         {{43{bp_live_predecode_offset[19]}},
          bp_live_predecode_offset, 1'b0} : bp_live_decode_imm;
-    wire bp_live_branch = bp_live_predecode ?
+    wire bp_live_raw_branch = bp_live_predecode ?
         predecode_conditional[bp_live_lane] : decode_branch[bp_live_lane];
-    wire bp_live_jump = bp_live_predecode ?
+    wire bp_live_raw_jump = bp_live_predecode ?
         !predecode_conditional[bp_live_lane] : decode_jump[bp_live_lane];
-    wire bp_live_indirect = bp_live_predecode ?
+    wire bp_live_raw_indirect = bp_live_predecode ?
         1'b0 : decode_br_indirect[bp_live_lane];
+    wire [63:0] bp_live_imm = bp_live_fused_pcrel ?
+        bp_live_fused_imm : bp_live_raw_imm;
+    wire bp_live_branch = bp_live_fused_pcrel ?
+        1'b0 : bp_live_raw_branch;
+    wire bp_live_jump = bp_live_fused_pcrel ?
+        1'b1 : bp_live_raw_jump;
+    wire bp_live_indirect = bp_live_fused_pcrel ?
+        1'b0 : bp_live_raw_indirect;
 
     // BP9 retains compact metadata for the oldest decoded control while its
     // synchronous RAM lookup completes.  If Tomasulo admits the branch on the
@@ -869,6 +900,7 @@ module openrv64_rv64_top_3p #(
     reg [63:0] bp_dispatch_selected_pc_q;
     reg [31:0] bp_dispatch_selected_instr_q;
     reg [63:0] bp_dispatch_selected_imm_q;
+    reg [63:0] bp_dispatch_selected_trace_q;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] bp_dispatch_selected_id_q;
     reg [RETIRE_SLOT_WIDTH-1:0] bp_dispatch_selected_slot_q;
     reg bp_dispatch_allocated_q;
@@ -888,7 +920,18 @@ module openrv64_rv64_top_3p #(
         bp_dispatch_selected_instr_q : bp_live_instr;
     wire [63:0] bp_selected_imm = bp_lookup_from_dispatch ?
         bp_dispatch_selected_imm_q : bp_live_imm;
+    // Before admission, an instruction ID is only a projection of the
+    // current compacted output lane.  The projection can change while an
+    // older fusion candidate drains.  Match the retained control by its
+    // stable fetch trace ID and present the current projected ID so the
+    // predictor records the ID actually allocated by the backend.
+    wire bp_pending_trace_match = bp_lookup_from_dispatch &&
+        !bp_dispatch_allocated_q &&
+        (bp_live_trace == bp_dispatch_selected_trace_q) &&
+        (bp_live_pc == bp_dispatch_selected_pc_q) &&
+        (bp_live_instr == bp_dispatch_selected_instr_q);
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] bp_selected_id =
+        bp_pending_trace_match ? bp_live_id :
         bp_lookup_from_dispatch ? bp_dispatch_selected_id_q : bp_live_id;
     wire bp_lookup_branch = bp_lookup_from_dispatch ?
         bp_dispatch_lookup_branch_q : bp_live_branch;
@@ -1033,6 +1076,7 @@ module openrv64_rv64_top_3p #(
             assign frontend_decode_payload[
                 decode_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH] = {
+                1'b0,
                 fetch_decode_trace[decode_lane*64 +: 64],
                 lane_pc,
                 lane_instr,
@@ -1072,6 +1116,7 @@ module openrv64_rv64_top_3p #(
     endgenerate
 
     wire [2:0] backend_decode_ready;
+    wire [2:0] fusion_backend_decode_ready;
     wire frontend_common_enable = !control_flush && !control_redirect &&
                                   !halted_q && !wfi_sleep_q &&
                                   !translation_barrier_busy;
@@ -1126,7 +1171,7 @@ module openrv64_rv64_top_3p #(
         (bp_lookup_from_dispatch || !control_redirect) &&
         !halted_q && !wfi_sleep_q;
     assign bp_pending_live_match = (|frontend_control_select) &&
-        (bp_live_id == bp_dispatch_selected_id_q) &&
+        (bp_live_trace == bp_dispatch_selected_trace_q) &&
         (bp_live_pc == bp_dispatch_selected_pc_q) &&
         (bp_live_instr == bp_dispatch_selected_instr_q);
     wire bp_sideband_control_allow = !bp_dispatch_valid_q ?
@@ -1164,6 +1209,120 @@ module openrv64_rv64_top_3p #(
             live_backend_decode_valid;
     wire [2:0] backend_decode_fire = backend_decode_valid &
                                      backend_decode_ready;
+
+    wire [2:0] backend_decode_fusion_candidate =
+        (bp_delayed_lookup && !bp_sideband_lookup &&
+         bp_dispatch_valid_q) ?
+            {decode_fusion_candidate[1:0], 1'b0} :
+            decode_fusion_candidate;
+    wire [3*`OPENRV64_FUSION_CANDIDATE_WIDTH-1:0]
+        backend_decode_fusion_candidate_class =
+        (bp_delayed_lookup && !bp_sideband_lookup &&
+         bp_dispatch_valid_q) ? {
+            decode_fusion_candidate_class[
+                1*`OPENRV64_FUSION_CANDIDATE_WIDTH +:
+                `OPENRV64_FUSION_CANDIDATE_WIDTH],
+            decode_fusion_candidate_class[
+                0*`OPENRV64_FUSION_CANDIDATE_WIDTH +:
+                `OPENRV64_FUSION_CANDIDATE_WIDTH],
+            `OPENRV64_FUSION_CANDIDATE_NONE
+        } : decode_fusion_candidate_class;
+    wire [2:0] fused_backend_decode_valid;
+    wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        fused_backend_decode_payload;
+    wire [2:0] fused_backend_decode_uses_rs1;
+    wire [2:0] fused_backend_decode_uses_rs2;
+    wire [2:0] fused_backend_decode_lane;
+    wire [2:0] fusion_input_output_valid;
+    wire [5:0] fusion_input_output_lane;
+    wire [1:0] decode_fusion_candidate_events;
+    wire [1:0] decode_fusion_pcrel_candidate_events;
+    wire [1:0] decode_fusion_li_candidate_events;
+    wire [1:0] decode_fusion_events;
+    wire [1:0] decode_fusion_pcrel_events;
+    wire [1:0] decode_fusion_li_events;
+    wire decode_fusion_candidate_pending;
+
+    generate
+        if (ENABLE_DECODE_FUSION != 0) begin : g_decode_fusion
+            openrv64_decode_fusion_3p u_fusion (
+                .clk(clk), .rst_n(rst_n),
+                .flush_i(control_flush || control_restart ||
+                         control_redirect),
+                .input_valid_i(backend_decode_valid),
+                .input_ready_o(backend_decode_ready),
+                .input_payload_i(backend_decode_payload),
+                .input_uses_rs1_i(backend_decode_uses_rs1),
+                .input_uses_rs2_i(backend_decode_uses_rs2),
+                .input_candidate_i(backend_decode_fusion_candidate),
+                .input_candidate_class_i(
+                    backend_decode_fusion_candidate_class),
+                .output_valid_o(fused_backend_decode_valid),
+                .output_ready_i(fusion_backend_decode_ready),
+                .output_payload_o(fused_backend_decode_payload),
+                .output_uses_rs1_o(fused_backend_decode_uses_rs1),
+                .output_uses_rs2_o(fused_backend_decode_uses_rs2),
+                .output_fused_o(fused_backend_decode_lane),
+                .input_output_valid_o(fusion_input_output_valid),
+                .input_output_lane_o(fusion_input_output_lane),
+                .candidate_accept_count_o(
+                    decode_fusion_candidate_events),
+                .pcrel_candidate_accept_count_o(
+                    decode_fusion_pcrel_candidate_events),
+                .li_candidate_accept_count_o(
+                    decode_fusion_li_candidate_events),
+                .fused_accept_count_o(decode_fusion_events),
+                .pcrel_fused_accept_count_o(
+                    decode_fusion_pcrel_events),
+                .li_fused_accept_count_o(decode_fusion_li_events),
+                .candidate_pending_o(decode_fusion_candidate_pending)
+            );
+        end else begin : g_no_decode_fusion
+            assign backend_decode_ready = fusion_backend_decode_ready;
+            assign fused_backend_decode_valid = backend_decode_valid;
+            assign fused_backend_decode_payload = backend_decode_payload;
+            assign fused_backend_decode_uses_rs1 = backend_decode_uses_rs1;
+            assign fused_backend_decode_uses_rs2 = backend_decode_uses_rs2;
+            assign fused_backend_decode_lane = 3'b000;
+            assign fusion_input_output_valid = backend_decode_valid;
+            assign fusion_input_output_lane = {2'd2, 2'd1, 2'd0};
+            assign decode_fusion_candidate_events = 2'd0;
+            assign decode_fusion_pcrel_candidate_events = 2'd0;
+            assign decode_fusion_li_candidate_events = 2'd0;
+            assign decode_fusion_events = 2'd0;
+            assign decode_fusion_pcrel_events = 2'd0;
+            assign decode_fusion_li_events = 2'd0;
+            assign decode_fusion_candidate_pending = 1'b0;
+        end
+    endgenerate
+
+    wire [1:0] bp_live_fusion_lane = fusion_input_output_lane[
+        bp_live_lane*2 +: 2];
+    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
+        bp_live_fused_payload = fused_backend_decode_payload[
+            bp_live_fusion_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+            `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+    wire [`RV64_BR_OP_WIDTH-1:0] bp_live_fused_br_op =
+        bp_live_fused_payload[
+            `OPENRV64_EXEC_ISSUE_PAYLOAD_BR_OP_LSB +:
+            `RV64_BR_OP_WIDTH];
+    assign bp_live_fused_pcrel =
+        (ENABLE_DECODE_FUSION != 0) &&
+        fusion_input_output_valid[bp_live_lane] &&
+        fused_backend_decode_valid[bp_live_fusion_lane] &&
+        fused_backend_decode_lane[bp_live_fusion_lane] &&
+        bp_live_raw_indirect &&
+        (`RV64_OPCODE(bp_live_instr) == `RV64_OPCODE_JALR) &&
+        bp_live_fused_payload[
+            `OPENRV64_EXEC_ISSUE_PAYLOAD_JUMP_BIT] &&
+        (bp_live_fused_br_op == `RV64_BR_OP_JAL);
+    assign bp_live_fused_imm = bp_live_fused_payload[
+        `OPENRV64_EXEC_ISSUE_PAYLOAD_IMM_LSB +: `RV64_XLEN];
+    assign bp_live_allocation_lane =
+        ((ENABLE_DECODE_FUSION != 0) && bp_sideband_lookup &&
+         fusion_input_output_valid[bp_live_lane]) ?
+            bp_live_fusion_lane :
+            (bp_stage_output_count + bp_live_lane);
     assign bp_stage_output_count =
         (bp_delayed_lookup && !bp_sideband_lookup &&
          bp_dispatch_valid_q) ? 2'd1 : 2'd0;
@@ -1282,6 +1441,7 @@ module openrv64_rv64_top_3p #(
             bp_dispatch_selected_pc_q <= 64'd0;
             bp_dispatch_selected_instr_q <= 32'd0;
             bp_dispatch_selected_imm_q <= 64'd0;
+            bp_dispatch_selected_trace_q <= 64'd0;
             bp_dispatch_selected_id_q <= 0;
             bp_dispatch_selected_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
             bp_dispatch_allocated_q <= 1'b0;
@@ -1312,10 +1472,11 @@ module openrv64_rv64_top_3p #(
                     bp_dispatch_selected_pc_q <= bp_live_pc;
                     bp_dispatch_selected_instr_q <= bp_live_instr;
                     bp_dispatch_selected_imm_q <= bp_live_imm;
+                    bp_dispatch_selected_trace_q <= bp_live_trace;
                     bp_dispatch_selected_id_q <= bp_live_id;
                     bp_dispatch_selected_slot_q <=
                         backend_decode_allocation_slot[
-                            bp_live_lane*RETIRE_SLOT_WIDTH +:
+                            bp_live_allocation_lane*RETIRE_SLOT_WIDTH +:
                             RETIRE_SLOT_WIDTH];
                     bp_dispatch_allocated_q <=
                         backend_decode_fire[bp_live_lane];
@@ -1613,6 +1774,7 @@ module openrv64_rv64_top_3p #(
         .ENABLE_SPECULATION_WINDOW(ENABLE_SPECULATION_WINDOW),
         .ENABLE_ALU2(ENABLE_ALU2),
         .ENABLE_ALU_CHAINING(ENABLE_ALU_CHAINING),
+        .ENABLE_LOAD_CONFLICT_RECORD(ENABLE_LOAD_CONFLICT_RECORD),
         .ISSUE_WINDOW_DEPTH(ISSUE_WINDOW_DEPTH),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM(ENABLE_ZICCLSM),
@@ -1636,11 +1798,11 @@ module openrv64_rv64_top_3p #(
             (csr_data_priv_mode == `RV64_PRIV_M) ||
             (csr_satp_mode == `RV64_SATP_MODE_BARE)),
         .inhibit_load_speculation_i(inhibit_load_speculation),
-        .decode_valid_i(backend_decode_valid),
-        .decode_ready_o(backend_decode_ready),
-        .decode_payload_i(backend_decode_payload),
-        .decode_uses_rs1_i(backend_decode_uses_rs1),
-        .decode_uses_rs2_i(backend_decode_uses_rs2),
+        .decode_valid_i(fused_backend_decode_valid),
+        .decode_ready_o(fusion_backend_decode_ready),
+        .decode_payload_i(fused_backend_decode_payload),
+        .decode_uses_rs1_i(fused_backend_decode_uses_rs1),
+        .decode_uses_rs2_i(fused_backend_decode_uses_rs2),
         .decode_allocation_id_o(backend_decode_allocation_id),
         .decode_allocation_slot_o(backend_decode_allocation_slot),
         .prediction_update_valid_i(bp_prediction_update_valid),

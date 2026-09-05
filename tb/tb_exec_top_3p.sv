@@ -46,6 +46,8 @@ module tb_exec_top_3p #(
     localparam integer ISSUE_INSTR = 242;
     localparam integer ISSUE_PC = 274;
     localparam integer ISSUE_TRACE = 338;
+    localparam integer ISSUE_FUSED =
+        `OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT;
 
     localparam integer COMPLETE_CSR_WDATA = 0;
     localparam integer COMPLETE_CSR_ADDR = 64;
@@ -176,6 +178,8 @@ module tb_exec_top_3p #(
         .issue_id_i(issue_id),
         .issue_slot_i(issue_slot),
         .issue_payload_i(issue_payload),
+        .issue_chain_mask_i(
+            {2*`OPENRV64_EXEC_PIPE_COUNT{1'b0}}),
         .branch_forward_valid_i(branch_forward_valid),
         .branch_forward_tag_i(branch_forward_id),
         .branch_forward_rd_addr_i(branch_forward_rd_addr),
@@ -197,6 +201,8 @@ module tb_exec_top_3p #(
         .store_commit_id_i({3*ID_WIDTH{1'b0}}),
         .store_commit_slot_i({3*SLOT_WIDTH{1'b0}}),
         .store_commit_accept_o(),
+        .store_barrier_request_o(),
+        .store_barrier_busy_i(1'b0),
         .complete_valid_o(complete_valid),
         .complete_ready_i(complete_ready),
         .complete_id_o(complete_id),
@@ -305,6 +311,18 @@ module tb_exec_top_3p #(
             value[ISSUE_SRET_ALLOWED] = 1'b1;
             value[ISSUE_SFENCE_ALLOWED] = 1'b1;
             packet_base = value;
+        end
+    endfunction
+
+    function automatic [`RV64_INSTR_WIDTH-1:0] make_branch;
+        input [12:0] immediate;
+        input [`RV64_REG_ADDR_WIDTH-1:0] rs2;
+        input [`RV64_REG_ADDR_WIDTH-1:0] rs1;
+        input [`RV64_FUNCT3_WIDTH-1:0] funct3;
+        begin
+            make_branch = {immediate[12], immediate[10:5], rs2, rs1,
+                           funct3, immediate[4:1], immediate[11],
+                           `RV64_OPCODE_BRANCH};
         end
     endfunction
 
@@ -562,6 +580,74 @@ module tb_exec_top_3p #(
             $display("PASS: ENABLE_ZICCLSM=0 restores 3P misalignment faults");
             $finish;
         end
+
+        // A fused LI/branch is one EX1 operation with two effects: compare
+        // using the embedded immediate and write that immediate to LI's
+        // destination.  Retain an unrelated older x9 result first to prove
+        // that normal same-pipe bypass cannot replace the embedded operand.
+        packet = packet_base(64'd202, 64'h0e00,
+                             {`RV64_FUNCT7_ADD, 5'd0, 5'd1,
+                              `RV64_FUNCT3_ADD_SUB, 5'd9,
+                              `RV64_OPCODE_OP});
+        packet[ISSUE_RS1 +: 5] = 5'd1;
+        packet[ISSUE_RS2 +: 5] = 5'd0;
+        packet[ISSUE_RS1_DATA +: 64] = 64'd99;
+        packet[ISSUE_RS2_DATA +: 64] = 64'd0;
+        packet[ISSUE_RD +: 5] = 5'd9;
+        packet[ISSUE_ALU_EXT +: 3] = `RV64_ALU_EXT_BASE;
+        packet[ISSUE_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[1*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(42);
+        issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd2;
+        issue_valid = 4'b0010;
+        #1;
+        if (!issue_ready[1])
+            fail("EX1 did not accept LI/branch bypass adversary");
+        tick();
+        issue_valid = 4'b0000;
+        #1;
+        if (!complete_valid[1] ||
+            (complete_payload[1*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             64'd99))
+            fail("LI/branch bypass adversary did not complete");
+
+        packet = packet_base(64'd203, 64'h0e04,
+                             make_branch(13'd8, 5'd9, 5'd8,
+                                         `RV64_FUNCT3_BGE));
+        packet[ISSUE_RS1 +: 5] = 5'd8;
+        packet[ISSUE_RS2 +: 5] = 5'd9;
+        packet[ISSUE_RS1_DATA +: 64] = 64'd17;
+        packet[ISSUE_RS2_DATA +: 64] = 64'd9;
+        packet[ISSUE_IMM +: 64] = 64'd8;
+        packet[ISSUE_RD +: 5] = 5'd9;
+        packet[ISSUE_BR_OP +: 4] = `RV64_BR_OP_BGE;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        packet[ISSUE_BRANCH] = 1'b1;
+        packet[ISSUE_FUSED] = 1'b1;
+        issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[1*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(43);
+        issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd3;
+        complete_ready = 3'b010;
+        issue_valid = 4'b0010;
+        #1;
+        if (!issue_ready[1] || !branch_resolved || !branch_taken ||
+            !redirect_valid || (redirect_target != 64'h0e0c))
+            fail("fused LI/branch did not compare embedded immediate");
+        tick();
+        issue_valid = 4'b0000;
+        complete_ready = 3'b000;
+        #1;
+        if (!complete_valid[1] ||
+            !complete_payload[1*COMPLETE_WIDTH + COMPLETE_REG_WRITE] ||
+            (complete_payload[1*COMPLETE_WIDTH + COMPLETE_RD +: 5] !=
+             5'd9) ||
+            (complete_payload[1*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             64'd9))
+            fail("fused LI/branch did not produce LI destination");
+        complete_ready = 3'b010;
+        tick();
+        complete_ready = 3'b000;
 
         // EX0 base ALU does not require the ordered-head token.
         packet = packet_base(64'd100, 64'h1000, 32'h0050_8193);

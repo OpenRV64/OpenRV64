@@ -231,16 +231,23 @@ not listed below are zero.
 | FETCH | 0 valid, 1 backend-valid, 2 backend-ready, 3 fetch-ready | 0 | 0 |
 | DECODE | 0 fire, 1 valid, 2 ready, 3 fetch-ready | free tags `[15:0]` | ROB occupancy `[15:0]`, scheduler occupancy `[31:16]` |
 | DISPATCH | 0 response applied, 1 lookup stalled, 2 predicted taken, 3 metadata valid, 4 branch already allocated | 0 | 0 |
-| SCHED | 0 valid, 1 issued, 2 eligible, 3/4 source ready, 5/6 source used, 7 result ready, 8 blocker valid | source core IDs `[15:0]`, `[31:16]` | ROB slot `[7:0]`, source physical tags `[15:8]` and `[23:16]`, destination tag `[31:24]` |
-| REGREAD active | 0 group valid, 2:1 lane valid, 6:3 fire mask, 10:7 operand-ready mask | operand-done mask `[3:0]` | response-now mask `[3:0]` |
-| REGREAD pending | 0 group valid, 2:1 lane valid, 6:3 operand-ready mask | operand-done mask `[3:0]` | 0 |
-| EXEC/COMPLETE/RETIRE | 0 valid, 1 ready/accept | completion/retirement result for COMPLETE/RETIRE | next PC for COMPLETE/RETIRE |
+| SCHED | 0 valid, 1 issued, 2 eligible, 3/4 source ready, 5/6 source used, 7 result ready, 8 blocker valid, 15 fused | source core IDs `[15:0]`, `[31:16]` | ROB slot `[7:0]`, source physical tags `[15:8]` and `[23:16]`, destination tag `[31:24]` |
+| REGREAD active | 0 group valid, 2:1 lane valid, 6:3 fire mask, 10:7 operand-ready mask, 15 fused | operand-done mask `[3:0]` | response-now mask `[3:0]` |
+| REGREAD pending | 0 group valid, 2:1 lane valid, 6:3 operand-ready mask, 15 fused | operand-done mask `[3:0]` | 0 |
+| EXEC/COMPLETE/RETIRE | 0 valid, 1 ready/accept, 15 fused where retained | completion/retirement result for COMPLETE/RETIRE | next PC for COMPLETE/RETIRE |
 | LSQ load | 0 valid, 1 immediate, 2 translation sent, 3 translation done, 4 access sent, 5 killed, 6 guard block, 7 order match, 8 forward ready/held | virtual address | physical address |
 | LSQ store | load phase bits plus 5 result sent, 6 access done, 7 killed, 8 access authorized, 9 atomic, 10 committed | virtual address | physical address |
-| ROB | 0 present, 1 valid, 2 complete, 3 head | rs1 `[4:0]`, rs2 `[12:8]`, rd `[20:16]`, control/class bits `[32:24]`, new physical tag `[47:40]` | result data |
+| ROB | 0 present, 1 valid, 2 complete, 3 head, 15 fused | rs1 `[4:0]`, rs2 `[12:8]`, rd `[20:16]`, control/class bits `[33:24]`, new physical tag `[47:40]` | result data |
 
 The ROB control/class bits are: 24 register write, 25 uses rs1, 26 uses rs2,
-27 hard, 28 load, 29 store, 30 branch, 31 jump, and 32 predicted taken.
+27 hard, 28 load, 29 store, 30 branch, 31 jump, 32 predicted taken, and
+33 fused.  Fusion retains two ROB rows.  The leading row is a side-effect-free
+stub with the candidate instruction's original identity, PC, and raw
+instruction.  It completes at allocation and, with physical rename enabled,
+does not occupy the scheduler or an execution pipe.  The following row is the
+fused macro-op with the consumer's original identity, PC, and raw instruction.
+The pair retires atomically, and each row contributes one architectural
+instruction to `minstret`.
 
 ## Validator and focused reports
 

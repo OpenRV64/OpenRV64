@@ -12,6 +12,16 @@ $(DECODE_TOP_SIM_BUILD): $(DECODE_TOP_SIM_SRCS) $(DECODE_SRCS) $(ISA_SRCS)
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(DECODE_TOP_SIM_BUILD) $(DECODE_TOP_SIM_SRCS)
 
+$(DECODE_FUSION_SIM_BUILD): $(DECODE_FUSION_SIM_SRCS) $(ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_decode_fusion \
+		-o $(DECODE_FUSION_SIM_BUILD) $(DECODE_FUSION_SIM_SRCS)
+
+$(DECODE_FUSION_3P_SIM_BUILD): $(DECODE_FUSION_3P_SIM_SRCS) $(ISA_SRCS)
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_decode_fusion_3p \
+		-o $(DECODE_FUSION_3P_SIM_BUILD) $(DECODE_FUSION_3P_SIM_SRCS)
+
 $(DECODE_RV64FD_SIM_BUILD): $(DECODE_RV64FD_SIM_SRCS) $(DECODE_SRCS) \
 		$(ISA_SRCS) $(FP_ISA_SRCS) $(FPU_SRCS)
 	mkdir -p sim
@@ -203,6 +213,14 @@ $(DISPATCH_WINDOW_3P_SIM_BUILD): rtl/core/dispatch/dispatch_window_3p.v tb/tb_di
 	mkdir -p sim
 	iverilog -g2012 -Wall -Irtl -o $(DISPATCH_WINDOW_3P_SIM_BUILD) \
 		rtl/core/dispatch/dispatch_window_3p.v tb/tb_dispatch_window_3p.sv
+
+$(DISPATCH_LOAD_CONFLICT_SIM_BUILD): rtl/core/dispatch/dispatch_window_3p.v \
+	tb/tb_dispatch_load_conflict_record.sv
+	mkdir -p sim
+	iverilog -g2012 -Wall -Irtl -s tb_dispatch_load_conflict_record \
+		-o $(DISPATCH_LOAD_CONFLICT_SIM_BUILD) \
+		rtl/core/dispatch/dispatch_window_3p.v \
+		tb/tb_dispatch_load_conflict_record.sv
 
 $(DISPATCH_3P_SIM_BUILD): rtl/core/dispatch/dispatch_3p.v \
 	rtl/core/dispatch/reg_map_3p.v rtl/core/dispatch/dispatch_barrier_3p.v \

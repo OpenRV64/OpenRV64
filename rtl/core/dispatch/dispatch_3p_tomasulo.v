@@ -14,6 +14,7 @@ module openrv64_dispatch_3p_tomasulo #(
     parameter integer ENABLE_SPECULATION = 0,
     parameter integer ENABLE_ALU2 = 0,
     parameter integer ENABLE_ALU_CHAINING = 0,
+    parameter integer ENABLE_LOAD_CONFLICT_RECORD = 0,
     parameter integer MAX_ISSUE_LANES = 3,
     parameter integer DEPTH = 16,
     parameter integer PHYS_REG_ADDR_WIDTH = 6,
@@ -29,6 +30,8 @@ module openrv64_dispatch_3p_tomasulo #(
     input  wire squash_inclusive_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_i,
     input  wire translation_bypass_i,
+    input  wire load_conflict_train_valid_i,
+    input  wire [`RV64_XLEN-1:0] load_conflict_train_pc_i,
     input  wire [2:0] decode_valid_i,
     output wire [2:0] decode_ready_o,
     input  wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
@@ -106,8 +109,60 @@ module openrv64_dispatch_3p_tomasulo #(
     output wire [COUNT_WIDTH-1:0] queue_count_o
 );
 
+    function automatic is_fused_producer;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            is_fused_producer =
+                payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT] &&
+                payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_REG_WRITE_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_MEM_READ_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_MEM_WRITE_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_BRANCH_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_JUMP_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_FENCE_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_SYSTEM_BIT];
+        end
+    endfunction
+
+    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] decode_payload0 =
+        decode_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] decode_payload1 =
+        decode_payload_i[1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+    wire [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] decode_payload2 =
+        decode_payload_i[2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                         `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH];
+    wire decode_fused_pair0 = decode_valid_i[0] && decode_valid_i[1] &&
+        is_fused_producer(decode_payload0) &&
+        decode_payload1[`OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT] &&
+        !is_fused_producer(decode_payload1);
+    wire decode_fused_pair1 = decode_valid_i[1] && decode_valid_i[2] &&
+        is_fused_producer(decode_payload1) &&
+        decode_payload2[`OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT] &&
+        !is_fused_producer(decode_payload2);
     wire [2:0] window_decode_ready;
-    assign decode_ready_o = window_decode_ready & allocation_ready_i;
+    wire [2:0] window_decode_valid;
+    // Keep downstream rename/ROB readiness out of the issue window's ready
+    // calculation.  Gating valid with decode_ready_o would make ready depend
+    // on itself.  Per-lane allocation readiness is sufficient here: the
+    // window applies its own capacity check, including the fused-pair check.
+    assign window_decode_valid[0] = decode_valid_i[0] &&
+        allocation_ready_i[0] &&
+        (!decode_fused_pair0 || allocation_ready_i[1]);
+    assign window_decode_valid[1] = decode_valid_i[1] &&
+        allocation_ready_i[1] &&
+        (!decode_fused_pair0 || allocation_ready_i[0]) &&
+        (!decode_fused_pair1 || allocation_ready_i[2]);
+    assign window_decode_valid[2] = decode_valid_i[2] &&
+        allocation_ready_i[2] &&
+        (!decode_fused_pair1 || allocation_ready_i[1]);
+    wire [2:0] raw_decode_ready = window_decode_ready & allocation_ready_i;
+    assign decode_ready_o[0] = raw_decode_ready[0] &&
+        (!decode_fused_pair0 || raw_decode_ready[1]);
+    assign decode_ready_o[1] = raw_decode_ready[1] && decode_ready_o[0] &&
+        (!decode_fused_pair1 || raw_decode_ready[2]);
+    assign decode_ready_o[2] = raw_decode_ready[2] && decode_ready_o[1];
 
     openrv64_dispatch_window_3p #(
         .ENABLE(1),
@@ -116,6 +171,7 @@ module openrv64_dispatch_3p_tomasulo #(
         .ENABLE_SPECULATION(ENABLE_SPECULATION),
         .ENABLE_ALU2(ENABLE_ALU2),
         .ENABLE_ALU_CHAINING(ENABLE_ALU_CHAINING),
+        .ENABLE_LOAD_CONFLICT_RECORD(ENABLE_LOAD_CONFLICT_RECORD),
         .DEFER_GPR_READ(1),
         .MAX_ISSUE_LANES(MAX_ISSUE_LANES),
         .DEPTH(DEPTH),
@@ -129,7 +185,11 @@ module openrv64_dispatch_3p_tomasulo #(
         .squash_inclusive_i(squash_inclusive_i),
         .squash_id_i(squash_id_i),
         .translation_bypass_i(translation_bypass_i),
-        .decode_valid_i(decode_valid_i & allocation_ready_i),
+        .load_conflict_train_valid_i(load_conflict_train_valid_i),
+        .load_conflict_train_pc_i(load_conflict_train_pc_i),
+        // Suppress lanes which cannot also allocate their rename/ROB state.
+        // The issue window supplies the capacity half of the handshake.
+        .decode_valid_i(window_decode_valid),
         .decode_ready_o(window_decode_ready),
         .decode_payload_i(decode_payload_i),
         .decode_uses_rs1_i(decode_uses_rs1_i),

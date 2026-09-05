@@ -13,6 +13,9 @@ generate
         localparam integer TTRACE_LSQ_META_INSTR = 20;
         localparam integer TTRACE_LSQ_META_PC = 52;
         localparam integer TTRACE_LSQ_META_TRACE = 116;
+        localparam integer TTRACE_RETIRE_RECORD_WIDTH =
+            `OPENRV64_RETIRE_ALLOC_FIXED_WIDTH +
+            2*$clog2(PHYS_REG_COUNT + 1);
 
         integer ttrace_fd;
         reg [1023:0] ttrace_path;
@@ -118,14 +121,18 @@ generate
             input [63:0] flags;
             input [63:0] detail0;
             input [63:0] detail1;
+            reg [63:0] issue_flags;
             begin
+                issue_flags = flags;
+                issue_flags[15] = payload[
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT];
                 ttrace_emit(payload[
                         `OPENRV64_EXEC_ISSUE_PAYLOAD_TRACE_ID_LSB +: 64],
                     core_id,
                     payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_PC_LSB +: 64],
                     payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_LSB +: 32],
                     stage, slot,
-                    lane, state_code, reason_code, blocker_uid, flags,
+                    lane, state_code, reason_code, blocker_uid, issue_flags,
                     detail0, detail1);
             end
         endtask
@@ -1023,6 +1030,9 @@ generate
                             ttrace_detail0[32] = dut.u_backend
                                 .u_retire_records.alloc_q[ttrace_slot][
                                     `OPENRV64_RETIRE_ALLOC_PREDICTED_TAKEN_BIT];
+                            ttrace_detail0[33] = dut.u_backend
+                                .u_retire_records.alloc_q[ttrace_slot][
+                                    `OPENRV64_RETIRE_ALLOC_FUSED_BIT];
                             ttrace_detail0[47:40] = dut.u_backend
                                 .u_retire_records.alloc_q[ttrace_slot][
                                     `OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB +:
@@ -1059,7 +1069,11 @@ generate
                                         32],
                                 `OPENRV64_TTRACE_STAGE_ROB, ttrace_slot,
                                 -1, ttrace_state, ttrace_reason, 64'd0,
-                                {60'd0,
+                                {48'd0,
+                                 dut.u_backend.u_retire_records.alloc_q[
+                                     ttrace_slot][
+                                         `OPENRV64_RETIRE_ALLOC_FUSED_BIT],
+                                 11'd0,
                                  (ttrace_slot ==
                                   dut.u_backend.u_retire_queue.head_q),
                                  dut.u_backend.u_retire_queue.complete_q[
@@ -1102,7 +1116,12 @@ generate
                                     `OPENRV64_TTRACE_STATE_FIRE :
                                     `OPENRV64_TTRACE_STATE_WAIT,
                                 ttrace_reason,
-                                {62'd0,
+                                {48'd0,
+                                 dut.u_backend.queue_retire_record[
+                                     ttrace_lane*
+                                     TTRACE_RETIRE_RECORD_WIDTH +
+                                     `OPENRV64_RETIRE_ALLOC_FUSED_BIT],
+                                 13'd0,
                                  dut.u_backend.queue_retire_accept[
                                      ttrace_lane],
                                  dut.u_backend.queue_retire_valid[

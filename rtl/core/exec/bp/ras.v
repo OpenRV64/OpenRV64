@@ -4,11 +4,13 @@
 `include "core/isa/rv64-i.v"
 
 // Eight-entry return-address stack using the architectural RISC-V link
-// register hints (x1 and x5).  State changes only when a control transfer
-// resolves, so wrong-path fetch never requires stack rollback.  A pending
-// unresolved call suppresses return prediction until its address is pushed.
+// register hints (x1 and x5).  The physical stack is committed in resolution
+// order.  A tagged predictor supplies its surviving speculative actions in
+// program order; lookup folds those actions over committed state.  Squash then
+// requires only dropping younger actions from the predictor queue.
 module openrv64_exec_bp_ras #(
     parameter integer DEPTH = 8,
+    parameter integer ORDERED_DEPTH = 16,
     parameter integer INDEX_WIDTH = $clog2(DEPTH),
     parameter integer COUNT_WIDTH = $clog2(DEPTH + 1),
     parameter integer LOAD_SPECULATION_INHIBIT_CYCLES = 4,
@@ -29,6 +31,15 @@ module openrv64_exec_bp_ras #(
     input  wire                         resolve_valid_i,
     input  wire [`RV64_INSTR_WIDTH-1:0] resolve_instr_i,
     input  wire [`RV64_XLEN-1:0]        resolve_pc_i,
+
+    input  wire                         ordered_update_enable_i,
+    input  wire                         ordered_update_valid_i,
+    input  wire [1:0]                   ordered_update_action_i,
+    input  wire [`RV64_XLEN-1:0]        ordered_update_pc_i,
+    input  wire [ORDERED_DEPTH-1:0]     ordered_spec_valid_i,
+    input  wire [2*ORDERED_DEPTH-1:0]   ordered_spec_action_i,
+    input  wire [ORDERED_DEPTH*`RV64_XLEN-1:0]
+                                        ordered_spec_pc_i,
 
     output wire                         prediction_valid_o,
     output wire [`RV64_XLEN-1:0]        prediction_target_o,
@@ -80,14 +91,92 @@ module openrv64_exec_bp_ras #(
     wire resolve_return = resolve_valid_i && resolve_is_jalr &&
                           resolve_rs1_link && !resolve_rd_link;
 
+    wire ordered_update_push = ordered_update_valid_i &&
+                               ordered_update_action_i[0];
+    wire ordered_update_pop = ordered_update_valid_i &&
+                              ordered_update_action_i[1];
+    wire ras_update_push = ordered_update_enable_i ?
+                           ordered_update_push : resolve_push;
+    wire ras_update_pop = ordered_update_enable_i ?
+                          ordered_update_pop : resolve_pop;
+    wire [`RV64_XLEN-1:0] ras_update_pc = ordered_update_enable_i ?
+        ordered_update_pc_i : resolve_pc_i;
     wire [INDEX_WIDTH-1:0] top_index = sp_q - 1'b1;
-    assign prediction_valid_o = lookup_return && (count_q != 0) &&
-                                (pending_calls_q == 0);
-    assign prediction_target_o = stack_q[top_index];
+    // Build the effective speculative return stack without changing durable
+    // state.  This is deliberately read-before-enqueue: ordered_spec_* contains
+    // only lookups accepted on earlier edges.  A return therefore observes the
+    // older projected top, then contributes its pop for the following query.
+    reg [`RV64_XLEN-1:0] projected_stack [0:DEPTH-1];
+    reg [INDEX_WIDTH-1:0] projected_sp;
+    reg [COUNT_WIDTH-1:0] projected_count;
+    reg [INDEX_WIDTH-1:0] projected_top_index;
+    reg [1:0] projected_action;
+    reg [`RV64_XLEN-1:0] projected_pc;
+    integer projection_stack_index;
+    integer projection_action_index;
+    always @* begin
+        projected_sp = sp_q;
+        projected_count = count_q;
+        projected_top_index = sp_q - 1'b1;
+        projected_action = 2'b00;
+        projected_pc = {`RV64_XLEN{1'b0}};
+        for (projection_stack_index = 0;
+             projection_stack_index < DEPTH;
+             projection_stack_index = projection_stack_index + 1)
+            projected_stack[projection_stack_index] =
+                stack_q[projection_stack_index];
+
+        if (ordered_update_enable_i)
+            for (projection_action_index = 0;
+                 projection_action_index < ORDERED_DEPTH;
+                 projection_action_index = projection_action_index + 1)
+                if (ordered_spec_valid_i[projection_action_index]) begin
+                    projected_action =
+                        ordered_spec_action_i[2*projection_action_index +: 2];
+                    projected_pc = ordered_spec_pc_i[
+                        projection_action_index*`RV64_XLEN +: `RV64_XLEN];
+                    projected_top_index = projected_sp - 1'b1;
+                    case (projected_action)
+                        2'b01: begin
+                            projected_stack[projected_sp] =
+                                projected_pc + 64'd4;
+                            projected_sp = projected_sp + 1'b1;
+                            if (projected_count != DEPTH)
+                                projected_count = projected_count + 1'b1;
+                        end
+                        2'b10: begin
+                            if (projected_count != 0) begin
+                                projected_sp = projected_sp - 1'b1;
+                                projected_count = projected_count - 1'b1;
+                            end
+                        end
+                        2'b11: begin
+                            if (projected_count != 0)
+                                projected_stack[projected_top_index] =
+                                    projected_pc + 64'd4;
+                            else begin
+                                projected_stack[projected_sp] =
+                                    projected_pc + 64'd4;
+                                projected_sp = projected_sp + 1'b1;
+                                projected_count = projected_count + 1'b1;
+                            end
+                        end
+                        default: begin
+                        end
+                    endcase
+                end
+        projected_top_index = projected_sp - 1'b1;
+    end
+    assign prediction_valid_o = lookup_return &&
+        (projected_count != 0) &&
+        (ordered_update_enable_i || (pending_calls_q == 0));
+    assign prediction_target_o = projected_stack[projected_top_index];
     assign inhibit_load_speculation_o = |inhibit_load_count_q;
 
-    wire pending_call_allocate = lookup_allocate_i && lookup_call;
-    wire pending_call_resolve = resolve_push && (pending_calls_q != 0);
+    wire pending_call_allocate = !ordered_update_enable_i &&
+                                 lookup_allocate_i && lookup_call;
+    wire pending_call_resolve = !ordered_update_enable_i && resolve_push &&
+                                (pending_calls_q != 0);
 
     integer reset_index;
     always @(posedge clk or negedge rst_n) begin
@@ -133,9 +222,9 @@ module openrv64_exec_bp_ras #(
                 endcase
             end
 
-            case ({resolve_push, resolve_pop})
+            case ({ras_update_push, ras_update_pop})
                 2'b10: begin
-                    stack_q[sp_q] <= resolve_pc_i + 64'd4;
+                    stack_q[sp_q] <= ras_update_pc + 64'd4;
                     sp_q <= sp_q + 1'b1;
                     if (count_q != DEPTH)
                         count_q <= count_q + 1'b1;
@@ -149,9 +238,9 @@ module openrv64_exec_bp_ras #(
                 2'b11: begin
                     // Coroutine hint: pop the old top, then push this link.
                     if (count_q != 0)
-                        stack_q[top_index] <= resolve_pc_i + 64'd4;
+                        stack_q[top_index] <= ras_update_pc + 64'd4;
                     else begin
-                        stack_q[sp_q] <= resolve_pc_i + 64'd4;
+                        stack_q[sp_q] <= ras_update_pc + 64'd4;
                         sp_q <= sp_q + 1'b1;
                         count_q <= count_q + 1'b1;
                     end
@@ -173,8 +262,8 @@ module openrv64_exec_bp_ras #(
         .count_q(count_q),
         .pending_calls_q(pending_calls_q),
         .top_index(top_index),
-        .resolve_push(resolve_push),
-        .resolve_pop(resolve_pop),
+        .resolve_push(ras_update_push),
+        .resolve_pop(ras_update_pop),
         .pending_call_allocate(pending_call_allocate),
         .pending_call_resolve(pending_call_resolve)
     );

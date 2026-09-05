@@ -35,6 +35,7 @@ DEBUG_STUB_SRCS := $(CORE_DEBUG_STUB_SRCS) $(BUS_DEBUG_STUB_SRCS) \
 CMU_SRCS := rtl/core/cmu/cmu.v
 DECODE_SRCS := rtl/core/decode/defs/early-defs.v rtl/core/decode/defs/alu-defs.v \
 	rtl/core/decode/defs/lsu-defs.v rtl/core/decode/defs/br-defs.v \
+	rtl/core/decode/defs/fusion-defs.v rtl/core/decode/fusion.v \
 	rtl/core/decode/early.v rtl/core/decode/decode_top.v \
 	rtl/core/decode/rv64-c.v \
 	rtl/core/decode/imm.v rtl/core/decode/alu.v \
@@ -266,6 +267,10 @@ DECODE_TOP_SIM_SRCS := rtl/core/decode/early.v rtl/core/decode/imm.v \
 	rtl/core/decode/reg/alu.v rtl/core/decode/reg/lsu.v \
 	rtl/core/decode/reg/system.v \
 	tb/tb_decode_top.sv
+DECODE_FUSION_SIM_SRCS := rtl/core/decode/fusion.v \
+	tb/tb_decode_fusion.sv
+DECODE_FUSION_3P_SIM_SRCS := rtl/core/decode/fusion.v \
+	tb/tb_decode_fusion_3p.sv
 DECODE_RV64FD_SIM_SRCS := rtl/core/decode/early.v rtl/core/decode/imm.v \
 	rtl/core/decode/rv64-c.v \
 	rtl/core/decode/alu.v rtl/core/decode/lsu.v rtl/core/decode/br.v \

@@ -124,6 +124,18 @@ module openrv64_exec_bp_tage_btb #(
     output wire                         capacity_stall_o,
     output wire                         update_overflow_o,
 
+    output wire                         ordered_ras_update_valid_o,
+    output wire [1:0]                   ordered_ras_update_action_o,
+    output wire [`RV64_XLEN-1:0]        ordered_ras_update_pc_o,
+    output wire                         ordered_ras_pending_o,
+    output wire [INFLIGHT_DEPTH-1:0]    ordered_ras_spec_valid_o,
+    output wire [2*INFLIGHT_DEPTH-1:0]  ordered_ras_spec_action_o,
+    output wire [INFLIGHT_DEPTH*`RV64_XLEN-1:0]
+                                        ordered_ras_spec_pc_o,
+    output wire                         diag_ordered_ras_pending_unresolved_o,
+    output wire                         diag_ordered_ras_pending_resolved_o,
+    output wire                         diag_ordered_head_unresolved_o,
+
     output wire [2:0]                   diag_lookup_provider_o,
     output wire [2:0]                   diag_lookup_alternate_o,
     output wire                         diag_lookup_use_alt_o,
@@ -188,6 +200,9 @@ module openrv64_exec_bp_tage_btb #(
     reg inflight_target_valid_q [0:INFLIGHT_DEPTH-1];
     reg [`RV64_XLEN-1:0] inflight_target_q [0:INFLIGHT_DEPTH-1];
     reg [`RV64_XLEN-1:0] inflight_pc_q [0:INFLIGHT_DEPTH-1];
+    // {pop, push}.  Reuse inflight_pc_q for the pushed return address;
+    // ordered RAS handling therefore adds only these two bits per record.
+    reg [1:0] inflight_ras_action_q [0:INFLIGHT_DEPTH-1];
     reg [BASE_INDEX_WIDTH-1:0]
         inflight_base_index_q [0:INFLIGHT_DEPTH-1];
     reg [BASE_COUNTER_BITS-1:0]
@@ -484,10 +499,13 @@ module openrv64_exec_bp_tage_btb #(
     reg [BTB_TAG_BITS-1:0] lookup_btb_tag_q;
     reg lookup_btb_valid_q;
 
+    // The ID names the eventual backend allocation, not the RAM read.  A
+    // control waiting behind frontend compaction can retain the same PC while
+    // its projected allocation ID changes.  Reuse that PC-indexed response
+    // and record the current lookup_id_i only when allocation is accepted.
     wire lookup_response_match = lookup_response_valid_q &&
         lookup_valid_i && lookup_branch_i &&
-        (lookup_response_pc_q == lookup_pc_i) &&
-        (lookup_response_id_q == lookup_id_i);
+        (lookup_response_pc_q == lookup_pc_i);
     wire lookup_read_fire = lookup_valid_i && lookup_branch_i &&
         !(lookup_allocate_i && lookup_response_match);
 
@@ -703,11 +721,21 @@ module openrv64_exec_bp_tage_btb #(
          (lookup_provider_weak || (lookup_provider_useful == 0) ||
           (lookup_provider_prediction != lookup_alternate_prediction)));
 
+    wire lookup_is_jal =
+        `RV64_OPCODE(lookup_instr_i) == `RV64_OPCODE_JAL;
     wire lookup_is_jalr =
         `RV64_OPCODE(lookup_instr_i) == `RV64_OPCODE_JALR;
+    wire lookup_rd_link = is_link_reg(`RV64_RD(lookup_instr_i));
+    wire lookup_rs1_link = is_link_reg(`RV64_RS1(lookup_instr_i));
+    wire lookup_ras_push = lookup_valid_i &&
+        (lookup_is_jal || lookup_is_jalr) && lookup_rd_link;
+    wire lookup_ras_pop = lookup_valid_i && lookup_is_jalr &&
+        lookup_rs1_link &&
+        (!lookup_rd_link ||
+         (`RV64_RD(lookup_instr_i) != `RV64_RS1(lookup_instr_i)));
+    wire [1:0] lookup_ras_action = {lookup_ras_pop, lookup_ras_push};
     wire lookup_return = lookup_valid_i && lookup_indirect_i &&
-        lookup_is_jalr && is_link_reg(`RV64_RS1(lookup_instr_i)) &&
-        !is_link_reg(`RV64_RD(lookup_instr_i));
+        lookup_is_jalr && lookup_rs1_link && !lookup_rd_link;
     wire resolve_is_jalr =
         `RV64_OPCODE(resolve_instr_i) == `RV64_OPCODE_JALR;
     wire [BTB_INDEX_WIDTH-1:0] lookup_btb_index =
@@ -716,8 +744,7 @@ module openrv64_exec_bp_tage_btb #(
         lookup_pc_i[BTB_INDEX_WIDTH+2 +: BTB_TAG_BITS];
     wire lookup_btb_response_match = lookup_btb_response_valid_q &&
         lookup_valid_i && lookup_indirect_i && !lookup_return &&
-        (lookup_btb_response_pc_q == lookup_pc_i) &&
-        (lookup_btb_response_id_q == lookup_id_i);
+        (lookup_btb_response_pc_q == lookup_pc_i);
     wire lookup_btb_read_fire = lookup_valid_i && lookup_indirect_i &&
         !lookup_return &&
         !(lookup_allocate_i && lookup_btb_response_match);
@@ -816,6 +843,82 @@ module openrv64_exec_bp_tage_btb #(
                          head_commit : resolve_has_record;
     wire [INFLIGHT_PTR_WIDTH-1:0] train_index =
         (ENABLE_TAGGED_RESOLUTION != 0) ? inflight_head_q : resolve_index;
+    assign ordered_ras_update_action_o =
+        inflight_ras_action_q[train_index];
+    assign ordered_ras_update_pc_o = inflight_pc_q[train_index];
+    assign ordered_ras_update_valid_o =
+        (ENABLE_TAGGED_RESOLUTION != 0) && record_commit && !flush_i &&
+        (ordered_ras_update_action_o != 2'b00);
+    // Export the speculative RAS delta in program order.  The committed RAS
+    // folds this surviving queue over its durable state for lookup.  The
+    // current lookup is appended only on the active clock edge, so its own
+    // action cannot affect its prediction.
+    reg [INFLIGHT_DEPTH-1:0] ordered_ras_spec_valid;
+    reg [2*INFLIGHT_DEPTH-1:0] ordered_ras_spec_action;
+    reg [INFLIGHT_DEPTH*`RV64_XLEN-1:0] ordered_ras_spec_pc;
+    integer ras_spec_offset;
+    integer ras_spec_index;
+    always @* begin
+        ordered_ras_spec_valid = {INFLIGHT_DEPTH{1'b0}};
+        ordered_ras_spec_action = {(2*INFLIGHT_DEPTH){1'b0}};
+        ordered_ras_spec_pc =
+            {(INFLIGHT_DEPTH*`RV64_XLEN){1'b0}};
+        for (ras_spec_offset = 0; ras_spec_offset < INFLIGHT_DEPTH;
+             ras_spec_offset = ras_spec_offset + 1) begin
+            ras_spec_index = (inflight_head_q + ras_spec_offset) &
+                             (INFLIGHT_DEPTH - 1);
+            if ((ras_spec_offset < inflight_count_q) &&
+                inflight_valid_q[ras_spec_index] &&
+                (inflight_ras_action_q[ras_spec_index] != 2'b00)) begin
+                ordered_ras_spec_valid[ras_spec_offset] = 1'b1;
+                ordered_ras_spec_action[2*ras_spec_offset +: 2] =
+                    inflight_ras_action_q[ras_spec_index];
+                ordered_ras_spec_pc[ras_spec_offset*`RV64_XLEN +:
+                                    `RV64_XLEN] =
+                    inflight_pc_q[ras_spec_index];
+            end
+        end
+    end
+    assign ordered_ras_spec_valid_o =
+        (ENABLE_TAGGED_RESOLUTION != 0) ? ordered_ras_spec_valid :
+        {INFLIGHT_DEPTH{1'b0}};
+    assign ordered_ras_spec_action_o =
+        (ENABLE_TAGGED_RESOLUTION != 0) ? ordered_ras_spec_action :
+        {(2*INFLIGHT_DEPTH){1'b0}};
+    assign ordered_ras_spec_pc_o =
+        (ENABLE_TAGGED_RESOLUTION != 0) ? ordered_ras_spec_pc :
+        {(INFLIGHT_DEPTH*`RV64_XLEN){1'b0}};
+    reg ordered_ras_pending;
+    reg ordered_ras_pending_unresolved;
+    reg ordered_ras_pending_resolved;
+    integer ras_pending_index;
+    always @* begin
+        ordered_ras_pending = 1'b0;
+        ordered_ras_pending_unresolved = 1'b0;
+        ordered_ras_pending_resolved = 1'b0;
+        for (ras_pending_index = 0;
+             ras_pending_index < INFLIGHT_DEPTH;
+             ras_pending_index = ras_pending_index + 1)
+            if (inflight_valid_q[ras_pending_index] &&
+                (inflight_ras_action_q[ras_pending_index] != 2'b00)) begin
+                ordered_ras_pending = 1'b1;
+                if (inflight_resolved_q[ras_pending_index])
+                    ordered_ras_pending_resolved = 1'b1;
+                else
+                    ordered_ras_pending_unresolved = 1'b1;
+            end
+    end
+    assign ordered_ras_pending_o =
+        (ENABLE_TAGGED_RESOLUTION != 0) && ordered_ras_pending;
+    assign diag_ordered_ras_pending_unresolved_o =
+        (ENABLE_TAGGED_RESOLUTION != 0) &&
+        ordered_ras_pending_unresolved;
+    assign diag_ordered_ras_pending_resolved_o =
+        (ENABLE_TAGGED_RESOLUTION != 0) && ordered_ras_pending_resolved;
+    assign diag_ordered_head_unresolved_o =
+        (ENABLE_TAGGED_RESOLUTION != 0) && (inflight_count_q != 0) &&
+        inflight_valid_q[inflight_head_q] &&
+        !inflight_resolved_q[inflight_head_q];
     wire train_valid = record_commit && inflight_branch_q[train_index];
     wire train_taken = (ENABLE_TAGGED_RESOLUTION != 0) ?
         inflight_actual_taken_q[train_index] : resolve_taken_i;
@@ -1178,6 +1281,7 @@ module openrv64_exec_bp_tage_btb #(
                 inflight_target_valid_q[reset_index] <= 1'b0;
                 inflight_target_q[reset_index] <= 0;
                 inflight_pc_q[reset_index] <= 0;
+                inflight_ras_action_q[reset_index] <= 2'b00;
                 inflight_base_index_q[reset_index] <= 0;
                 inflight_base_counter_q[reset_index] <= 0;
                 inflight_base_valid_q[reset_index] <= 1'b0;
@@ -1433,6 +1537,7 @@ module openrv64_exec_bp_tage_btb #(
                      reset_index = reset_index + 1) begin
                     inflight_valid_q[reset_index] <= 1'b0;
                     inflight_resolved_q[reset_index] <= 1'b0;
+                    inflight_ras_action_q[reset_index] <= 2'b00;
                 end
                 speculative_history_q <= train_valid ?
                     trained_history : committed_history_q;
@@ -1527,6 +1632,8 @@ module openrv64_exec_bp_tage_btb #(
                         prediction_target_valid_o;
                     inflight_target_q[inflight_tail_q] <= prediction_target_o;
                     inflight_pc_q[inflight_tail_q] <= lookup_pc_i;
+                    inflight_ras_action_q[inflight_tail_q] <=
+                        lookup_ras_action;
                     inflight_base_index_q[inflight_tail_q] <=
                         lookup_base_index_q;
                     inflight_base_counter_q[inflight_tail_q] <=

@@ -40,7 +40,7 @@ module openrv64_retire_3p #(
     input  wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] irq_cause_i,
 
     output wire [2:0]                   retire_arch_o,
-    output wire [1:0]                   retire_count_o,
+    output wire [2:0]                   retire_count_o,
     output wire [2:0]                   retire_hard_o,
 
     output wire [2:0]                   release_valid_o,
@@ -83,6 +83,7 @@ module openrv64_retire_3p #(
     localparam integer META_USES_RS2 =
         `OPENRV64_RETIRE_ALLOC_USES_RS2_BIT;
     localparam integer META_HARD = `OPENRV64_RETIRE_ALLOC_HARD_BIT;
+    localparam integer META_FUSED = `OPENRV64_RETIRE_ALLOC_FUSED_BIT;
     localparam integer META_NEW_PHYS =
         `OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB;
     localparam integer META_INSTR = `OPENRV64_RETIRE_ALLOC_INSTR_LSB;
@@ -107,6 +108,48 @@ module openrv64_retire_3p #(
     wire hard0 = queue_meta_i[0*META_WIDTH + META_HARD];
     wire hard1 = queue_meta_i[1*META_WIDTH + META_HARD];
     wire hard2 = queue_meta_i[2*META_WIDTH + META_HARD];
+    wire fused0 = queue_meta_i[0*META_WIDTH + META_FUSED];
+    wire fused1 = queue_meta_i[1*META_WIDTH + META_FUSED];
+    wire fused2 = queue_meta_i[2*META_WIDTH + META_FUSED];
+    wire [`RV64_INSTR_WIDTH-1:0] instr0 = queue_meta_i[
+        0*META_WIDTH + META_INSTR +: `RV64_INSTR_WIDTH];
+    wire [`RV64_INSTR_WIDTH-1:0] instr1 = queue_meta_i[
+        1*META_WIDTH + META_INSTR +: `RV64_INSTR_WIDTH];
+    wire [`RV64_INSTR_WIDTH-1:0] instr2 = queue_meta_i[
+        2*META_WIDTH + META_INSTR +: `RV64_INSTR_WIDTH];
+    wire fused_stub0 = fused0 && !hard0 &&
+        !queue_meta_i[0*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT] &&
+        !queue_meta_i[0*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_MEM_READ_BIT] &&
+        !queue_meta_i[0*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT] &&
+        !queue_meta_i[0*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_BRANCH_BIT] &&
+        !queue_meta_i[0*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_JUMP_BIT];
+    wire fused_stub1 = fused1 && !hard1 &&
+        !queue_meta_i[1*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT] &&
+        !queue_meta_i[1*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_MEM_READ_BIT] &&
+        !queue_meta_i[1*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT] &&
+        !queue_meta_i[1*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_BRANCH_BIT] &&
+        !queue_meta_i[1*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_JUMP_BIT];
+    wire fused_stub2 = fused2 && !hard2 &&
+        !queue_meta_i[2*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_REG_WRITE_BIT] &&
+        !queue_meta_i[2*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_MEM_READ_BIT] &&
+        !queue_meta_i[2*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_MEM_WRITE_BIT] &&
+        !queue_meta_i[2*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_BRANCH_BIT] &&
+        !queue_meta_i[2*META_WIDTH +
+                      `OPENRV64_RETIRE_ALLOC_JUMP_BIT];
     wire [2:0] extension_exception = (ENABLE_EXTENSION != 0) ?
                                      extension_exception_i : 3'b000;
     wire exception0 = queue_result_i[
@@ -134,15 +177,25 @@ module openrv64_retire_3p #(
                                             extension_gpr_result_valid_i :
                                             3'b000;
 
-    wire accept0 = queue_valid_i[0] &&
+    // A fusion stub is complete before its macro, but it cannot retire alone:
+    // the architecturally visible producer state lives on the following
+    // macro-op.  Require the adjacent completed fused record.  A stub in lane
+    // two waits for the next cycle, when the pair is visible in lanes zero/one.
+    wire fused_pair_ready0 = !fused_stub0 ||
+        (queue_valid_i[1] && fused1 && !fused_stub1);
+    wire fused_pair_ready1 = !fused_stub1 ||
+        (queue_valid_i[2] && fused2 && !fused_stub2);
+    wire accept0 = queue_valid_i[0] && fused_pair_ready0 &&
                    extension_ready[0] &&
                    (!csr_pending0 || csr_write_ready_i);
     wire accept1 = queue_valid_i[1] && accept0 &&
                    !exception0 && !halt0 && !hard0 &&
+                   fused_pair_ready1 &&
                    extension_ready[1] &&
                    (!csr_pending1 || csr_write_ready_i);
     wire accept2 = queue_valid_i[2] && accept1 &&
                    !exception1 && !halt1 && !hard1 &&
+                   !fused_stub2 &&
                    extension_ready[2] &&
                    (!csr_pending2 || csr_write_ready_i);
     assign queue_accept_o = {accept2, accept1, accept0};
@@ -151,9 +204,9 @@ module openrv64_retire_3p #(
     wire arch1 = accept1 && !exception1;
     wire arch2 = accept2 && !exception2;
     assign retire_arch_o = {arch2, arch1, arch0};
-    assign retire_count_o = {1'b0, arch0} +
-                            {1'b0, arch1} +
-                            {1'b0, arch2};
+    assign retire_count_o = {2'b00, arch0} +
+                            {2'b00, arch1} +
+                            {2'b00, arch2};
     assign retire_hard_o = queue_accept_o & {hard2, hard1, hard0};
 
     genvar lane;
@@ -265,15 +318,6 @@ module openrv64_retire_3p #(
     assign mret_o = mret0 || mret1 || mret2;
     assign sret_o = sret0 || sret1 || sret2;
 
-    wire [`RV64_INSTR_WIDTH-1:0] instr0 = queue_meta_i[
-        0*META_WIDTH + `OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
-        `RV64_INSTR_WIDTH];
-    wire [`RV64_INSTR_WIDTH-1:0] instr1 = queue_meta_i[
-        1*META_WIDTH + `OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
-        `RV64_INSTR_WIDTH];
-    wire [`RV64_INSTR_WIDTH-1:0] instr2 = queue_meta_i[
-        2*META_WIDTH + `OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
-        `RV64_INSTR_WIDTH];
     wire fence_i0 = arch0 &&
         (`RV64_OPCODE(instr0) == `RV64_OPCODE_MISC_MEM) &&
         (`RV64_FUNCT3(instr0) == `RV64_ZIFENCEI_FUNCT3_FENCE_I);

@@ -24,6 +24,7 @@ module openrv64_dispatch #(
     parameter integer ENABLE_SPECULATION_WINDOW_3P = 0,
     parameter integer ENABLE_ALU2_3P = 0,
     parameter integer ENABLE_ALU_CHAINING_3P = 0,
+    parameter integer ENABLE_LOAD_CONFLICT_RECORD_3P = 0,
     parameter integer DEFER_WINDOW_GPR_READ_3P = 0,
     parameter integer MAX_WINDOW_ISSUE_LANES_3P = 4,
     parameter integer ISSUE_WINDOW_DEPTH_3P = 16,
@@ -134,6 +135,8 @@ module openrv64_dispatch #(
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_3p_i,
     input  wire [RETIRE_SLOT_WIDTH_3P-1:0] squash_slot_3p_i,
     input  wire                         translation_bypass_3p_i,
+    input  wire                         load_conflict_train_valid_3p_i,
+    input  wire [`RV64_XLEN-1:0]        load_conflict_train_pc_3p_i,
     input  wire [2:0]                   decode_valid_3p_i,
     output wire [2:0]                   decode_ready_3p_o,
     input  wire [3*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
@@ -485,6 +488,7 @@ module openrv64_dispatch #(
                 .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH_3P),
                 .ENABLE_SPECULATION(ENABLE_SPECULATION_WINDOW_3P),
                 .ENABLE_ALU_CHAINING(0),
+                .ENABLE_LOAD_CONFLICT_RECORD(0),
                 .DEFER_GPR_READ(DEFER_WINDOW_GPR_READ_3P),
                 .MAX_ISSUE_LANES(MAX_WINDOW_ISSUE_LANES_3P),
                 .DEPTH(ISSUE_WINDOW_DEPTH_3P),
@@ -498,6 +502,8 @@ module openrv64_dispatch #(
                 .squash_inclusive_i(squash_inclusive_3p_i),
                 .squash_id_i(squash_id_3p_i),
                 .translation_bypass_i(translation_bypass_3p_i),
+                .load_conflict_train_valid_i(1'b0),
+                .load_conflict_train_pc_i({`RV64_XLEN{1'b0}}),
                 .decode_valid_i((ENABLE_ISSUE_WINDOW_3P != 0) &&
                                 (RENAME_MODE_3P ==
                                  `OPENRV64_RENAME_IDENTITY) ?
@@ -841,6 +847,8 @@ module openrv64_dispatch #(
                 .ENABLE_SPECULATION(ENABLE_SPECULATION_WINDOW_3P),
                 .ENABLE_ALU2(ENABLE_ALU2_3P),
                 .ENABLE_ALU_CHAINING(ENABLE_ALU_CHAINING_3P),
+                .ENABLE_LOAD_CONFLICT_RECORD(
+                    ENABLE_LOAD_CONFLICT_RECORD_3P),
                 .MAX_ISSUE_LANES(MAX_WINDOW_ISSUE_LANES_3P),
                 .DEPTH(ISSUE_WINDOW_DEPTH_3P),
                 .PHYS_REG_ADDR_WIDTH(PHYS_REG_ADDR_WIDTH_3P),
@@ -854,6 +862,9 @@ module openrv64_dispatch #(
                 .squash_inclusive_i(squash_inclusive_3p_i),
                 .squash_id_i(squash_id_3p_i),
                 .translation_bypass_i(translation_bypass_3p_i),
+                .load_conflict_train_valid_i(
+                    load_conflict_train_valid_3p_i),
+                .load_conflict_train_pc_i(load_conflict_train_pc_3p_i),
                 .decode_valid_i(use_tomasulo_window ?
                     decode_valid_3p_i : 3'b000),
                 .decode_ready_o(tomasulo_decode_ready),

@@ -24,6 +24,7 @@ module tb_dispatch_window_3p;
     localparam integer I_INSTR = 242;
     localparam integer I_PC = 274;
     localparam integer I_TRACE = 338;
+    localparam integer I_FUSED = 402;
     localparam integer I_MEM_READ = 16;
     localparam integer I_MEM_WRITE = 15;
     localparam integer I_BRANCH = 14;
@@ -38,6 +39,8 @@ module tb_dispatch_window_3p;
     reg squash_inclusive;
     reg [IDW-1:0] squash_id;
     reg translation_bypass;
+    reg load_conflict_train_valid;
+    reg [63:0] load_conflict_train_pc;
     reg [2:0] decode_valid;
     wire [2:0] decode_ready;
     reg [3*IW-1:0] decode_payload;
@@ -94,6 +97,8 @@ module tb_dispatch_window_3p;
         .squash_inclusive_i(squash_inclusive),
         .squash_id_i(squash_id),
         .translation_bypass_i(translation_bypass),
+        .load_conflict_train_valid_i(load_conflict_train_valid),
+        .load_conflict_train_pc_i(load_conflict_train_pc),
         .decode_valid_i(decode_valid), .decode_ready_o(decode_ready),
         .decode_payload_i(decode_payload),
         .decode_uses_rs1_i(decode_uses_rs1),
@@ -203,6 +208,8 @@ module tb_dispatch_window_3p;
             prediction_update_id = {IDW{1'b0}};
             prediction_update_slot = {SW{1'b0}};
             prediction_update_taken = 1'b0;
+            load_conflict_train_valid = 1'b0;
+            load_conflict_train_pc = 64'd0;
             completion_valid = 3'b000;
             completion_id = {3*IDW{1'b0}};
             completion_payload = {3*OW{1'b0}};
@@ -977,7 +984,166 @@ module tb_dispatch_window_3p;
         tick();
         clear_inputs();
 
-        $display("PASS: dispatch window issue, fixed EX0 Zbb, dual ordered MEM roles, producer tags, selective recovery, and prediction update");
+        // Conservative fusion keeps both original branch source reads even
+        // though the macro also carries an embedded LI value.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        allocation_id = {IDW'(0), IDW'(0), IDW'(91)};
+        allocation_slot = {4'd0, 4'd0, 4'd4};
+        next_retire_id = IDW'(91);
+        next_retire_slot = 4'd4;
+        p0 = alu_packet(64'd91, 5'd9, 5'd10, 5'd9);
+        p0[I_INSTR +: 32] = 32'h00a4_8463;
+        p0[I_RS1_DATA +: 64] = 64'hffff_ffff_ffff_fff9;
+        p0[I_BR_OP +: `RV64_BR_OP_WIDTH] = `RV64_BR_OP_BEQ;
+        p0[I_BRANCH] = 1'b1;
+        p0[I_FUSED] = 1'b1;
+        p0[I_REG_WRITE] = 1'b0;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b001;
+        decode_uses_rs2 = 3'b001;
+        gpr_read_data[0*64 +: 64] = 64'h8877_6655_4433_2211;
+        gpr_read_data[1*64 +: 64] = 64'h1122_3344_5566_7788;
+        decode_valid = 3'b001;
+        #1;
+        if ((gpr_read_addr[0*5 +: 5] != 5'd9) ||
+            (gpr_read_addr[1*5 +: 5] != 5'd10))
+            fail("fused LI/branch source reads were elided");
+        tick();
+        clear_inputs();
+        #1;
+        if (!pipe_valid[1] ||
+            (pipe_payload[IW + I_RS1_DATA +: 64] !=
+             64'h8877_6655_4433_2211) ||
+            (pipe_payload[IW + I_RS2_DATA +: 64] !=
+             64'h1122_3344_5566_7788))
+            fail("fused LI/branch source values were not retained");
+        tick();
+        clear_inputs();
+
+        // The restored AUIPC is a real producer.  Its fused direct-JAL macro
+        // must retain the original JALR dependency and wait for that exact
+        // producer, rather than an older writer to the same register.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        pipe_ready = 4'b0000;
+        allocation_id = {IDW'(0), IDW'(0), IDW'(92)};
+        allocation_slot = {4'd0, 4'd0, 4'd5};
+        next_retire_id = IDW'(92);
+        next_retire_slot = 4'd5;
+        p0 = alu_packet(64'd92, 5'd0, 5'd0, 5'd5);
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_valid = 3'b001;
+        tick();
+        clear_inputs();
+
+        allocation_id = {IDW'(0), IDW'(94), IDW'(93)};
+        allocation_slot = {4'd0, 4'd7, 4'd6};
+        p0 = alu_packet(64'd93, 5'd0, 5'd0, 5'd0);
+        p0[I_INSTR +: 32] = 32'h0000_0297;
+        p0[I_RD +: 5] = 5'd5;
+        p0[I_REG_WRITE] = 1'b1;
+        p0[I_FUSED] = 1'b1;
+        p1 = alu_packet(64'd94, 5'd5, 5'd0, 5'd5);
+        p1[I_INSTR +: 32] = 32'h0002_82e7;
+        p1[I_IMM +: 64] = 64'd8;
+        p1[I_BR_OP +: `RV64_BR_OP_WIDTH] = `RV64_BR_OP_JAL;
+        p1[I_JUMP] = 1'b1;
+        p1[I_FUSED] = 1'b1;
+        decode_payload = {{IW{1'b0}}, p1, p0};
+        decode_uses_rs1 = 3'b010;
+        decode_valid = 3'b011;
+        #1;
+        if (gpr_read_addr[2*5 +: 5] != 5'd5 ||
+            !allocation_meta[MW + IW])
+            fail("scheduler did not retain fused call source metadata");
+        tick();
+        clear_inputs();
+        pipe_ready = 4'b1111;
+        #1;
+        if ((pipe_valid[1:0] != 2'b11) ||
+            (pipe_id[0*IDW +: IDW] != IDW'(92)) ||
+            (pipe_id[1*IDW +: IDW] != IDW'(93)))
+            fail("fused call did not hold macro behind AUIPC producer");
+        tick();
+        clear_inputs();
+
+        completion_valid = 3'b001;
+        completion_id[0*IDW +: IDW] = IDW'(93);
+        completion_payload[0*OW +: OW] =
+            reg_completion(5'd5, 64'h8000_1000);
+        #1;
+        if (!pipe_valid[1] ||
+            (pipe_id[1*IDW +: IDW] != IDW'(94)) ||
+            !pipe_src1_producer_valid[1] ||
+            (pipe_src1_producer_id[1*IDW +: IDW] != IDW'(93)))
+            fail("fused call did not wake from its AUIPC producer");
+        tick();
+        clear_inputs();
+
+        // Canonical NOPs allocate a ROB identity but are born issued and
+        // complete.  They must not consume an execution-pipe cycle.
+        flush = 1'b1;
+        tick();
+        flush = 1'b0;
+        allocation_id = {IDW'(0), IDW'(0), IDW'(92)};
+        allocation_slot = {4'd0, 4'd0, 4'd5};
+        next_retire_id = IDW'(92);
+        next_retire_slot = 4'd5;
+        p0 = alu_packet(64'd92, 5'd0, 5'd0, 5'd0);
+        p0[I_INSTR +: 32] = `RV64_INSTR_NOP;
+        p0[I_ALU_OP +: 5] = `RV64_ALU_OP_ADD;
+        p0[I_REG_WRITE] = 1'b0;
+        decode_payload = {{2*IW{1'b0}}, p0};
+        decode_uses_rs1 = 3'b000;
+        decode_valid = 3'b001;
+        #1;
+        if (allocation_valid != 3'b001)
+            fail("NOP did not allocate its ROB identity");
+        tick();
+        clear_inputs();
+        #1;
+        if ((|pipe_valid) || (queue_count != 1))
+            fail("NOP consumed an execution pipe or vanished before retire");
+        retire_valid = 3'b001;
+        retire_id[0 +: IDW] = IDW'(92);
+        retire_slot[0 +: SW] = 4'd5;
+        tick();
+        clear_inputs();
+        #1;
+        if (queue_count != 0)
+            fail("retired NOP remained resident in identity scheduler");
+
+        // A fused producer and macro remain one admission transaction.  With
+        // one scheduler/ROB slot available, lane zero must not accept the
+        // producer alone.  With two slots, both records become ready together.
+        clear_inputs();
+        p0 = alu_packet(64'd93, 5'd0, 5'd0, 5'd0);
+        p0[I_INSTR +: 32] = 32'h0030_0313;
+        p0[I_REG_WRITE] = 1'b1;
+        p0[I_FUSED] = 1'b1;
+        p1 = alu_packet(64'd94, 5'd5, 5'd6, 5'd6);
+        p1[I_INSTR +: 32] = 32'h0062_8463;
+        p1[I_REG_WRITE] = 1'b0;
+        p1[I_BRANCH] = 1'b1;
+        p1[I_FUSED] = 1'b1;
+        decode_payload = {{IW{1'b0}}, p1, p0};
+        decode_valid = 3'b011;
+        force dut.count_q = 5'd15;
+        #1;
+        if ((decode_ready != 3'b000) || (allocation_valid != 3'b000))
+            fail("fused producer was admitted without macro capacity");
+        force dut.count_q = 5'd14;
+        #1;
+        if ((decode_ready[1:0] != 2'b11) ||
+            (allocation_valid[1:0] != 2'b11))
+            fail("fused producer/macro pair was not admitted atomically");
+        release dut.count_q;
+        clear_inputs();
+
+        $display("PASS: dispatch window issue, retained fused dependencies, direct NOP completion, atomic fused-pair admission, fused operands, fixed EX0 Zbb, dual ordered MEM roles, producer tags, selective recovery, and prediction update");
         $finish;
     end
 endmodule

@@ -24,7 +24,7 @@ module tb_retire_3p;
     reg [`RV64_EXCEPT_CAUSE_WIDTH-1:0] irq_cause;
     reg csr_write_ready;
     wire [2:0] retire_arch;
-    wire [1:0] retire_count;
+    wire [2:0] retire_count;
     wire [2:0] retire_hard;
     wire [2:0] release_valid;
     wire [2:0] release_uses_rs1;
@@ -225,7 +225,7 @@ module tb_retire_3p;
         queue_valid = 3'b111;
         #1;
         if ((queue_accept != 3'b111) || (retire_arch != 3'b111) ||
-            (retire_count != 2'd3) || (gpr_write != 3'b111)) begin
+            (retire_count != 3'd3) || (gpr_write != 3'b111)) begin
             fail("three normal instructions did not retire together");
         end
         if ((gpr_rd_data[0*64 +: 64] != 64'h55) ||
@@ -233,6 +233,40 @@ module tb_retire_3p;
             (gpr_rd_data[2*64 +: 64] != 64'h77)) begin
             fail("three retirement write values were reordered");
         end
+
+        // A macro marker no longer changes architectural retirement count;
+        // the candidate PC has its own ROB entry.
+        queue_meta[1*META_WIDTH +
+                   `OPENRV64_RETIRE_ALLOC_FUSED_BIT] = 1'b1;
+        #1;
+        if ((queue_accept != 3'b111) || (retire_arch != 3'b111) ||
+            (retire_count != 3'd3) || (gpr_write != 3'b111)) begin
+            fail("macro marker incorrectly changed retirement count");
+        end
+
+        // The leading NOP stub must not retire before its adjacent completed
+        // macro.  Once both are ready, they retire atomically as two entries.
+        set_meta(0, 0, 0, 0, 0, 5'd0);
+        set_result(0, 64'd20, 64'h200, 64'h204, 32'h0000_0097,
+                   64'd0, 5'd0, 5'd0, 5'd0, 0, 0, 0, 5'd0, 0, 0, 0, 0);
+        queue_meta[0*META_WIDTH +
+                   `OPENRV64_RETIRE_ALLOC_FUSED_BIT] = 1'b1;
+        queue_valid = 3'b001;
+        #1;
+        if ((queue_accept != 3'b000) || (retire_count != 3'd0))
+            fail("fused NOP stub retired without its macro");
+        queue_valid = 3'b011;
+        #1;
+        if ((queue_accept != 3'b011) || (retire_arch != 3'b011) ||
+            (retire_count != 3'd2) || (gpr_write != 3'b010))
+            fail("fused NOP stub and macro did not retire atomically");
+
+        set_meta(0, 0, 1, 0, 1, 5'd5);
+        set_result(0, 64'd10, 64'h100, 64'h104, 32'h1,
+                   64'h55, 5'd1, 5'd0, 5'd5, 1, 0, 0, 5'd0, 0, 0, 0, 0);
+        queue_meta[1*META_WIDTH +
+                   `OPENRV64_RETIRE_ALLOC_FUSED_BIT] = 1'b0;
+        queue_valid = 3'b111;
 
         // A sparse extension may stop the ordered prefix and may supply the
         // value only for an actual cross-domain GPR write.

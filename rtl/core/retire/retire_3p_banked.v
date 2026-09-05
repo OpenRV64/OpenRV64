@@ -48,7 +48,7 @@ module openrv64_retire_3p_banked #(
     input  wire [`RV64_EXCEPT_CAUSE_WIDTH-1:0] irq_cause_i,
 
     output wire [2:0]                   retire_arch_o,
-    output wire [1:0]                   retire_count_o,
+    output wire [2:0]                   retire_count_o,
     output wire [2:0]                   retire_hard_o,
 
     output wire [2:0]                   release_valid_o,

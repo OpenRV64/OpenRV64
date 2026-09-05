@@ -94,7 +94,7 @@ module tb_backend_3p #(
     wire [2:0] branch_retire_age_valid;
     wire [191:0] branch_retire_age_addr;
     wire [2:0] retire_arch;
-    wire [1:0] retire_count;
+    wire [2:0] retire_count;
     wire exception;
     wire halt;
     wire irq;
@@ -343,6 +343,7 @@ module tb_backend_3p #(
     reg saw_branch_owner_accept;
     reg saw_branch_stale_reject;
     reg saw_satp_after_store_drain;
+    reg saw_nop_retire;
     integer branch_monitor_lane;
     reg [4:0] branch_monitor_rd;
     reg [`OPENRV64_LSU_TAG_WIDTH-1:0] old_load_tag;
@@ -417,10 +418,38 @@ module tb_backend_3p #(
         saw_branch_owner_accept = 0;
         saw_branch_stale_reject = 0;
         saw_satp_after_store_drain = 0;
+        saw_nop_retire = 0;
 
         repeat (3) tick();
         rst_n = 1;
         tick();
+
+        // A decoded canonical NOP allocates and completes directly in the
+        // ROB.  It must never assert an execution-pipe valid.
+        while (!decode_ready[0]) tick();
+        decode_payload = {{2*IW{1'b0}},
+                          base_packet(0, 64'h0ffc, `RV64_INSTR_NOP)};
+        decode_valid = 3'b001;
+        #1;
+        if (branch_resolved)
+            fail("canonical NOP was reported as a resolved branch");
+        tick();
+        decode_valid = 3'b000;
+        decode_payload = 0;
+        for (cycles = 0; cycles < 8 && !saw_nop_retire;
+             cycles = cycles + 1) begin
+            #1;
+            if (|issue_valid)
+                fail("canonical NOP reached an execution pipe");
+            if (retire_arch[0] && (retire_instr == `RV64_INSTR_NOP) &&
+                (retire_pc == 64'h0ffc))
+                saw_nop_retire = 1'b1;
+            tick();
+        end
+        if (!saw_nop_retire)
+            fail("canonical NOP did not complete through the ROB");
+        if ((retire_occupancy != 0) || (dispatch_occupancy != 0))
+            fail("canonical NOP leaked dispatch or ROB state");
 
         // Independent writes issue together and retire together.
         send2(addi_packet(1, 0, 5, 11),

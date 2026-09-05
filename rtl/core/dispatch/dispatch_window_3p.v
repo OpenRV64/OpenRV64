@@ -39,6 +39,7 @@ module openrv64_dispatch_window_3p #(
     parameter integer ENABLE_SPECULATION = 0,
     parameter integer ENABLE_ALU2 = 0,
     parameter integer ENABLE_ALU_CHAINING = 0,
+    parameter integer ENABLE_LOAD_CONFLICT_RECORD = 0,
     parameter integer DEFER_GPR_READ = 0,
     parameter integer MAX_ISSUE_LANES = 4,
     parameter integer DEPTH = 16,
@@ -56,6 +57,8 @@ module openrv64_dispatch_window_3p #(
     input  wire                         squash_inclusive_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] squash_id_i,
     input  wire                         translation_bypass_i,
+    input  wire                         load_conflict_train_valid_i,
+    input  wire [`RV64_XLEN-1:0]        load_conflict_train_pc_i,
 
     input  wire [2:0]                   decode_valid_i,
     output wire [2:0]                   decode_ready_o,
@@ -165,6 +168,7 @@ module openrv64_dispatch_window_3p #(
     localparam integer PAYLOAD_RS1_DATA = 168;
     localparam integer PAYLOAD_RS2_DATA = 104;
     localparam integer PAYLOAD_INSTR = 242;
+    localparam integer PAYLOAD_PC = 274;
     localparam integer PAYLOAD_IMM = 40;
     localparam integer PAYLOAD_RD = 35;
     localparam integer PAYLOAD_ALU_EXT = 32;
@@ -183,10 +187,77 @@ module openrv64_dispatch_window_3p #(
     localparam integer PAYLOAD_ECALL = 6;
     localparam integer PAYLOAD_INSTR_FAULT = 5;
     localparam integer PAYLOAD_INSTR_PAGE_FAULT = 4;
+    localparam integer PAYLOAD_FUSED = 402;
     localparam integer OPERAND_COUNT_WIDTH = $clog2((2 * DEPTH) + 1);
     localparam integer SPEC_CROSS_COUNT_WIDTH = COUNT_WIDTH + 2;
     localparam integer SCHED_SLOT_WIDTH =
         (DEPTH <= 1) ? 1 : $clog2(DEPTH);
+    localparam integer LOAD_CONFLICT_RECORD_ENTRIES = 32;
+    localparam integer LOAD_CONFLICT_INDEX_WIDTH = 5;
+    localparam integer LOAD_CONFLICT_SIGNATURE_WIDTH = 11;
+
+    // A compact load-wait record, not a confidence predictor.  The folded
+    // word PC selects one direct-mapped entry and supplies a short signature.
+    // An observed store/load ordering collision installs the load site.  The
+    // record deliberately survives pipeline recovery and is cleared only by
+    // reset so hot loops retain what the first iteration learned.
+    reg load_conflict_record_valid_q [0:LOAD_CONFLICT_RECORD_ENTRIES-1];
+    reg [LOAD_CONFLICT_SIGNATURE_WIDTH-1:0]
+        load_conflict_record_signature_q [0:LOAD_CONFLICT_RECORD_ENTRIES-1];
+
+    function automatic [15:0] load_conflict_pc_hash;
+        input [`RV64_XLEN-1:0] pc;
+        begin
+            load_conflict_pc_hash = pc[17:2] ^ pc[33:18] ^
+                                    pc[49:34] ^ pc[63:48];
+        end
+    endfunction
+
+    function automatic load_conflict_record_hit;
+        input [`RV64_XLEN-1:0] pc;
+        reg [15:0] pc_hash;
+        begin
+            pc_hash = load_conflict_pc_hash(pc);
+            load_conflict_record_hit =
+                (ENABLE_LOAD_CONFLICT_RECORD != 0) &&
+                load_conflict_record_valid_q[
+                    pc_hash[LOAD_CONFLICT_INDEX_WIDTH-1:0]] &&
+                (load_conflict_record_signature_q[
+                    pc_hash[LOAD_CONFLICT_INDEX_WIDTH-1:0]] ==
+                 pc_hash[15:LOAD_CONFLICT_INDEX_WIDTH]);
+        end
+    endfunction
+
+    integer load_conflict_record_reset_idx;
+    reg [15:0] load_conflict_train_hash;
+    always @* begin
+        load_conflict_train_hash =
+            load_conflict_pc_hash(load_conflict_train_pc_i);
+    end
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (load_conflict_record_reset_idx = 0;
+                 load_conflict_record_reset_idx <
+                    LOAD_CONFLICT_RECORD_ENTRIES;
+                 load_conflict_record_reset_idx =
+                    load_conflict_record_reset_idx + 1) begin
+                load_conflict_record_valid_q[
+                    load_conflict_record_reset_idx] <= 1'b0;
+                load_conflict_record_signature_q[
+                    load_conflict_record_reset_idx] <=
+                    {LOAD_CONFLICT_SIGNATURE_WIDTH{1'b0}};
+            end
+        end else if ((ENABLE_LOAD_CONFLICT_RECORD != 0) &&
+                     load_conflict_train_valid_i) begin
+            load_conflict_record_valid_q[
+                load_conflict_train_hash[
+                    LOAD_CONFLICT_INDEX_WIDTH-1:0]] <= 1'b1;
+            load_conflict_record_signature_q[
+                load_conflict_train_hash[
+                    LOAD_CONFLICT_INDEX_WIDTH-1:0]] <=
+                load_conflict_train_hash[15:LOAD_CONFLICT_INDEX_WIDTH];
+        end
+    end
 
     reg                                 valid_q [0:DEPTH-1];
     reg                                 issued_q [0:DEPTH-1];
@@ -194,6 +265,12 @@ module openrv64_dispatch_window_3p #(
     reg [RETIRE_SLOT_WIDTH-1:0]         rob_slot_q [0:DEPTH-1];
     reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
                                         payload_q [0:DEPTH-1];
+    // Classify the load site once when it enters the scheduler.  Looking up
+    // the table from every resident entry would synthesize a 32-read-port
+    // structure directly on issue selection.  A collision redirects and
+    // refetches the violating load, so its replacement admission observes the
+    // newly trained entry before it can issue again.
+    reg                                 load_conflict_hit_q [0:DEPTH-1];
     reg                                 uses_rs1_q [0:DEPTH-1];
     reg                                 uses_rs2_q [0:DEPTH-1];
     reg                                 src1_ready_q [0:DEPTH-1];
@@ -296,6 +373,43 @@ module openrv64_dispatch_window_3p #(
                       payload[PAYLOAD_ECALL] ||
                       payload[PAYLOAD_INSTR_FAULT] ||
                       payload[PAYLOAD_INSTR_PAGE_FAULT];
+        end
+    endfunction
+
+    function automatic is_completed_nop;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            is_completed_nop =
+                (`RV64_INSTR_IS_NOP(payload[PAYLOAD_INSTR +:
+                                            `RV64_INSTR_WIDTH]) ||
+                 payload[PAYLOAD_FUSED]) &&
+                !payload[PAYLOAD_REG_WRITE] &&
+                !payload[PAYLOAD_MEM_READ] &&
+                !payload[PAYLOAD_MEM_WRITE] &&
+                !payload[PAYLOAD_BRANCH] &&
+                !payload[PAYLOAD_JUMP] &&
+                !payload[PAYLOAD_SYSTEM] &&
+                !payload[PAYLOAD_FENCE] &&
+                !payload[PAYLOAD_ILLEGAL] &&
+                !payload[PAYLOAD_INSTR_FAULT] &&
+                !payload[PAYLOAD_INSTR_PAGE_FAULT];
+        end
+    endfunction
+
+    function automatic fused_pair_producer;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            fused_pair_producer = payload[PAYLOAD_FUSED] &&
+                payload[PAYLOAD_REG_WRITE] &&
+                !payload[PAYLOAD_MEM_READ] &&
+                !payload[PAYLOAD_MEM_WRITE] &&
+                !payload[PAYLOAD_BRANCH] &&
+                !payload[PAYLOAD_JUMP] &&
+                !payload[PAYLOAD_SYSTEM] &&
+                !payload[PAYLOAD_FENCE] &&
+                !payload[PAYLOAD_ILLEGAL] &&
+                !payload[PAYLOAD_INSTR_FAULT] &&
+                !payload[PAYLOAD_INSTR_PAGE_FAULT];
         end
     endfunction
 
@@ -471,7 +585,14 @@ module openrv64_dispatch_window_3p #(
             // reaches the operand latch; it does not relax control ordering.
             is_ex1_chain_control =
                 is_early_conditional_branch(payload) ||
-                is_speculative_jalr(payload);
+                is_speculative_jalr(payload) ||
+                // The producer-preserving pcrel-fusion experiment presents
+                // the macro as a direct JAL while deliberately retaining the
+                // original JALR source dependency.  A genuine JAL has no
+                // source and never reaches this path; admit only the fused
+                // hybrid so it retains the baseline AUIPC->JALR chain timing.
+                (payload[PAYLOAD_FUSED] &&
+                 is_replayable_direct_jal(payload));
         end
     endfunction
 
@@ -598,6 +719,12 @@ module openrv64_dispatch_window_3p #(
         end
     end
 
+    // Fusion supplies the effective source-use mask.  A producer-preserving
+    // macro may clear the source whose value is already embedded while the
+    // original producer continues to execute and write architecturally.
+    wire [2:0] decode_effective_uses_rs1 = decode_uses_rs1_i;
+    wire [2:0] decode_effective_uses_rs2 = decode_uses_rs2_i;
+
     // GPR values are sampled at decode admission.  Three same-cycle decode
     // lanes still see one another through the temporary owner view below.
     genvar read_lane;
@@ -605,14 +732,20 @@ module openrv64_dispatch_window_3p #(
         for (read_lane = 0; read_lane < 3; read_lane = read_lane + 1) begin : g_read
             assign gpr_read_addr_o[
                 (read_lane*2+0)*`RV64_REG_ADDR_WIDTH +:
-                `RV64_REG_ADDR_WIDTH] = decode_payload_i[
-                read_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
-                PAYLOAD_RS1_ADDR +: `RV64_REG_ADDR_WIDTH];
+                `RV64_REG_ADDR_WIDTH] =
+                decode_effective_uses_rs1[read_lane] ?
+                    decode_payload_i[
+                        read_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                        PAYLOAD_RS1_ADDR +: `RV64_REG_ADDR_WIDTH] :
+                    `RV64_REG_X0;
             assign gpr_read_addr_o[
                 (read_lane*2+1)*`RV64_REG_ADDR_WIDTH +:
-                `RV64_REG_ADDR_WIDTH] = decode_payload_i[
-                read_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
-                PAYLOAD_RS2_ADDR +: `RV64_REG_ADDR_WIDTH];
+                `RV64_REG_ADDR_WIDTH] =
+                decode_effective_uses_rs2[read_lane] ?
+                    decode_payload_i[
+                        read_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                        PAYLOAD_RS2_ADDR +: `RV64_REG_ADDR_WIDTH] :
+                    `RV64_REG_X0;
         end
     endgenerate
 
@@ -652,25 +785,50 @@ module openrv64_dispatch_window_3p #(
         end
     end
 
-    assign decode_ready_o[0] = !flush_i && !recovery_inhibit &&
-                               allocation_ready_i && (free_count >= 1) &&
-                               ((PHYSICAL_RENAME == 0) ||
-                                scheduler_alloc_found[0]);
-    assign decode_ready_o[1] = (MAX_ISSUE_LANES > 1) &&
-                               decode_ready_o[0] && (free_count >= 2) &&
-                               ((PHYSICAL_RENAME == 0) ||
-                                scheduler_alloc_found[1]);
-    assign decode_ready_o[2] = (MAX_ISSUE_LANES > 2) &&
-                               decode_ready_o[1] && (free_count >= 3) &&
-                               ((PHYSICAL_RENAME == 0) ||
-                                scheduler_alloc_found[2]);
+    wire decode_fused0 = decode_payload_i[
+        0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + PAYLOAD_FUSED];
+    wire decode_fused1 = decode_payload_i[
+        1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + PAYLOAD_FUSED];
+    wire decode_fused2 = decode_payload_i[
+        2*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH + PAYLOAD_FUSED];
+    wire decode_fused_pair0 = decode_valid_i[0] && decode_valid_i[1] &&
+        fused_pair_producer(
+            decode_payload_i[0*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]) &&
+        decode_fused1;
+    wire decode_fused_pair1 = decode_valid_i[1] && decode_valid_i[2] &&
+        fused_pair_producer(
+            decode_payload_i[1*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +:
+                             `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH]) &&
+        decode_fused2;
+    wire [2:0] decode_ready_base;
+    assign decode_ready_base[0] = !flush_i && !recovery_inhibit &&
+                                  allocation_ready_i && (free_count >= 1) &&
+                                  ((PHYSICAL_RENAME == 0) ||
+                                   scheduler_alloc_found[0]);
+    assign decode_ready_base[1] = (MAX_ISSUE_LANES > 1) &&
+                                  decode_ready_base[0] &&
+                                  (free_count >= 2) &&
+                                  ((PHYSICAL_RENAME == 0) ||
+                                   scheduler_alloc_found[1]);
+    assign decode_ready_base[2] = (MAX_ISSUE_LANES > 2) &&
+                                  decode_ready_base[1] &&
+                                  (free_count >= 3) &&
+                                  ((PHYSICAL_RENAME == 0) ||
+                                   scheduler_alloc_found[2]);
+    // Keep producer and macro admission atomic at the fusion boundary.  The
+    // scheduler may then issue them separately according to the retained RAW
+    // dependency, without losing the macro if only one allocation slot was
+    // available on the fusion output handshake.
+    assign decode_ready_o[0] = decode_ready_base[0] &&
+        (!decode_fused_pair0 || decode_ready_base[1]);
+    assign decode_ready_o[1] = decode_ready_base[1] && decode_ready_o[0] &&
+        (!decode_fused_pair1 || decode_ready_base[2]);
+    assign decode_ready_o[2] = decode_ready_base[2] && decode_ready_o[1];
     wire decode_fire0 = decode_valid_i[0] && decode_ready_o[0];
     wire decode_fire1 = decode_valid_i[1] && decode_ready_o[1] && decode_fire0;
     wire decode_fire2 = decode_valid_i[2] && decode_ready_o[2] && decode_fire1;
     wire [2:0] decode_fire = {decode_fire2, decode_fire1, decode_fire0};
-    wire [1:0] decode_count = {1'b0, decode_fire0} +
-                              {1'b0, decode_fire1} +
-                              {1'b0, decode_fire2};
     assign allocation_valid_o = decode_fire;
 
     wire [1:0] retire_count = {1'b0, retire_valid_i[0]} +
@@ -683,6 +841,21 @@ module openrv64_dispatch_window_3p #(
     reg [`RV64_XLEN-1:0] owner_data_view [0:31];
     reg [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0]
         admit_payload [0:2];
+    wire [2:0] decode_nop = {
+        is_completed_nop(admit_payload[2]),
+        is_completed_nop(admit_payload[1]),
+        is_completed_nop(admit_payload[0])
+    };
+    // A physically renamed NOP has no scheduler lifetime.  Identity rename
+    // retains it until ROB retirement because scheduler occupancy is tied to
+    // the shared ROB ring in that mode.
+    wire [1:0] scheduler_decode_count =
+        {1'b0, decode_fire0 &&
+         ((PHYSICAL_RENAME == 0) || !decode_nop[0])} +
+        {1'b0, decode_fire1 &&
+         ((PHYSICAL_RENAME == 0) || !decode_nop[1])} +
+        {1'b0, decode_fire2 &&
+         ((PHYSICAL_RENAME == 0) || !decode_nop[2])};
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] admit_src1_tag [0:2];
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] admit_src2_tag [0:2];
     reg admit_src1_producer_valid [0:2];
@@ -786,7 +959,7 @@ module openrv64_dispatch_window_3p #(
             admit_src1_data[view_lane] = {`RV64_XLEN{1'b0}};
             admit_src2_data[view_lane] = {`RV64_XLEN{1'b0}};
 
-            if (decode_uses_rs1_i[view_lane] &&
+            if (decode_effective_uses_rs1[view_lane] &&
                 (view_rs1 != `RV64_REG_X0)) begin
                 if (owner_valid_view[view_rs1]) begin
                     admit_src1_producer_valid[view_lane] = 1'b1;
@@ -798,7 +971,7 @@ module openrv64_dispatch_window_3p #(
                         (view_lane*2+0)*`RV64_XLEN +: `RV64_XLEN];
                 end
             end
-            if (decode_uses_rs2_i[view_lane] &&
+            if (decode_effective_uses_rs2[view_lane] &&
                 (view_rs2 != `RV64_REG_X0)) begin
                 if (owner_valid_view[view_rs2]) begin
                     admit_src2_producer_valid[view_lane] = 1'b1;
@@ -817,10 +990,10 @@ module openrv64_dispatch_window_3p #(
             // but do not let it create a second dependency namespace here.
             if (PHYSICAL_RENAME != 0) begin
                 admit_src1_producer_valid[view_lane] =
-                    decode_uses_rs1_i[view_lane] &&
+                    decode_effective_uses_rs1[view_lane] &&
                     rename_source_producer_valid_i[view_lane*2+0];
                 admit_src2_producer_valid[view_lane] =
-                    decode_uses_rs2_i[view_lane] &&
+                    decode_effective_uses_rs2[view_lane] &&
                     rename_source_producer_valid_i[view_lane*2+1];
                 admit_src1_tag[view_lane] =
                     rename_source_producer_id_i[
@@ -831,13 +1004,34 @@ module openrv64_dispatch_window_3p #(
                         (view_lane*2+1)*`OPENRV64_INSTR_ID_WIDTH +:
                         `OPENRV64_INSTR_ID_WIDTH];
                 admit_src1_ready[view_lane] =
-                    !decode_uses_rs1_i[view_lane] ||
+                    !decode_effective_uses_rs1[view_lane] ||
                     rename_source_ready_i[view_lane*2+0];
                 admit_src2_ready[view_lane] =
-                    !decode_uses_rs2_i[view_lane] ||
+                    !decode_effective_uses_rs2[view_lane] ||
                     rename_source_ready_i[view_lane*2+1];
                 admit_src1_data[view_lane] = {`RV64_XLEN{1'b0}};
                 admit_src2_data[view_lane] = {`RV64_XLEN{1'b0}};
+            end
+
+            // LI/branch fusion clears uses_rsN for the source replaced by the
+            // embedded immediate.  Ordinary admission initializes every
+            // unused source to zero, so restore that constant after both the
+            // architectural and physical-rename operand paths have run.
+            if (admit_payload[view_lane][PAYLOAD_FUSED] &&
+                admit_payload[view_lane][PAYLOAD_BRANCH] &&
+                !admit_payload[view_lane][PAYLOAD_JUMP] &&
+                !admit_payload[view_lane][PAYLOAD_REG_WRITE] &&
+                (view_rd != `RV64_REG_X0)) begin
+                if (!decode_effective_uses_rs1[view_lane] &&
+                    (view_rs1 == view_rd))
+                    admit_src1_data[view_lane] = decode_payload_i[
+                        view_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                        PAYLOAD_RS1_DATA +: `RV64_XLEN];
+                if (!decode_effective_uses_rs2[view_lane] &&
+                    (view_rs2 == view_rd))
+                    admit_src2_data[view_lane] = decode_payload_i[
+                        view_lane*`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                        PAYLOAD_RS2_DATA +: `RV64_XLEN];
             end
 
             admit_payload[view_lane][PAYLOAD_RS1_DATA +: `RV64_XLEN] =
@@ -907,8 +1101,8 @@ module openrv64_dispatch_window_3p #(
                 read_lane*`OPENRV64_DISPATCH_META_WIDTH +:
                 `OPENRV64_DISPATCH_META_WIDTH] = {
                 is_hard(admit_payload[read_lane]),
-                decode_uses_rs2_i[read_lane],
-                decode_uses_rs1_i[read_lane],
+                decode_effective_uses_rs2[read_lane],
+                decode_effective_uses_rs1[read_lane],
                 admit_payload[read_lane]
             };
         end
@@ -1052,6 +1246,15 @@ module openrv64_dispatch_window_3p #(
 
     reg eligible [0:DEPTH-1];
     reg mem_pair_eligible [0:DEPTH-1];
+    reg trace_load_conflict_record_hit [0:DEPTH-1];
+    reg trace_load_conflict_record_block [0:DEPTH-1];
+    reg [COUNT_WIDTH-1:0] trace_load_conflict_record_hit_count;
+    reg [COUNT_WIDTH-1:0] trace_load_conflict_record_block_count;
+    reg [63:0] perf_load_conflict_record_train_q;
+    reg [63:0] perf_load_conflict_record_refresh_q;
+    reg [63:0] perf_load_conflict_record_replace_q;
+    reg [63:0] perf_load_conflict_record_hit_entry_cycles_q;
+    reg [63:0] perf_load_conflict_record_block_entry_cycles_q;
     // Simulation-visible aggregate state.  These are deliberately kept as
     // named internal signals instead of architectural ports; the cycle trace
     // uses them to distinguish an empty window from RAW, ordering, and
@@ -1170,6 +1373,7 @@ module openrv64_dispatch_window_3p #(
     reg older_persistent_hard;
     reg older_unissued_mem;
     reg older_unissued_mem_blocks_load;
+    reg older_unissued_replayable_store;
     reg older_live_control;
     reg older_completed_control;
     reg older_uncompleted_control;
@@ -1253,6 +1457,7 @@ module openrv64_dispatch_window_3p #(
             older_persistent_hard = 1'b0;
             older_unissued_mem = 1'b0;
             older_unissued_mem_blocks_load = 1'b0;
+            older_unissued_replayable_store = 1'b0;
             older_live_control = 1'b0;
             older_completed_control = 1'b0;
             older_uncompleted_control = 1'b0;
@@ -1282,6 +1487,12 @@ module openrv64_dispatch_window_3p #(
             trace_entry_blocker_valid[eligible_idx] = 1'b0;
             trace_entry_older_unissued_jalr[eligible_idx] = 1'b0;
             trace_entry_older_persistent_jalr[eligible_idx] = 1'b0;
+            trace_load_conflict_record_hit[eligible_idx] =
+                valid_q[eligible_idx] && !issued_q[eligible_idx] &&
+                payload_q[eligible_idx][PAYLOAD_MEM_READ] &&
+                !payload_q[eligible_idx][PAYLOAD_MEM_WRITE] &&
+                load_conflict_hit_q[eligible_idx];
+            trace_load_conflict_record_block[eligible_idx] = 1'b0;
             trace_entry_blocker_id[eligible_idx] =
                 {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
             chain_eligible_ex0[eligible_idx] = 1'b0;
@@ -1324,6 +1535,9 @@ module openrv64_dispatch_window_3p #(
                     if (!issued_q[older_idx] &&
                         is_mem(payload_q[older_idx])) begin
                         older_unissued_mem = 1'b1;
+                        if (is_replayable_unissued_store(
+                                payload_q[older_idx]))
+                            older_unissued_replayable_store = 1'b1;
                         if (!(payload_q[older_idx][PAYLOAD_MEM_READ] &&
                               !payload_q[older_idx][PAYLOAD_MEM_WRITE]) &&
                             !is_replayable_unissued_store(
@@ -1563,7 +1777,10 @@ module openrv64_dispatch_window_3p #(
             mem_pair_eligible[eligible_idx] =
                 (eligible[eligible_idx] ||
                  chain_eligible_mem[eligible_idx]) &&
-                is_mem(payload_q[eligible_idx]);
+                 is_mem(payload_q[eligible_idx]);
+            if (trace_load_conflict_record_hit[eligible_idx] &&
+                older_unissued_replayable_store)
+                mem_pair_eligible[eligible_idx] = 1'b0;
             if (is_mem(payload_q[eligible_idx]) &&
                 older_live_control &&
                 (chain_mask_mem[eligible_idx][0] ||
@@ -1579,9 +1796,14 @@ module openrv64_dispatch_window_3p #(
                    is_speculative_load_candidate(
                        payload_q[eligible_idx],
                        src1_data_now[eligible_idx]) &&
-                   !older_unissued_mem_blocks_load)) begin
+                   !older_unissued_mem_blocks_load &&
+                   !(trace_load_conflict_record_hit[eligible_idx] &&
+                     older_unissued_replayable_store))) begin
                 eligible[eligible_idx] = 1'b0;
                 chain_eligible_mem[eligible_idx] = 1'b0;
+                if (trace_load_conflict_record_hit[eligible_idx] &&
+                    older_unissued_replayable_store)
+                    trace_load_conflict_record_block[eligible_idx] = 1'b1;
             end
 
             if (valid_q[eligible_idx] && !issued_q[eligible_idx] &&
@@ -1868,7 +2090,9 @@ module openrv64_dispatch_window_3p #(
                            !(is_speculative_load_candidate(
                                  payload_q[eligible_idx],
                                  src1_data_now[eligible_idx]) &&
-                             !older_unissued_mem_blocks_load)) ||
+                             !older_unissued_mem_blocks_load &&
+                             !(trace_load_conflict_record_hit[eligible_idx] &&
+                               older_unissued_replayable_store))) ||
                          (older_live_control &&
                            !is_speculative_load_candidate(
                                payload_q[eligible_idx],
@@ -1887,6 +2111,57 @@ module openrv64_dispatch_window_3p #(
                               (id_q[eligible_idx] != next_retire_id_i)))
                         trace_hard_block_count =
                             trace_hard_block_count + 1'b1;
+                end
+            end
+        end
+    end
+
+    integer load_conflict_trace_idx;
+    always @* begin
+        trace_load_conflict_record_hit_count = {COUNT_WIDTH{1'b0}};
+        trace_load_conflict_record_block_count = {COUNT_WIDTH{1'b0}};
+        for (load_conflict_trace_idx = 0;
+             load_conflict_trace_idx < DEPTH;
+             load_conflict_trace_idx = load_conflict_trace_idx + 1) begin
+            if (trace_load_conflict_record_hit[load_conflict_trace_idx])
+                trace_load_conflict_record_hit_count =
+                    trace_load_conflict_record_hit_count + 1'b1;
+            if (trace_load_conflict_record_block[load_conflict_trace_idx])
+                trace_load_conflict_record_block_count =
+                    trace_load_conflict_record_block_count + 1'b1;
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            perf_load_conflict_record_train_q <= 64'd0;
+            perf_load_conflict_record_refresh_q <= 64'd0;
+            perf_load_conflict_record_replace_q <= 64'd0;
+            perf_load_conflict_record_hit_entry_cycles_q <= 64'd0;
+            perf_load_conflict_record_block_entry_cycles_q <= 64'd0;
+        end else if (ENABLE_LOAD_CONFLICT_RECORD != 0) begin
+            perf_load_conflict_record_hit_entry_cycles_q <=
+                perf_load_conflict_record_hit_entry_cycles_q +
+                trace_load_conflict_record_hit_count;
+            perf_load_conflict_record_block_entry_cycles_q <=
+                perf_load_conflict_record_block_entry_cycles_q +
+                trace_load_conflict_record_block_count;
+            if (load_conflict_train_valid_i) begin
+                perf_load_conflict_record_train_q <=
+                    perf_load_conflict_record_train_q + 1'b1;
+                if (load_conflict_record_valid_q[
+                        load_conflict_train_hash[
+                            LOAD_CONFLICT_INDEX_WIDTH-1:0]]) begin
+                    if (load_conflict_record_signature_q[
+                            load_conflict_train_hash[
+                                LOAD_CONFLICT_INDEX_WIDTH-1:0]] ==
+                        load_conflict_train_hash[
+                            15:LOAD_CONFLICT_INDEX_WIDTH])
+                        perf_load_conflict_record_refresh_q <=
+                            perf_load_conflict_record_refresh_q + 1'b1;
+                    else
+                        perf_load_conflict_record_replace_q <=
+                            perf_load_conflict_record_replace_q + 1'b1;
                 end
             end
         end
@@ -3225,6 +3500,7 @@ module openrv64_dispatch_window_3p #(
                     {RETIRE_SLOT_WIDTH{1'b0}};
                 payload_q[entry_idx] <=
                     {`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH{1'b0}};
+                load_conflict_hit_q[entry_idx] <= 1'b0;
                 uses_rs1_q[entry_idx] <= 1'b0;
                 uses_rs2_q[entry_idx] <= 1'b0;
                 src1_ready_q[entry_idx] <= 1'b0;
@@ -3489,7 +3765,7 @@ module openrv64_dispatch_window_3p #(
                     issued_q[select_mem2] <= 1'b1;
             end
         end else begin
-            count_q <= count_q + decode_count -
+            count_q <= count_q + scheduler_decode_count -
                 ((PHYSICAL_RENAME != 0) ?
                  scheduler_release_count : retire_count);
             owner_valid_q <= owner_valid_view;
@@ -3711,9 +3987,13 @@ module openrv64_dispatch_window_3p #(
                     update_slot = allocation_slot_i[
                         allocation_lane*RETIRE_SLOT_WIDTH +:
                         RETIRE_SLOT_WIDTH];
-                if (decode_fire[allocation_lane]) begin
+                if (decode_fire[allocation_lane] &&
+                    ((PHYSICAL_RENAME == 0) ||
+                     !decode_nop[allocation_lane])) begin
                     valid_q[update_slot] <= 1'b1;
-                    issued_q[update_slot] <= 1'b0;
+                    issued_q[update_slot] <=
+                        (PHYSICAL_RENAME == 0) &&
+                        decode_nop[allocation_lane];
                     id_q[update_slot] <= allocation_id_i[
                         allocation_lane*`OPENRV64_INSTR_ID_WIDTH +:
                         `OPENRV64_INSTR_ID_WIDTH];
@@ -3721,10 +4001,13 @@ module openrv64_dispatch_window_3p #(
                         allocation_lane*RETIRE_SLOT_WIDTH +:
                         RETIRE_SLOT_WIDTH];
                     payload_q[update_slot] <= admit_payload[allocation_lane];
+                    load_conflict_hit_q[update_slot] <=
+                        load_conflict_record_hit(admit_payload[allocation_lane][
+                            PAYLOAD_PC +: `RV64_XLEN]);
                     uses_rs1_q[update_slot] <=
-                        decode_uses_rs1_i[allocation_lane];
+                        decode_effective_uses_rs1[allocation_lane];
                     uses_rs2_q[update_slot] <=
-                        decode_uses_rs2_i[allocation_lane];
+                        decode_effective_uses_rs2[allocation_lane];
                     src1_ready_q[update_slot] <=
                         admit_src1_ready[allocation_lane];
                     src2_ready_q[update_slot] <=
@@ -3747,7 +4030,9 @@ module openrv64_dispatch_window_3p #(
                         rename_destination_phys_i[
                             allocation_lane*PHYS_REG_ADDR_WIDTH +:
                             PHYS_REG_ADDR_WIDTH];
-                    result_ready_q[update_slot] <= 1'b0;
+                    result_ready_q[update_slot] <=
+                        (PHYSICAL_RENAME == 0) &&
+                        decode_nop[allocation_lane];
                     result_data_q[update_slot] <= {`RV64_XLEN{1'b0}};
                 end
             end
@@ -3806,7 +4091,7 @@ module openrv64_dispatch_window_3p #(
                 (decode_valid_i != 3'b011) &&
                 (decode_valid_i != 3'b111))
                 $fatal(1, "window decode input must be a contiguous prefix");
-            debug_count_delta = decode_count;
+            debug_count_delta = scheduler_decode_count;
             if (PHYSICAL_RENAME != 0)
                 debug_count_delta = debug_count_delta -
                                     scheduler_release_count;

@@ -149,6 +149,19 @@ module openrv64_exec_pipe_ex1 #(
                            `RV64_REG_ADDR_WIDTH];
     wire [`RV64_XLEN-1:0] local_forward_data =
         complete_payload_q[`OPENRV64_COMPLETE_DATA_LSB +: `RV64_XLEN];
+    // LI/branch fusion keeps the original branch source-register fields and
+    // rd marks which compare operand contains the embedded ADDI result.  The
+    // scheduler marks that embedded operand unused, while the other branch
+    // operand remains an ordinary dependency.  The macro does not duplicate
+    // LI's architectural register write.
+    wire fused_li_branch =
+        issue_payload_i[`OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT] &&
+        branch && !jump &&
+        (`RV64_OPCODE(instr) == `RV64_OPCODE_BRANCH) &&
+        (rd_addr != `RV64_REG_X0) &&
+        ((rs1_addr == rd_addr) || (rs2_addr == rd_addr));
+    wire fused_li_rs1 = fused_li_branch && (rs1_addr == rd_addr);
+    wire fused_li_rs2 = fused_li_branch && (rs2_addr == rd_addr);
     wire chain_rs1_match = chain_mask_i[0] && retained_result_valid &&
         src1_producer_valid_i &&
         (src1_producer_tag_i == complete_id_q);
@@ -171,12 +184,14 @@ module openrv64_exec_pipe_ex1 #(
         src2_producer_valid_i &&
         (src2_producer_tag_i == branch_forward_tag_i) &&
         (rs2_addr == branch_forward_rd_addr_i);
-    wire [`RV64_XLEN-1:0] operand_rs1 = chain_rs1_match ?
+    wire [`RV64_XLEN-1:0] operand_rs1 = fused_li_rs1 ? rs1_data :
+        chain_rs1_match ?
         local_forward_data : branch_forward_rs1 ?
         branch_forward_data_i :
         (local_forward_valid && (rs1_addr == local_forward_rd) ?
          local_forward_data : rs1_data);
-    wire [`RV64_XLEN-1:0] operand_rs2 = chain_rs2_match ?
+    wire [`RV64_XLEN-1:0] operand_rs2 = fused_li_rs2 ? rs2_data :
+        chain_rs2_match ?
         local_forward_data : branch_forward_rs2 ?
         branch_forward_data_i :
         (local_forward_valid && (rs2_addr == local_forward_rd) ?
@@ -294,7 +309,10 @@ module openrv64_exec_pipe_ex1 #(
                                   !instr_misaligned && !result_illegal;
     wire [`RV64_XLEN-1:0] next_pc = control_transfer_taken ?
                                      br_target : (pc + 64'd4);
-    wire [`RV64_XLEN-1:0] result_data = csr_selected ? csr_rdata :
+    wire [`RV64_XLEN-1:0] fused_li_result = fused_li_rs1 ?
+        rs1_data : rs2_data;
+    wire [`RV64_XLEN-1:0] result_data = fused_li_branch ? fused_li_result :
+                                          csr_selected ? csr_rdata :
                                           br_link ? br_link_data : alu_result;
 
     wire exception;

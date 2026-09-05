@@ -114,12 +114,27 @@ module openrv64_exec_bp #(
 
     wire policy_stalls_all = !BP_TYPE_VALID ||
                              (BP_TYPE == `OPENRV64_BP_STALL);
+    wire use_tage = BP_TYPE == `OPENRV64_BP_TAGE_BTB;
+    wire use_tage_ordered_ras = use_tage &&
+                                (ENABLE_TAGGED_RESOLUTION != 0);
+    wire tage_ordered_ras_update_valid;
+    wire [1:0] tage_ordered_ras_update_action;
+    wire [`RV64_XLEN-1:0] tage_ordered_ras_update_pc;
+    wire tage_ordered_ras_pending;
+    wire [INFLIGHT_DEPTH-1:0] tage_ordered_ras_spec_valid;
+    wire [2*INFLIGHT_DEPTH-1:0] tage_ordered_ras_spec_action;
+    wire [INFLIGHT_DEPTH*`RV64_XLEN-1:0] tage_ordered_ras_spec_pc;
+    wire tage_ordered_ras_pending_unresolved;
+    wire tage_ordered_ras_pending_resolved;
+    wire tage_ordered_head_unresolved;
     wire ras_prediction_valid_raw;
     wire [`RV64_XLEN-1:0] ras_prediction_target;
     wire ras_inhibit_load_speculation;
     generate
         if (ENABLE_RAS != 0) begin : g_ras
-            openrv64_exec_bp_ras #(.DEPTH(RAS_DEPTH)) u_ras (
+            openrv64_exec_bp_ras #(
+                .DEPTH(RAS_DEPTH), .ORDERED_DEPTH(INFLIGHT_DEPTH)
+            ) u_ras (
                 .clk(clk), .rst_n(rst_n),
                 .flush_i(ras_context_flush_i),
                 .squash_i(flush_i || squash_i || recovery_i),
@@ -130,6 +145,13 @@ module openrv64_exec_bp #(
                 .resolve_valid_i(resolve_valid_i),
                 .resolve_instr_i(resolve_instr_i),
                 .resolve_pc_i(resolve_pc_i),
+                .ordered_update_enable_i(use_tage_ordered_ras),
+                .ordered_update_valid_i(tage_ordered_ras_update_valid),
+                .ordered_update_action_i(tage_ordered_ras_update_action),
+                .ordered_update_pc_i(tage_ordered_ras_update_pc),
+                .ordered_spec_valid_i(tage_ordered_ras_spec_valid),
+                .ordered_spec_action_i(tage_ordered_ras_spec_action),
+                .ordered_spec_pc_i(tage_ordered_ras_spec_pc),
                 .prediction_valid_o(ras_prediction_valid_raw),
                 .prediction_target_o(ras_prediction_target),
                 .inhibit_load_speculation_o(
@@ -298,6 +320,21 @@ module openrv64_exec_bp #(
                 .allocation_stall_o(tage_allocation_stall),
                 .capacity_stall_o(tage_capacity_stall),
                 .update_overflow_o(tage_update_overflow),
+                .ordered_ras_update_valid_o(
+                    tage_ordered_ras_update_valid),
+                .ordered_ras_update_action_o(
+                    tage_ordered_ras_update_action),
+                .ordered_ras_update_pc_o(tage_ordered_ras_update_pc),
+                .ordered_ras_pending_o(tage_ordered_ras_pending),
+                .ordered_ras_spec_valid_o(tage_ordered_ras_spec_valid),
+                .ordered_ras_spec_action_o(tage_ordered_ras_spec_action),
+                .ordered_ras_spec_pc_o(tage_ordered_ras_spec_pc),
+                .diag_ordered_ras_pending_unresolved_o(
+                    tage_ordered_ras_pending_unresolved),
+                .diag_ordered_ras_pending_resolved_o(
+                    tage_ordered_ras_pending_resolved),
+                .diag_ordered_head_unresolved_o(
+                    tage_ordered_head_unresolved),
                 .diag_lookup_provider_o(tage_lookup_provider),
                 .diag_lookup_alternate_o(tage_lookup_alternate),
                 .diag_lookup_use_alt_o(tage_lookup_use_alt),
@@ -316,6 +353,19 @@ module openrv64_exec_bp #(
             assign tage_allocation_stall = 1'b0;
             assign tage_capacity_stall = 1'b0;
             assign tage_update_overflow = 1'b0;
+            assign tage_ordered_ras_update_valid = 1'b0;
+            assign tage_ordered_ras_update_action = 2'b00;
+            assign tage_ordered_ras_update_pc = {`RV64_XLEN{1'b0}};
+            assign tage_ordered_ras_pending = 1'b0;
+            assign tage_ordered_ras_spec_valid =
+                {INFLIGHT_DEPTH{1'b0}};
+            assign tage_ordered_ras_spec_action =
+                {(2*INFLIGHT_DEPTH){1'b0}};
+            assign tage_ordered_ras_spec_pc =
+                {(INFLIGHT_DEPTH*`RV64_XLEN){1'b0}};
+            assign tage_ordered_ras_pending_unresolved = 1'b0;
+            assign tage_ordered_ras_pending_resolved = 1'b0;
+            assign tage_ordered_head_unresolved = 1'b0;
             assign tage_lookup_provider = 3'd0;
             assign tage_lookup_alternate = 3'd0;
             assign tage_lookup_use_alt = 1'b0;
@@ -462,7 +512,6 @@ module openrv64_exec_bp #(
         (BP_TYPE == `OPENRV64_BP_GSHARE_BTB) ||
         (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512);
     wire use_tournament = BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB;
-    wire use_tage = BP_TYPE == `OPENRV64_BP_TAGE_BTB;
     wire use_table_predictor = use_advanced || use_tournament || use_tage;
     wire selected_target_valid = use_advanced ?
         advanced_prediction_target_valid :
@@ -548,6 +597,27 @@ module openrv64_exec_bp #(
         lookup_allocate_i && diag_lookup_return;
     wire diag_ras_hit = diag_ras_lookup && ras_prediction_valid;
     wire diag_ras_miss = diag_ras_lookup && !ras_prediction_valid;
+    // BP9 projects pending ordered actions into the lookup view.  Pending
+    // state is therefore an overlay condition, not a miss cause.
+    wire diag_ras_overlay_lookup = diag_ras_lookup &&
+        use_tage_ordered_ras && tage_ordered_ras_pending;
+    wire diag_ras_overlay_hit = diag_ras_overlay_lookup &&
+        ras_prediction_valid;
+    wire diag_ras_overlay_empty = diag_ras_overlay_lookup &&
+        !ras_prediction_valid;
+    wire diag_ras_overlay_pending_unresolved = diag_ras_overlay_lookup &&
+        tage_ordered_ras_pending_unresolved;
+    wire diag_ras_overlay_pending_resolved = diag_ras_overlay_lookup &&
+        tage_ordered_ras_pending_resolved;
+    wire diag_ras_miss_order_pending = 1'b0;
+    wire diag_ras_miss_empty = diag_ras_miss;
+    wire diag_ras_miss_pending_unresolved =
+        diag_ras_miss_order_pending &&
+        tage_ordered_ras_pending_unresolved;
+    wire diag_ras_miss_pending_resolved =
+        diag_ras_miss_order_pending && tage_ordered_ras_pending_resolved;
+    wire diag_ras_miss_head_unresolved =
+        diag_ras_miss_order_pending && tage_ordered_head_unresolved;
     wire diag_btb_wrong_target = target_mispredict_o &&
         diag_resolve_is_jalr && !diag_resolve_return;
     wire diag_ras_wrong_target = target_mispredict_o &&

@@ -265,6 +265,8 @@ module tb_top_3p_soc #(
     parameter integer RENAME_MODE = `OPENRV64_RENAME_IDENTITY,
     parameter integer ENABLE_ALU2 = 0,
     parameter integer ENABLE_ALU_CHAINING = 0,
+    parameter integer ENABLE_LOAD_CONFLICT_RECORD = 0,
+    parameter integer ENABLE_DECODE_FUSION = 0,
     parameter integer ENABLE_PIPELINE_STATE_TRACE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer STORE_QUEUE_DEPTH = 4,
@@ -857,6 +859,16 @@ module tb_top_3p_soc #(
     integer bp_ras_lookups;
     integer bp_ras_hits;
     integer bp_ras_misses;
+    integer bp_ras_miss_empty;
+    integer bp_ras_miss_order_pending;
+    integer bp_ras_miss_pending_unresolved;
+    integer bp_ras_miss_pending_resolved;
+    integer bp_ras_miss_head_unresolved;
+    integer bp_ras_overlay_lookups;
+    integer bp_ras_overlay_hits;
+    integer bp_ras_overlay_empty;
+    integer bp_ras_overlay_pending_unresolved;
+    integer bp_ras_overlay_pending_resolved;
     integer bp_ras_wrong_targets;
     integer bp_tage_lookups;
     integer bp_tage_provider_base;
@@ -942,6 +954,13 @@ module tb_top_3p_soc #(
     integer l1d_store_overlay_demand_mshr;
     integer issued;
     integer decoded;
+    integer fusion_candidate_events;
+    integer fusion_pcrel_candidate_events;
+    integer fusion_li_candidate_events;
+    integer fusion_events;
+    integer fusion_pcrel_events;
+    integer fusion_li_events;
+    integer fusion_pcrel_bp_direct_events;
     integer issued_this_cycle;
     integer decoded_this_cycle;
     integer issue_width_0;
@@ -957,6 +976,9 @@ module tb_top_3p_soc #(
     integer retire_width_1;
     integer retire_width_2;
     integer retire_width_3;
+    integer retire_width_4;
+    integer retire_width_5;
+    integer retire_width_6;
     integer dispatch_nonempty;
     integer dispatch_nonempty_no_issue;
     integer dispatch_full;
@@ -2897,6 +2919,8 @@ module tb_top_3p_soc #(
         .RENAME_MODE(RENAME_MODE),
         .ENABLE_ALU2(ENABLE_ALU2),
         .ENABLE_ALU_CHAINING(ENABLE_ALU_CHAINING),
+        .ENABLE_LOAD_CONFLICT_RECORD(ENABLE_LOAD_CONFLICT_RECORD),
+        .ENABLE_DECODE_FUSION(ENABLE_DECODE_FUSION),
         .ENABLE_ISSUE_WINDOW(ISSUE_WINDOW),
         .ENABLE_SPECULATION_WINDOW(SPECULATION_WINDOW),
         .BANKED_GPR(BANKED_GPR),
@@ -4829,6 +4853,16 @@ module tb_top_3p_soc #(
         bp_ras_lookups = 0;
         bp_ras_hits = 0;
         bp_ras_misses = 0;
+        bp_ras_miss_empty = 0;
+        bp_ras_miss_order_pending = 0;
+        bp_ras_miss_pending_unresolved = 0;
+        bp_ras_miss_pending_resolved = 0;
+        bp_ras_miss_head_unresolved = 0;
+        bp_ras_overlay_lookups = 0;
+        bp_ras_overlay_hits = 0;
+        bp_ras_overlay_empty = 0;
+        bp_ras_overlay_pending_unresolved = 0;
+        bp_ras_overlay_pending_resolved = 0;
         bp_ras_wrong_targets = 0;
         bp_tage_lookups = 0;
         bp_tage_provider_base = 0;
@@ -4920,6 +4954,13 @@ module tb_top_3p_soc #(
         l1d_store_overlay_demand_mshr = 0;
         issued = 0;
         decoded = 0;
+        fusion_candidate_events = 0;
+        fusion_pcrel_candidate_events = 0;
+        fusion_li_candidate_events = 0;
+        fusion_events = 0;
+        fusion_pcrel_events = 0;
+        fusion_li_events = 0;
+        fusion_pcrel_bp_direct_events = 0;
         issued_this_cycle = 0;
         decoded_this_cycle = 0;
         issue_width_0 = 0;
@@ -4935,6 +4976,9 @@ module tb_top_3p_soc #(
         retire_width_1 = 0;
         retire_width_2 = 0;
         retire_width_3 = 0;
+        retire_width_4 = 0;
+        retire_width_5 = 0;
+        retire_width_6 = 0;
         dispatch_nonempty = 0;
         dispatch_nonempty_no_issue = 0;
         dispatch_full = 0;
@@ -5592,6 +5636,21 @@ module tb_top_3p_soc #(
                 dut.frontend_decode_fire[2];
             issued = issued + issued_this_cycle;
             decoded = decoded + decoded_this_cycle;
+            fusion_candidate_events = fusion_candidate_events +
+                dut.decode_fusion_candidate_events;
+            fusion_pcrel_candidate_events =
+                fusion_pcrel_candidate_events +
+                dut.decode_fusion_pcrel_candidate_events;
+            fusion_li_candidate_events = fusion_li_candidate_events +
+                dut.decode_fusion_li_candidate_events;
+            fusion_events = fusion_events + dut.decode_fusion_events;
+            fusion_pcrel_events = fusion_pcrel_events +
+                dut.decode_fusion_pcrel_events;
+            fusion_li_events = fusion_li_events +
+                dut.decode_fusion_li_events;
+            if (dut.bp_live_fused_pcrel && dut.bp_live_control_fire)
+                fusion_pcrel_bp_direct_events =
+                    fusion_pcrel_bp_direct_events + 1;
             if (dut.backend_mem1_valid && dut.backend_mem_ready)
                 lsu_second_port_opportunities =
                     lsu_second_port_opportunities + 1;
@@ -5613,6 +5672,9 @@ module tb_top_3p_soc #(
                 1: retire_width_1 = retire_width_1 + 1;
                 2: retire_width_2 = retire_width_2 + 1;
                 3: retire_width_3 = retire_width_3 + 1;
+                4: retire_width_4 = retire_width_4 + 1;
+                5: retire_width_5 = retire_width_5 + 1;
+                6: retire_width_6 = retire_width_6 + 1;
             endcase
             if (dut.backend_dispatch_occupancy != 0) begin
                 dispatch_nonempty = dispatch_nonempty + 1;
@@ -7591,6 +7653,32 @@ module tb_top_3p_soc #(
                 bp_ras_hits = bp_ras_hits + 1;
             if (dut.u_bp.diag_ras_miss)
                 bp_ras_misses = bp_ras_misses + 1;
+            if (dut.u_bp.diag_ras_miss_empty)
+                bp_ras_miss_empty = bp_ras_miss_empty + 1;
+            if (dut.u_bp.diag_ras_miss_order_pending)
+                bp_ras_miss_order_pending =
+                    bp_ras_miss_order_pending + 1;
+            if (dut.u_bp.diag_ras_miss_pending_unresolved)
+                bp_ras_miss_pending_unresolved =
+                    bp_ras_miss_pending_unresolved + 1;
+            if (dut.u_bp.diag_ras_miss_pending_resolved)
+                bp_ras_miss_pending_resolved =
+                    bp_ras_miss_pending_resolved + 1;
+            if (dut.u_bp.diag_ras_miss_head_unresolved)
+                bp_ras_miss_head_unresolved =
+                    bp_ras_miss_head_unresolved + 1;
+            if (dut.u_bp.diag_ras_overlay_lookup)
+                bp_ras_overlay_lookups = bp_ras_overlay_lookups + 1;
+            if (dut.u_bp.diag_ras_overlay_hit)
+                bp_ras_overlay_hits = bp_ras_overlay_hits + 1;
+            if (dut.u_bp.diag_ras_overlay_empty)
+                bp_ras_overlay_empty = bp_ras_overlay_empty + 1;
+            if (dut.u_bp.diag_ras_overlay_pending_unresolved)
+                bp_ras_overlay_pending_unresolved =
+                    bp_ras_overlay_pending_unresolved + 1;
+            if (dut.u_bp.diag_ras_overlay_pending_resolved)
+                bp_ras_overlay_pending_resolved =
+                    bp_ras_overlay_pending_resolved + 1;
             if (dut.u_bp.diag_ras_wrong_target)
                 bp_ras_wrong_targets = bp_ras_wrong_targets + 1;
             if (dut.u_bp.diag_tage_lookup) begin
@@ -8057,6 +8145,24 @@ module tb_top_3p_soc #(
                 dut.bp_decode_stall, dut.frontend_decode_enable,
                 dut.control_redirect, dut.backend_memory_replay);
             $display(
+                "PERF_ICX_L2_TIMEOUT_FUSION pc=%h/%h/%h instr=%h/%h/%h live=%b fusion_ready=%b pending=%0d",
+                dut.decode_pc0, dut.decode_pc1, dut.decode_pc2,
+                dut.instr0, dut.instr1, dut.instr2,
+                dut.live_backend_decode_valid,
+                dut.fusion_backend_decode_ready,
+                dut.decode_fusion_candidate_pending);
+            $display(
+                "PERF_ICX_L2_TIMEOUT_BP dispatch_valid=%0d allocated=%0d lane=%0d id=%0d pc=%h instr=%h live_id=%0d live_pc=%h live_instr=%h live_match=%0d port=%0d allow=%0d present=%0d allocation=%0d",
+                dut.bp_dispatch_valid_q, dut.bp_dispatch_allocated_q,
+                dut.bp_dispatch_lane_q, dut.bp_dispatch_selected_id_q,
+                dut.bp_dispatch_selected_pc_q,
+                dut.bp_dispatch_selected_instr_q,
+                dut.bp_live_id, dut.bp_live_pc, dut.bp_live_instr,
+                dut.bp_pending_live_match,
+                dut.bp_sideband_port_available,
+                dut.bp_sideband_control_allow, dut.bp_branch_present,
+                dut.bp_branch_allocate);
+            $display(
                 "PERF_ICX_L2_TIMEOUT_RECOVERY squash=%0d redirect_valid=%0d redirect_id=%0d replay_pending=%0d replay_ordered_issue=%0d replay_valid=%0d branch_resolved=%0d barrier=%0d watches=%h checks=%0d violations=%0d collisions=%0d device=%0d replays=%0d ordered_issue_replays=%0d",
                 dut.u_backend.squash_frontend_i,
                 dut.u_backend.redirect_valid_o,
@@ -8353,14 +8459,15 @@ module tb_top_3p_soc #(
         end
         ipc = (cycles != 0) ? $itor(retired) / $itor(cycles) : 0.0;
         $display(
-            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d rename_mode=%0d phys_regs=%0d issue_window=%0d speculation_window=%0d alu2=%0d alu_chaining=%0d oracle_branches=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d scheduler_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
+            "PERF_ICX_L2 mode=%0d carousel=%0d confidence_gate=%0d bp=%0d completion_forward_mask=%0d branch_forward_mask=%0d full_forwarding=%0d relax_waw=%0d relax_hazards=%0d rename_mode=%0d phys_regs=%0d issue_window=%0d speculation_window=%0d alu2=%0d alu_chaining=%0d load_conflict_record=%0d decode_fusion=%0d oracle_branches=%0d banked_gpr=%0d bank_count=%0d bank_read_ports=%0d result_ready_control_release=%0d retire_depth=%0d scheduler_depth=%0d posted_stores=%0d timed_memory=%0d memory_timing_model=%0d cycles=%0d retired=%0d IPC=%0.4f a0=%016h l1i_bytes=%0d l1i_fetch_width=%0d l1d_bytes=%0d l2_bytes=%0d l2_ways=%0d ram_bytes=%0d",
             FETCH_ALT_LOOKASIDE, FETCH_CAROUSEL,
             FETCH_ALT_CONFIDENCE_GATE, BP_TYPE,
             COMPLETION_FORWARD_MASK, BRANCH_COMPLETION_FORWARD_MASK,
             ENABLE_FULL_FORWARDING, RELAX_WAW, RELAX_HAZARDS,
             RENAME_MODE, PHYS_REG_COUNT,
             ISSUE_WINDOW, SPECULATION_WINDOW, ENABLE_ALU2,
-            ENABLE_ALU_CHAINING, ORACLE_BRANCHES,
+            ENABLE_ALU_CHAINING, ENABLE_LOAD_CONFLICT_RECORD,
+            ENABLE_DECODE_FUSION, ORACLE_BRANCHES,
             BANKED_GPR, BANKED_GPR_NUM_BANKS,
             BANKED_GPR_READ_PORTS_PER_BANK,
             `OPENRV64_3P_RESULT_READY_CONTROL_RELEASE, RETIRE_DEPTH,
@@ -8370,6 +8477,13 @@ module tb_top_3p_soc #(
             dut.u_backend.debug_arch_a0, L1I_CACHE_BYTES,
             L1I_FETCH_DATA_WIDTH, L1D_CACHE_BYTES, L2_BYTES, L2_WAYS,
             RAM_BYTES);
+        $display(
+            "PERF_ICX_L2_FUSION enabled=%0d candidates=%0d pcrel_candidates=%0d li_candidates=%0d fused=%0d pcrel_fused=%0d li_fused=%0d pcrel_bp_direct=%0d pending=%0d",
+            ENABLE_DECODE_FUSION, fusion_candidate_events,
+            fusion_pcrel_candidate_events, fusion_li_candidate_events,
+            fusion_events, fusion_pcrel_events, fusion_li_events,
+            fusion_pcrel_bp_direct_events,
+            dut.decode_fusion_candidate_pending);
         if ($test$plusargs("report_a_regs"))
             $display(
                 "PERF_FENCE_SV39_RESULTS iters=1024 rr_none=%0d rr=%0d rw_none=%0d rw=%0d wr_none=%0d wr=%0d ww_none=%0d ww=%0d",
@@ -8598,6 +8712,17 @@ module tb_top_3p_soc #(
             bp_btb_wrong_targets, bp_ras_lookups, bp_ras_hits,
             bp_ras_misses, bp_ras_wrong_targets);
         $display(
+            "PERF_ICX_L2_RAS_MISS_CAUSE empty=%0d order_pending=%0d pending_unresolved=%0d pending_resolved=%0d head_unresolved=%0d",
+            bp_ras_miss_empty, bp_ras_miss_order_pending,
+            bp_ras_miss_pending_unresolved,
+            bp_ras_miss_pending_resolved,
+            bp_ras_miss_head_unresolved);
+        $display(
+            "PERF_ICX_L2_RAS_OVERLAY lookups=%0d hits=%0d empty=%0d pending_unresolved=%0d pending_resolved=%0d",
+            bp_ras_overlay_lookups, bp_ras_overlay_hits,
+            bp_ras_overlay_empty, bp_ras_overlay_pending_unresolved,
+            bp_ras_overlay_pending_resolved);
+        $display(
             "PERF_ICX_L2_BP_TAGE lookups=%0d provider_base=%0d provider_t0=%0d provider_t1=%0d provider_t2=%0d provider_t3=%0d use_alt=%0d trains=%0d train_mispredicts=%0d alloc_t0=%0d alloc_t1=%0d alloc_t2=%0d alloc_t3=%0d allocation_failures=%0d",
             bp_tage_lookups, bp_tage_provider_base,
             bp_tage_provider_t0, bp_tage_provider_t1,
@@ -8715,12 +8840,13 @@ module tb_top_3p_soc #(
             l1d_store_poison_demand_fill,
             l1d_store_overlay_demand_mshr);
         $display(
-            "PERF_ICX_L2_WIDTH issued=%0d decoded=%0d issue_w0=%0d issue_w1=%0d issue_w2=%0d issue_w3=%0d issue_w4=%0d decode_w0=%0d decode_w1=%0d decode_w2=%0d decode_w3=%0d retire_w0=%0d retire_w1=%0d retire_w2=%0d retire_w3=%0d",
+            "PERF_ICX_L2_WIDTH issued=%0d decoded=%0d issue_w0=%0d issue_w1=%0d issue_w2=%0d issue_w3=%0d issue_w4=%0d decode_w0=%0d decode_w1=%0d decode_w2=%0d decode_w3=%0d retire_w0=%0d retire_w1=%0d retire_w2=%0d retire_w3=%0d retire_w4=%0d retire_w5=%0d retire_w6=%0d",
             issued, decoded,
             issue_width_0, issue_width_1, issue_width_2, issue_width_3,
             issue_width_4,
             decode_width_0, decode_width_1, decode_width_2, decode_width_3,
-            retire_width_0, retire_width_1, retire_width_2, retire_width_3);
+            retire_width_0, retire_width_1, retire_width_2, retire_width_3,
+            retire_width_4, retire_width_5, retire_width_6);
         $display(
             "PERF_ICX_L2_ALU2 issues=%0d completion_wait_cycles=%0d mem0_completion_collision_cycles=%0d",
             dut.u_backend.u_exec.g_3p.u_exec.perf_alu2_issues_q,
@@ -8921,6 +9047,19 @@ module tb_top_3p_soc #(
             tomasulo_rename_downstream_blocked_cycles,
             tomasulo_rename_empty_cycles,
             tomasulo_min_free);
+        $display(
+            "PERF_ICX_L2_LOAD_CONFLICT_RECORD enabled=%0d entries=32 trains=%0d refreshes=%0d replacements=%0d hit_entry_cycles=%0d blocked_entry_cycles=%0d",
+            ENABLE_LOAD_CONFLICT_RECORD,
+            dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+                .perf_load_conflict_record_train_q,
+            dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+                .perf_load_conflict_record_refresh_q,
+            dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+                .perf_load_conflict_record_replace_q,
+            dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+                .perf_load_conflict_record_hit_entry_cycles_q,
+            dut.u_backend.u_dispatch.g_3p.u_tomasulo_window.u_window
+                .perf_load_conflict_record_block_entry_cycles_q);
         $display(
             "PERF_ICX_L2_TOMASULO_JALR unissued_cycles=%0d unissued_entry_cycles=%0d ready_entry_cycles=%0d head_ready_entry_cycles=%0d not_head_ready_entry_cycles=%0d scheduler_release_events=%0d release_before_head_events=%0d persistent_barrier_cycles=%0d",
             tomasulo_jalr_unissued_cycles,

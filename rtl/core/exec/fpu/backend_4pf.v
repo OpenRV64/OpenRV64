@@ -154,7 +154,7 @@ module openrv64_backend_4pf #(
     output wire [3*`RV64_XLEN-1:0]      branch_retire_age_addr_o,
 
     output wire [2:0]                   retire_arch_o,
-    output wire [1:0]                   retire_count_o,
+    output wire [2:0]                   retire_count_o,
     output wire                         exception_o,
     output wire                         halt_o,
     output wire                         irq_o,
@@ -385,6 +385,7 @@ module openrv64_backend_4pf #(
                     retire_record_lane*RETIRE_META_WIDTH +
                     `OPENRV64_DISPATCH_META_WIDTH +:
                     PHYS_REG_ADDR_WIDTH],
+                issue_record[`OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT],
                 issue_record[12], // predicted taken
                 issue_record[13], // jump
                 issue_record[14], // branch

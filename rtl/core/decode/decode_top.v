@@ -4,6 +4,7 @@
 `include "core/decode/defs/alu-defs.v"
 `include "core/decode/defs/lsu-defs.v"
 `include "core/decode/defs/br-defs.v"
+`include "core/decode/defs/fusion-defs.v"
 
 module openrv64_decode_top #(
     parameter ENABLE_RV64M = 1,
@@ -84,6 +85,12 @@ module openrv64_decode_top #(
     output wire [`RV64_BR_OP_WIDTH-1:0] br_op_sel_o,
     output wire                         br_link_o,
     output wire                         br_indirect_o,
+
+    // Candidate classification only.  Adjacency and the consuming
+    // instruction are checked by the fusion stream after parallel decode.
+    output wire                         fusion_candidate_o,
+    output wire [`OPENRV64_FUSION_CANDIDATE_WIDTH-1:0]
+                                        fusion_candidate_class_o,
 
     output wire                         subdecode_needed_o,
     output wire                         extension_decode_possible_o,
@@ -591,6 +598,23 @@ module openrv64_decode_top #(
                        br_link;
     assign br_indirect_o = valid_o && !extension_selected &&
                            class_is_brjump && br_indirect;
+
+    wire fusion_pcrel_call_candidate = valid_o &&
+        !extension_selected && !compressed_o &&
+        `RV64_INSTR_IS_AUIPC(canonical_instr) &&
+        (rd_addr_o != `RV64_REG_X0);
+    wire fusion_li_branch_candidate = valid_o &&
+        !extension_selected && !compressed_o &&
+        `RV64_INSTR_IS_ADDI(canonical_instr) &&
+        (`RV64_RS1(canonical_instr) == `RV64_REG_X0) &&
+        (rd_addr_o != `RV64_REG_X0);
+    assign fusion_candidate_o = fusion_pcrel_call_candidate ||
+                                fusion_li_branch_candidate;
+    assign fusion_candidate_class_o = fusion_pcrel_call_candidate ?
+        `OPENRV64_FUSION_CANDIDATE_PCREL_CALL :
+        fusion_li_branch_candidate ?
+        `OPENRV64_FUSION_CANDIDATE_LI_BRANCH :
+        `OPENRV64_FUSION_CANDIDATE_NONE;
 
     assign subdecode_needed_o = extension_selected ? 1'b1 :
                                 (eff_valid && eff_subdecode_needed);

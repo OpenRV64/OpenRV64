@@ -6,6 +6,12 @@ sim-decode-early: $(DECODE_EARLY_SIM_BUILD)
 sim-decode-top: $(DECODE_TOP_SIM_BUILD)
 	vvp $(DECODE_TOP_SIM_BUILD)
 
+sim-decode-fusion: $(DECODE_FUSION_SIM_BUILD)
+	vvp $(DECODE_FUSION_SIM_BUILD)
+
+sim-decode-fusion-3p: $(DECODE_FUSION_3P_SIM_BUILD)
+	vvp $(DECODE_FUSION_3P_SIM_BUILD)
+
 sim-decode-rv64-fd: $(DECODE_RV64FD_SIM_BUILD)
 	vvp $(DECODE_RV64FD_SIM_BUILD)
 
@@ -104,6 +110,9 @@ sim-dispatch-issue-3p: $(DISPATCH_ISSUE_3P_SIM_BUILD)
 
 sim-dispatch-window-3p: $(DISPATCH_WINDOW_3P_SIM_BUILD)
 	vvp $(DISPATCH_WINDOW_3P_SIM_BUILD)
+
+sim-dispatch-load-conflict: $(DISPATCH_LOAD_CONFLICT_SIM_BUILD)
+	vvp $(DISPATCH_LOAD_CONFLICT_SIM_BUILD)
 
 sim-dispatch-3p: $(DISPATCH_3P_SIM_BUILD)
 	vvp $(DISPATCH_3P_SIM_BUILD)

@@ -90,7 +90,7 @@ module tb_backend_3p_banked #(
     wire redirect_tagged_recovery;
     wire [63:0] branch_target;
     wire [2:0] retire_arch;
-    wire [1:0] retire_count;
+    wire [2:0] retire_count;
     wire exception;
     wire halt;
     wire irq;

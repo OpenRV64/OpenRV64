@@ -42,7 +42,7 @@
 // retire-queue slot are carried separately because slot width follows queue
 // depth.  The payload is packed, most-significant field first, as:
 //
-//   trace_id, pc, instr, rs1_addr, rs2_addr, rs1_data, rs2_data, imm,
+//   fused, trace_id, pc, instr, rs1_addr, rs2_addr, rs1_data, rs2_data, imm,
 //   rd_addr, alu_ext, alu_op, lsu_op, br_op, reg_write, mem_read,
 //   mem_write, branch, jump, predicted_taken, word_op, system, fence,
 //   illegal, ebreak, ecall, instr_access_fault, instr_page_fault,
@@ -50,11 +50,29 @@
 //
 // Operands are values captured when dispatch accepts the instruction.  The
 // execution cluster never reads the architectural register file directly.
-`define OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH 402
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH 403
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT 402
 `define OPENRV64_EXEC_ISSUE_PAYLOAD_PREDICTED_TAKEN_BIT 12
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_JUMP_BIT 13
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_BRANCH_BIT 14
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_MEM_WRITE_BIT 15
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_MEM_READ_BIT 16
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_REG_WRITE_BIT 17
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_BR_OP_LSB 18
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_RD_LSB 35
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_IMM_LSB 40
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_RS2_DATA_LSB 104
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_RS1_DATA_LSB 168
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_RS2_LSB 232
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_RS1_LSB 237
 `define OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_LSB 242
 `define OPENRV64_EXEC_ISSUE_PAYLOAD_PC_LSB 274
 `define OPENRV64_EXEC_ISSUE_PAYLOAD_TRACE_ID_LSB 338
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_SYSTEM_BIT 10
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_FENCE_BIT 11
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_ILLEGAL_BIT 8
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_ACCESS_FAULT_BIT 5
+`define OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_PAGE_FAULT_BIT 4
 
 // Fixed-width portion of a completion packet, packed as:
 //
@@ -79,7 +97,7 @@
 // Packing from MSB to LSB is:
 //
 //   hard_order, uses_rs2, uses_rs1, issue_payload
-`define OPENRV64_DISPATCH_META_WIDTH 405
+`define OPENRV64_DISPATCH_META_WIDTH 406
 
 // The common rename layer augments dispatch metadata before ROB allocation.
 // old_phys is retained even by the identity implementation because a dynamic
@@ -97,7 +115,7 @@
 //   pc, instr, rs1, rs2, rd, reg_write, uses_rs1, uses_rs2, hard_order,
 //   mem_read, mem_write, branch, jump, predicted_taken, new_phys, old_phys
 //
-// The fixed portion is 120 bits; the two physical-register tags follow it.
+// The fixed portion is 121 bits; the two physical-register tags follow it.
 // Trace identity is held in a separate allocation-only debug bank when trace
 // support is enabled, so it is not echoed through completion and disappears
 // entirely from the area configuration.
@@ -115,8 +133,9 @@
 `define OPENRV64_RETIRE_ALLOC_BRANCH_BIT 117
 `define OPENRV64_RETIRE_ALLOC_JUMP_BIT 118
 `define OPENRV64_RETIRE_ALLOC_PREDICTED_TAKEN_BIT 119
-`define OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB 120
-`define OPENRV64_RETIRE_ALLOC_FIXED_WIDTH 120
+`define OPENRV64_RETIRE_ALLOC_FUSED_BIT 120
+`define OPENRV64_RETIRE_ALLOC_NEW_PHYS_LSB 121
+`define OPENRV64_RETIRE_ALLOC_FIXED_WIDTH 121
 `define OPENRV64_RETIRE_ALLOC_WIDTH \
     (`OPENRV64_RETIRE_ALLOC_FIXED_WIDTH + \
      2*`OPENRV64_PHYS_REG_ADDR_WIDTH)

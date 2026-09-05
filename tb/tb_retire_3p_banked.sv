@@ -37,7 +37,7 @@ module tb_retire_3p_banked;
     reg [191:0] rename_queue_trace;
     wire [2:0] rename_queue_accept;
     wire [2:0] rename_retire_arch;
-    wire [1:0] rename_retire_count;
+    wire [2:0] rename_retire_count;
     wire [2:0] rename_release_valid;
     wire [1:0] rename_gpr_write;
     wire [2:0] rename_free_valid;

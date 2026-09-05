@@ -33,6 +33,7 @@ module openrv64_backend_3p #(
     parameter integer ENABLE_SPECULATION_WINDOW = 0,
     parameter integer ENABLE_ALU2 = 0,
     parameter integer ENABLE_ALU_CHAINING = 0,
+    parameter integer ENABLE_LOAD_CONFLICT_RECORD = 0,
     parameter integer ISSUE_WINDOW_DEPTH = 16,
     parameter integer RENAME_MODE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
@@ -170,7 +171,7 @@ module openrv64_backend_3p #(
     output wire [3*`RV64_XLEN-1:0]      branch_retire_age_addr_o,
 
     output wire [2:0]                   retire_arch_o,
-    output wire [1:0]                   retire_count_o,
+    output wire [2:0]                   retire_count_o,
     output wire                         exception_o,
     output wire                         halt_o,
     output wire                         irq_o,
@@ -281,6 +282,7 @@ module openrv64_backend_3p #(
     wire [3*PHYS_REG_ADDR_WIDTH-1:0] rename_free_tag;
     wire [3*RETIRE_RECORD_WIDTH-1:0] allocation_record;
     wire [2:0] allocation_complete;
+    wire [2:0] allocation_branch_complete;
     wire [2:0] allocation_store;
     wire [2:0] allocation_mispredict;
     wire queue_prediction_update_accept;
@@ -454,9 +456,10 @@ module openrv64_backend_3p #(
         end
     endfunction
 
-    // Free conditional branches retain their real operands and prediction,
-    // but become completed retirement entries without occupying EX0.
-    // JAL/JALR remain on the normal path so this experiment isolates branches.
+    // Canonical NOPs complete at ROB allocation and never need an execution
+    // result.  Free conditional branches retain their real operands and
+    // prediction, but use the same allocation-completion path.  JAL/JALR
+    // remain on the normal path so the branch experiment stays isolated.
     genvar free_lane;
     generate
         for (free_lane = 0; free_lane < 3;
@@ -471,6 +474,18 @@ module openrv64_backend_3p #(
             wire [`RV64_XLEN-1:0] alloc_pc = alloc_payload[274 +: 64];
             wire [`RV64_INSTR_WIDTH-1:0] alloc_instr =
                 alloc_payload[242 +: 32];
+            wire alloc_no_effect = !alloc_fault &&
+                !alloc_payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_REG_WRITE_BIT] &&
+                !alloc_payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_MEM_READ_BIT] &&
+                !alloc_payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_MEM_WRITE_BIT] &&
+                !alloc_payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_BRANCH_BIT] &&
+                !alloc_payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_JUMP_BIT] &&
+                !alloc_payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_FENCE_BIT] &&
+                !alloc_payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_SYSTEM_BIT];
+            wire alloc_nop = `RV64_INSTR_IS_NOP(alloc_instr) &&
+                             alloc_no_effect;
+            wire alloc_fusion_stub = alloc_payload[
+                `OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT] && alloc_no_effect;
             wire [`RV64_XLEN-1:0] alloc_rs1_data =
                 alloc_payload[168 +: 64];
             wire [`RV64_XLEN-1:0] alloc_rs2_data =
@@ -484,12 +499,17 @@ module openrv64_backend_3p #(
             wire [`RV64_XLEN-1:0] alloc_next_pc = alloc_taken ?
                 alloc_target : (alloc_pc + 64'd4);
 
-            assign allocation_complete[free_lane] =
+            assign allocation_branch_complete[free_lane] =
+                allocation_valid[free_lane] &&
                 (FREE_BRANCHES != 0) &&
                 (ENABLE_ISSUE_WINDOW == 0) &&
-                allocation_valid[free_lane] && alloc_branch && !alloc_fault;
+                alloc_branch && !alloc_fault;
+            assign allocation_complete[free_lane] =
+                (allocation_valid[free_lane] &&
+                 (alloc_nop || alloc_fusion_stub)) ||
+                allocation_branch_complete[free_lane];
             assign allocation_mispredict[free_lane] =
-                allocation_complete[free_lane] &&
+                allocation_branch_complete[free_lane] &&
                 (alloc_payload[12] != alloc_taken);
             assign allocation_result[
                 free_lane*`OPENRV64_EXEC_COMPLETE_PAYLOAD_WIDTH +:
@@ -557,6 +577,7 @@ module openrv64_backend_3p #(
                     retire_record_lane*RETIRE_META_WIDTH +
                     `OPENRV64_DISPATCH_META_WIDTH +:
                     PHYS_REG_ADDR_WIDTH],
+                issue_record[`OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT],
                 issue_record[12], // predicted taken
                 issue_record[13], // jump
                 issue_record[14], // branch
@@ -1115,11 +1136,11 @@ module openrv64_backend_3p #(
         end
     endgenerate
 
-    wire free_branch_resolved = |allocation_complete;
+    wire free_branch_resolved = |allocation_branch_complete;
     // Architectural completions may be multi-wide.  The existing predictor
     // update port observes the oldest branch; BTFNT itself is stateless.
-    wire [1:0] free_branch_lane = allocation_complete[0] ? 2'd0 :
-                                  allocation_complete[1] ? 2'd1 : 2'd2;
+    wire [1:0] free_branch_lane = allocation_branch_complete[0] ? 2'd0 :
+        allocation_branch_complete[1] ? 2'd1 : 2'd2;
     wire [RETIRE_META_WIDTH-1:0] free_branch_meta =
         allocation_meta[
             free_branch_lane*RETIRE_META_WIDTH +:
@@ -1337,6 +1358,9 @@ module openrv64_backend_3p #(
         memory_store_violation_r = memory_store_collision_r ||
                                    memory_store_device_order_r;
     end
+    wire load_conflict_record_train_valid =
+        memory_disambiguation_enabled && exec_store_address_valid &&
+        memory_store_survives_squash_r && memory_store_collision_r;
 
     // Do not qualify a registered replay with the live branch-resolution
     // network: redirect feeds recovery, recovery feeds execution readiness,
@@ -1766,7 +1790,7 @@ module openrv64_backend_3p #(
                 train_window_result[WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
 
             assign branch_train_valid_o[train_lane] = free_branch_resolved ?
-                allocation_complete[train_lane] :
+                allocation_branch_complete[train_lane] :
                 speculative_window ?
                     ((train_lane == 0) ? exec_branch_resolved : 1'b0) :
                 (ENABLE_ISSUE_WINDOW != 0) ?
@@ -2788,7 +2812,17 @@ module openrv64_backend_3p #(
                             banked_regload_ingress_operand_done[
                                 banked_regload_operand_lane*2 +
                                 banked_regload_operand_source] = 1'b1;
-                            if (banked_regload_operand_producer)
+                            // Fused instructions may deliberately carry an
+                            // embedded operand with uses_rsN clear.  Preserve
+                            // that payload data across the banked gather; the
+                            // execution pipe identifies the embedded source
+                            // from the fused instruction encoding.
+                            if (banked_regload_operand_producer ||
+                                (!banked_regload_operand_use &&
+                                 dispatch_pipe_payload[
+                                     banked_regload_operand_pipe*
+                                     `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                                     `OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT]))
                                 banked_regload_ingress_operand_data[
                                     (banked_regload_operand_lane*2 +
                                      banked_regload_operand_source)*
@@ -4235,7 +4269,12 @@ module openrv64_backend_3p #(
                             (banked_independent_state_pipe*2 +
                              banked_independent_state_operand)*`RV64_XLEN +:
                             `RV64_XLEN] <=
-                            banked_independent_state_source_forwarded ?
+                            (banked_independent_state_source_forwarded ||
+                             (!banked_independent_state_source_use &&
+                              dispatch_pipe_payload[
+                                  banked_independent_state_pipe*
+                                  `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
+                                  `OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT])) ?
                             dispatch_pipe_payload[
                                 banked_independent_state_pipe*
                                 `OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH +
@@ -5573,6 +5612,7 @@ module openrv64_backend_3p #(
         .ENABLE_SPECULATION_WINDOW_3P(ENABLE_SPECULATION_WINDOW),
         .ENABLE_ALU2_3P(ENABLE_ALU2),
         .ENABLE_ALU_CHAINING_3P(ENABLE_ALU_CHAINING),
+        .ENABLE_LOAD_CONFLICT_RECORD_3P(ENABLE_LOAD_CONFLICT_RECORD),
         .DEFER_WINDOW_GPR_READ_3P(BANKED_GPR != 0),
         .MAX_WINDOW_ISSUE_LANES_3P((BANKED_GPR != 0) ? 3 : 4),
         .ISSUE_WINDOW_DEPTH_3P(ISSUE_WINDOW_DEPTH),
@@ -5618,6 +5658,9 @@ module openrv64_backend_3p #(
         .squash_id_3p_i(redirect_id_o),
         .squash_slot_3p_i(branch_slot_o),
         .translation_bypass_3p_i(translation_bypass_i),
+        .load_conflict_train_valid_3p_i(
+            load_conflict_record_train_valid),
+        .load_conflict_train_pc_3p_i(memory_violation_load_pc_r),
         .decode_valid_3p_i(decode_valid_i),
         .decode_ready_3p_o(decode_ready_o),
         .decode_payload_3p_i(decode_payload_i),

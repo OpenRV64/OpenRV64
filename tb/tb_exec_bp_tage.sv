@@ -40,7 +40,8 @@ module tb_exec_bp_tage;
 
     openrv64_exec_bp #(
         .BP_TYPE(`OPENRV64_BP_TAGE_BTB),
-        .ENABLE_RAS(0),
+        .ENABLE_RAS(1),
+        .RAS_DEPTH(4),
         .TAGE_BASE_ENTRIES(BASE_ENTRIES),
         .TAGE_TABLE_ENTRIES(TABLE_ENTRIES),
         .TAGE_HISTORY_BITS(HISTORY_BITS),
@@ -201,6 +202,45 @@ module tb_exec_bp_tage;
         end
     endtask
 
+    task automatic present_control(
+        input logic [63:0] pc,
+        input logic [`OPENRV64_INSTR_ID_WIDTH-1:0] id,
+        input logic [31:0] instr,
+        input logic indirect,
+        input logic allocate
+    );
+        begin
+            lookup_valid = 1'b1;
+            lookup_jump = 1'b1;
+            lookup_indirect = indirect;
+            lookup_instr = instr;
+            lookup_pc = pc;
+            lookup_id = id;
+            lookup_allocate = allocate;
+            #1;
+        end
+    endtask
+
+    task automatic resolve_control(
+        input logic [63:0] pc,
+        input logic [`OPENRV64_INSTR_ID_WIDTH-1:0] id,
+        input logic [31:0] instr,
+        input logic [63:0] target,
+        input logic do_squash
+    );
+        begin
+            resolve_valid = 1'b1;
+            resolve_taken = 1'b1;
+            resolve_instr = instr;
+            resolve_pc = pc;
+            resolve_target = target;
+            resolve_id = id;
+            squash = do_squash;
+            tick();
+            clear_inputs();
+        end
+    endtask
+
     integer i0;
     integer i1;
     integer i3;
@@ -223,13 +263,22 @@ module tb_exec_bp_tage;
             decode_stall || (dut.diag_tage_provider != 3'd0))
             $fatal(1, "cold backward BRAM response is not weak taken");
 
+        // The eventual backend ID may change while the PC-indexed RAM response
+        // is retained behind frontend compaction.  Allocation must accept the
+        // existing response and record the final ID rather than reread or
+        // retain the provisional ID.
+        lookup_id = 64'd2;
+        lookup_allocate = 1'b1;
+        #1;
+        if (decode_stall)
+            $fatal(1, "BP9 rejected a retained response after ID projection changed");
+
         // A base miss allocates the shortest tagged table.  Tagged resolution
         // marks the record first; ordered training occurs on the next edge.
-        lookup_allocate = 1'b1;
         i0 = dut.g_tage.u_tage.lookup_table0_index_q;
         tick();
         clear_inputs();
-        resolve_conditional(64'h100, 64'd1, 1'b0, 1'b1);
+        resolve_conditional(64'h100, 64'd2, 1'b0, 1'b1);
         if (!dut.diag_tage_train ||
             !dut.diag_tage_train_mispredict ||
             (dut.diag_tage_allocation != 3'd1))
@@ -360,22 +409,132 @@ module tb_exec_bp_tage;
         if (decode_stall || fetch_stall || !prediction_target_valid ||
             (prediction_target != 64'h1234_5678_9abc_def0))
             $fatal(1, "trained synchronous BTB target lookup failed");
+        lookup_id = 64'd32;
         lookup_allocate = 1'b1;
+        #1;
+        if (decode_stall)
+            $fatal(1, "BP9 BTB rejected a retained response after ID changed");
         tick();
         clear_inputs();
-        resolve_indirect(64'h400, 64'd31, 64'h1234_5678_9abc_def0);
+        resolve_indirect(64'h400, 64'd32, 64'h1234_5678_9abc_def0);
         tick();
 
+        // RAS actions use the existing ordered TAGE inflight records.  A
+        // younger call may resolve before an older return, but it must not
+        // push until the older return has popped the prior top.
+        reset_dut();
+        present_control(64'h500, 64'd40, 32'h0000_00ef, 1'b0, 1'b1);
+        tick();
+        clear_inputs();
+        resolve_control(64'h500, 64'd40, 32'h0000_00ef, 64'h900, 1'b0);
+        tick();
+        if ((dut.g_ras.u_ras.count_q != 1) ||
+            (dut.g_ras.u_ras.stack_q[0] != 64'h504))
+            $fatal(1, "ordered RAS seed call did not push PC+4");
+
+        present_control(64'h600, 64'd41, 32'h0000_8067, 1'b1, 1'b1);
+        if (!prediction_target_valid || (prediction_target != 64'h504))
+            $fatal(1, "RAS did not predict seeded return address");
+        tick();
+        clear_inputs();
+        present_control(64'h700, 64'd42, 32'h0000_00ef, 1'b0, 1'b1);
+        tick();
+        clear_inputs();
+
+        // The unresolved younger call is already part of the logical return
+        // stack.  A following return must see that speculative push instead
+        // of waiting for either control to execute in order.
+        present_control(64'h800, 64'd43, 32'h0000_8067, 1'b1, 1'b0);
+        if (!prediction_target_valid || (prediction_target != 64'h704) ||
+            fetch_stall)
+            $fatal(1, "return did not use unresolved speculative RAS push");
+        clear_inputs();
+
+        resolve_control(64'h700, 64'd42, 32'h0000_00ef, 64'ha00, 1'b0);
+        if ((dut.g_ras.u_ras.count_q != 1) ||
+            (dut.g_ras.u_ras.stack_q[0] != 64'h504))
+            $fatal(1, "younger resolved call updated RAS out of order");
+
+        present_control(64'h800, 64'd43, 32'h0000_8067, 1'b1, 1'b0);
+        if (!prediction_target_valid || (prediction_target != 64'h704) ||
+            fetch_stall)
+            $fatal(1, "return did not use resolved speculative RAS push");
+        clear_inputs();
+
+        resolve_control(64'h600, 64'd41, 32'h0000_8067, 64'h504, 1'b0);
+        tick();
+        if (dut.g_ras.u_ras.count_q != 0)
+            $fatal(1, "older return did not pop before younger call push");
+        tick();
+        if ((dut.g_ras.u_ras.count_q != 1) ||
+            (dut.g_ras.u_ras.stack_q[0] != 64'h704))
+            $fatal(1, "ordered RAS call did not push after older return");
+
+        present_control(64'h804, 64'd44, 32'h0000_8067, 1'b1, 1'b0);
+        if (!prediction_target_valid || (prediction_target != 64'h704))
+            $fatal(1, "ordered RAS state produced wrong final target");
+        clear_inputs();
+
+        // A redirecting older return must discard a younger, already-resolved
+        // call before that call can change the RAS.
+        present_control(64'h810, 64'd45, 32'h0000_8067, 1'b1, 1'b1);
+        tick();
+        clear_inputs();
+        present_control(64'h900, 64'd46, 32'h0000_00ef, 1'b0, 1'b1);
+        tick();
+        clear_inputs();
+        resolve_control(64'h900, 64'd46, 32'h0000_00ef, 64'hb00, 1'b0);
+
+        // Before the redirect, the speculative younger call legitimately
+        // supplies the projected top.
+        present_control(64'h920, 64'd47, 32'h0000_8067, 1'b1, 1'b0);
+        if (!prediction_target_valid || (prediction_target != 64'h904))
+            $fatal(1, "younger speculative RAS push was not visible");
+        clear_inputs();
+
+        resolve_control(64'h810, 64'd45, 32'h0000_8067, 64'h704, 1'b1);
+        // The younger call was discarded, while the redirecting return's pop
+        // survives.  The projected stack is therefore empty before commit.
+        present_control(64'h920, 64'd47, 32'h0000_8067, 1'b1, 1'b0);
+        if (prediction_target_valid || !fetch_stall)
+            $fatal(1, "squashed younger RAS update remained visible");
+        clear_inputs();
+        tick();
+        if ((dut.g_ras.u_ras.count_q != 0) ||
+            (dut.g_tage.u_tage.inflight_count_q != 0))
+            $fatal(1, "squashed younger call polluted ordered RAS");
+
+        // Two unresolved calls followed by consecutive returns exercise the
+        // read-before-enqueue rule directly.  The first return observes the
+        // newest call; only after it is accepted may the second return observe
+        // the next older call.
+        reset_dut();
+        present_control(64'ha00, 64'd50, 32'h0000_00ef, 1'b0, 1'b1);
+        tick();
+        clear_inputs();
+        present_control(64'hb00, 64'd51, 32'h0000_00ef, 1'b0, 1'b1);
+        tick();
+        clear_inputs();
+        present_control(64'hc00, 64'd52, 32'h0000_8067, 1'b1, 1'b1);
+        if (!prediction_target_valid || (prediction_target != 64'hb04))
+            $fatal(1, "first speculative return consumed its own pop");
+        tick();
+        clear_inputs();
+        present_control(64'hc04, 64'd53, 32'h0000_8067, 1'b1, 1'b0);
+        if (!prediction_target_valid || (prediction_target != 64'ha04))
+            $fatal(1, "consecutive return missed older speculative call");
+        clear_inputs();
+        #1;
         if (update_overflow || fetch_stall || decode_stall ||
             prediction_target_valid || target_mispredict)
             $fatal(1, "unexpected BP9 wrapper side effect");
 
-        $display("PASS: BP9 compact TAGE provider, training, aging, and recovery");
+        $display("PASS: BP9 compact TAGE provider, training, RAS ordering, aging, and recovery");
         $finish;
     end
 
     initial begin
-        repeat (200) @(posedge clk);
+        repeat (260) @(posedge clk);
         $fatal(1, "timeout in BP9 compact TAGE test");
     end
 endmodule

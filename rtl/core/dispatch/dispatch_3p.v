@@ -456,6 +456,29 @@ module openrv64_dispatch_3p #(
         end
     endfunction
 
+    function automatic is_completed_nop;
+        input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
+        begin
+            is_completed_nop =
+                (`RV64_INSTR_IS_NOP(
+                    payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_LSB +:
+                            `RV64_INSTR_WIDTH]) ||
+                 payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT]) &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_REG_WRITE_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_MEM_READ_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_MEM_WRITE_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_BRANCH_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_JUMP_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_FENCE_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_SYSTEM_BIT] &&
+                !payload[`OPENRV64_EXEC_ISSUE_PAYLOAD_ILLEGAL_BIT] &&
+                !payload[
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_ACCESS_FAULT_BIT] &&
+                !payload[
+                    `OPENRV64_EXEC_ISSUE_PAYLOAD_INSTR_PAGE_FAULT_BIT];
+        end
+    endfunction
+
     function automatic is_pairable_eq_branch;
         input [`OPENRV64_EXEC_ISSUE_PAYLOAD_WIDTH-1:0] payload;
         reg [`RV64_BR_OP_WIDTH-1:0] branch_op;
@@ -499,13 +522,19 @@ module openrv64_dispatch_3p #(
     // Free branches retain real operand hazards and real prediction.  A
     // correctly predicted branch does not claim a pipe or terminate the
     // group; a known misprediction suppresses its younger wrong-path lanes.
-    wire free0 = candidate_valid[0] && is_free_branch(payload0);
-    wire free1 = candidate_valid[1] && is_free_branch(payload1);
-    wire free2 = candidate_valid[2] && is_free_branch(payload2);
+    wire free_branch0 = candidate_valid[0] && is_free_branch(payload0);
+    wire free_branch1 = candidate_valid[1] && is_free_branch(payload1);
+    wire free_branch2 = candidate_valid[2] && is_free_branch(payload2);
+    wire free0 = candidate_valid[0] &&
+                 (free_branch0 || is_completed_nop(payload0));
+    wire free1 = candidate_valid[1] &&
+                 (free_branch1 || is_completed_nop(payload1));
+    wire free2 = candidate_valid[2] &&
+                 (free_branch2 || is_completed_nop(payload2));
     wire [2:0] candidate_free = {free2, free1, free0};
-    wire free_mispredict0 = free0 &&
+    wire free_mispredict0 = free_branch0 &&
         (branch_taken(payload0) != payload0[12]);
-    wire free_mispredict1 = free1 &&
+    wire free_mispredict1 = free_branch1 &&
         (branch_taken(payload1) != payload1[12]);
     // Equality branches are cheap enough to resolve once in dispatch.  When
     // that result proves the frontend prediction correct, waive only their

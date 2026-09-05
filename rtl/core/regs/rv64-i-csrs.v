@@ -51,7 +51,7 @@ module openrv64_rv64i_csrs #(
     input  wire [`RV64_XLEN-1:0]           trap_tval_i,
     input  wire                             mret_i,
     input  wire                             sret_i,
-    input  wire [1:0]                       retire_count_i,
+    input  wire [2:0]                       retire_count_i,
     input  wire [`OPENRV64_CMU_EVENT_COUNT-1:0] perf_events_i,
 
     input  wire                             irq_software_i,

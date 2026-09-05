@@ -41,6 +41,9 @@ module tb_decode_top;
     logic [`RV64_BR_OP_WIDTH-1:0] br_op;
     logic br_link;
     logic br_indirect;
+    logic fusion_candidate;
+    logic [`OPENRV64_FUSION_CANDIDATE_WIDTH-1:0]
+          fusion_candidate_class;
     logic subdecode_needed;
     logic extension_decode_possible;
 
@@ -100,6 +103,8 @@ module tb_decode_top;
         .br_op_sel_o(br_op),
         .br_link_o(br_link),
         .br_indirect_o(br_indirect),
+        .fusion_candidate_o(fusion_candidate),
+        .fusion_candidate_class_o(fusion_candidate_class),
         .subdecode_needed_o(subdecode_needed),
         .extension_decode_possible_o(extension_decode_possible)
     );
@@ -188,6 +193,56 @@ module tb_decode_top;
                      `RV64_ALU_OP_ADD, `RV64_LSU_OP_INVALID, `RV64_BR_OP_INVALID,
                      "addi");
 
+        if (fusion_candidate ||
+            (fusion_candidate_class != `OPENRV64_FUSION_CANDIDATE_NONE)) begin
+            $fatal(1, "ordinary ADDI was marked as a fusion candidate");
+        end
+
+        instr = {12'hff9, 5'd0, `RV64_FUNCT3_ADD_SUB, 5'd9,
+                 `RV64_OPCODE_OP_IMM};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_ALU,
+                     `RV64_EARLY_FORMAT_I,
+                     1'b1, 1'b0, 1'b1, 5'd0, `RV64_REG_X0, 5'd9, 1'b1,
+                     1'b1, 64'hffff_ffff_ffff_fff9,
+                     1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_ADD, `RV64_LSU_OP_INVALID,
+                     `RV64_BR_OP_INVALID, "li fusion candidate");
+        if (!fusion_candidate ||
+            (fusion_candidate_class !=
+             `OPENRV64_FUSION_CANDIDATE_LI_BRANCH)) begin
+            $fatal(1, "ADDI-x0 did not report the LI/branch candidate");
+        end
+
+        instr = {12'h001, 5'd0, `RV64_FUNCT3_ADD_SUB, 5'd0,
+                 `RV64_OPCODE_OP_IMM};
+        #1;
+        if (fusion_candidate ||
+            (fusion_candidate_class != `OPENRV64_FUSION_CANDIDATE_NONE)) begin
+            $fatal(1, "ADDI x0,x0 was marked as a fusion candidate");
+        end
+
+        instr = {20'h12345, 5'd9, `RV64_OPCODE_AUIPC};
+        check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_ALU,
+                     `RV64_EARLY_FORMAT_U,
+                     1'b0, 1'b0, 1'b1, `RV64_REG_X0, `RV64_REG_X0,
+                     5'd9, 1'b1,
+                     1'b1, 64'h0000_0000_1234_5000,
+                     1'b0, 1'b0, 1'b0, 1'b0,
+                     `RV64_ALU_OP_AUIPC, `RV64_LSU_OP_INVALID,
+                     `RV64_BR_OP_INVALID, "auipc fusion candidate");
+        if (!fusion_candidate ||
+            (fusion_candidate_class !=
+             `OPENRV64_FUSION_CANDIDATE_PCREL_CALL)) begin
+            $fatal(1, "AUIPC did not report the PC-relative-call candidate");
+        end
+
+        instr = {20'h12345, 5'd0, `RV64_OPCODE_AUIPC};
+        #1;
+        if (fusion_candidate ||
+            (fusion_candidate_class != `OPENRV64_FUSION_CANDIDATE_NONE)) begin
+            $fatal(1, "AUIPC x0 was marked as a fusion candidate");
+        end
+
         instr = {12'd16, 5'd6, `RV64_FUNCT3_LD, 5'd5, `RV64_OPCODE_LOAD};
         check_common(1'b1, 1'b0, `RV64_EARLY_CLASS_MEM, `RV64_EARLY_FORMAT_I,
                      1'b1, 1'b0, 1'b1, 5'd6, `RV64_REG_X0, 5'd5, 1'b1,
@@ -245,6 +300,10 @@ module tb_decode_top;
 
         if (!br_link || !br_indirect) begin
             $fatal(1, "jalr did not assert link/indirect outputs");
+        end
+        if (fusion_candidate ||
+            (fusion_candidate_class != `OPENRV64_FUSION_CANDIDATE_NONE)) begin
+            $fatal(1, "JALR was marked as a producer candidate");
         end
 
         instr = 32'h0ff0_000f;
