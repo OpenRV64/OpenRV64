@@ -639,6 +639,84 @@ def wakeup_report(trace, top=12):
     return "\n".join(out)
 
 
+def horizon_report(trace):
+    """Admission horizon: how far ahead of retirement admission runs.
+
+    Two views over retired instructions.  Per cycle: how many
+    admitted-but-not-yet-retired instructions the machine holds (the
+    visible correct-path future, in instructions).  Per instruction:
+    how many cycles before its own retirement it was admitted (the
+    time-domain horizon).  A JIT frontend shows a thin horizon; a
+    leading frontend shows a fat one that grows until a capacity or
+    policy wall stops it."""
+    ins = sorted((r.uid, r) for r in trace.insns.values()
+                 if r.retired and r.sched_enter_cycle is not None
+                 and r.retire_cycle is not None)
+    if not ins:
+        return "horizon: no retired insns with admission stamps"
+    lo = min(r.sched_enter_cycle for _, r in ins)
+    hi = max(r.retire_cycle for _, r in ins)
+    adm = {}
+    ret = {}
+    for _, r in ins:
+        adm[r.sched_enter_cycle] = adm.get(r.sched_enter_cycle, 0) + 1
+        ret[r.retire_cycle] = ret.get(r.retire_cycle, 0) + 1
+    horizon = []
+    a_cum = r_cum = 0
+    for c in range(lo, hi + 1):
+        a_cum += adm.get(c, 0)
+        r_cum += ret.get(c, 0)
+        horizon.append(a_cum - r_cum)
+    tspan = [r.retire_cycle - r.sched_enter_cycle for _, r in ins]
+
+    def st(vs):
+        vs2 = sorted(vs)
+        n = len(vs2)
+        return "p50=%-4d p90=%-4d mean=%.1f max=%d" % (
+            vs2[n // 2], vs2[n * 9 // 10], sum(vs2) / float(n), vs2[-1])
+
+    out = []
+    out.append("admission horizon (retired stream, %s insns):"
+               % "{:,}".format(len(ins)))
+    out.append("")
+    out.append("  in-flight admitted-not-retired, per cycle "
+               "(instructions of visible future):")
+    out.append("    " + st(horizon))
+    out.extend(_hist_lines(horizon))
+    out.append("")
+    out.append("  admitted-before-own-retire, per insn (cycles):")
+    out.append("    " + st(tspan))
+    out.extend(_hist_lines(tspan))
+
+    # balance check: which side of the queue binds
+    cap = {}
+    for key, count in trace.ssr_counts.items():
+        reason = key & 511
+        if reason in (31, 32, 33):        # RENAME_TAG/ROB_CAP/SCHED_CAP
+            cap[reason] = cap.get(reason, 0) + count
+    occ = sorted(trace.rob_occ.values()) if trace.rob_occ else [0]
+    occ_p90 = occ[len(occ) * 9 // 10]
+    occ_max = occ[-1]
+    hs = sorted(horizon)
+    h50 = hs[len(hs) // 2]
+    out.append("")
+    out.append("  balance: horizon p50 %d vs ROB occupancy p90/max %d/%d;"
+               % (h50, occ_p90, occ_max))
+    out.append("    capacity pressure rows: RENAME_TAG=%s ROB_CAP=%s "
+               "SCHED_CAP=%s" % (cap.get(31, 0), cap.get(32, 0),
+                                 cap.get(33, 0)))
+    pressure = cap.get(31, 0) + cap.get(32, 0) + cap.get(33, 0)
+    if pressure > len(hs) // 20:
+        v = "BACKEND-BOUND: horizon riding its capacity ceiling"
+    elif h50 * 2 < occ_max:
+        v = ("FRONTEND-BOUND: horizon far below demonstrated capacity, "
+             "ceilings idle")
+    else:
+        v = "BALANCED: slack on both sides"
+    out.append("    verdict: %s" % v)
+    return "\n".join(out)
+
+
 def overlap_report(trace, boundary_pc=None):
     """Iteration overlap: how many loop iterations are in flight.
 

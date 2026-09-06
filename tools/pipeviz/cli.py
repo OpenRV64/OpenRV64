@@ -58,6 +58,10 @@ def main(argv=None):
                          "edges whose consumer issued exactly one cycle "
                          "after the producer's completion, by producer "
                          "class/latency and consumer PC")
+    ap.add_argument("--horizon", action="store_true",
+                    help="admission horizon: in-flight admitted-not-"
+                         "retired per cycle, and per-insn cycles "
+                         "between admission and own retirement")
     ap.add_argument("--overlap", action="store_true",
                     help="iteration overlap: period, lifetime, and "
                          "iterations-in-flight, delimited by the "
@@ -111,7 +115,7 @@ def main(argv=None):
                         control_report, src1_report, chains_report,
                         health_report, bubbles_report, head_report,
                         wakeup_report, pairs_report,
-                        overlap_report)
+                        overlap_report, horizon_report)
 
     t0 = time.time()
     progress = None
@@ -169,6 +173,11 @@ def main(argv=None):
         if did_something:
             print()
         print(head_report(trace, hist=args.hist))
+        did_something = True
+    if args.horizon:
+        if did_something:
+            print()
+        print(horizon_report(trace))
         did_something = True
     if args.overlap:
         if did_something:
