@@ -53,7 +53,18 @@ module openrv64_exec_bp #(
     parameter integer BTB_ENTRIES = 256,
     parameter integer BTB_TAG_BITS = 16,
     parameter integer INFLIGHT_DEPTH = 16,
-    parameter integer ENABLE_TAGGED_RESOLUTION = 0
+    parameter integer ENABLE_TAGGED_RESOLUTION = 0,
+    // The Tomasulo instruction-stream frontend may choose a path before the
+    // ordinary decode-time lookup allocates its predictor checkpoint.  When
+    // enabled, that already-consumed path is authoritative for this dynamic
+    // control.  Other frontends leave the parameter disabled and need not
+    // drive the override inputs.
+    parameter integer ENABLE_LOOKUP_PATH_OVERRIDE = 0,
+    // Retain an observational TAGE lookup under an upstream stream token so
+    // the eventual decoded branch can allocate from that snapshot without a
+    // second RAM read.  This remains disabled for every legacy frontend.
+    parameter integer ENABLE_PREPARED_CONTEXT = 0,
+    parameter integer PREPARED_CONTEXT_DEPTH = 8
 ) (
     input  wire clk,
     input  wire rst_n,
@@ -72,7 +83,13 @@ module openrv64_exec_bp #(
     input  wire [`RV64_XLEN-1:0]        lookup_pc_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] lookup_id_i,
     input  wire lookup_observational_i,
+    input  wire lookup_context_valid_i,
+    input  wire [31:0] lookup_context_token_i,
     input  wire lookup_allocate_i,
+    input  wire lookup_path_override_valid_i,
+    input  wire lookup_path_override_taken_i,
+    input  wire lookup_path_override_target_valid_i,
+    input  wire [`RV64_XLEN-1:0] lookup_path_override_target_i,
 
     input  wire resolve_valid_i,
     input  wire resolve_branch_i,
@@ -95,6 +112,7 @@ module openrv64_exec_bp #(
     output wire [`RV64_XLEN-1:0] direction_response_pc_o,
     output wire direction_response_taken_o,
     output wire direction_response_weak_o,
+    output wire lookup_context_hit_o,
     output wire target_mispredict_o,
     output wire update_overflow_o,
     output wire fetch_stall_o,
@@ -210,6 +228,9 @@ module openrv64_exec_bp #(
     wire tage_train_mispredict;
     wire [2:0] tage_train_allocation;
     wire tage_train_allocation_failed;
+    wire lookup_path_override_valid =
+        (ENABLE_LOOKUP_PATH_OVERRIDE != 0) &&
+        lookup_path_override_valid_i && lookup_valid_i;
 
     localparam integer SELECTED_GSHARE_ENTRIES =
         (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512) ? 512 :
@@ -297,7 +318,9 @@ module openrv64_exec_bp #(
                 .BTB_ENTRIES(BTB_ENTRIES),
                 .BTB_TAG_BITS(BTB_TAG_BITS),
                 .INFLIGHT_DEPTH(INFLIGHT_DEPTH),
-                .ENABLE_TAGGED_RESOLUTION(ENABLE_TAGGED_RESOLUTION)
+                .ENABLE_TAGGED_RESOLUTION(ENABLE_TAGGED_RESOLUTION),
+                .ENABLE_PREPARED_CONTEXT(ENABLE_PREPARED_CONTEXT),
+                .PREPARED_CONTEXT_DEPTH(PREPARED_CONTEXT_DEPTH)
             ) u_tage (
                 .clk(clk), .rst_n(rst_n), .flush_i(flush_i),
                 .squash_i(squash_i),
@@ -312,7 +335,17 @@ module openrv64_exec_bp #(
                 .lookup_pc_i(lookup_pc_i),
                 .lookup_id_i(lookup_id_i),
                 .lookup_observational_i(lookup_observational_i),
+                .lookup_context_valid_i(lookup_context_valid_i),
+                .lookup_context_token_i(lookup_context_token_i),
                 .lookup_allocate_i(lookup_allocate_i),
+                .lookup_path_override_valid_i(
+                    lookup_path_override_valid),
+                .lookup_path_override_taken_i(
+                    lookup_path_override_taken_i),
+                .lookup_path_override_target_valid_i(
+                    lookup_path_override_target_valid_i),
+                .lookup_path_override_target_i(
+                    lookup_path_override_target_i),
                 .ras_prediction_valid_i(ras_prediction_valid),
                 .ras_prediction_target_i(ras_prediction_target),
                 .resolve_valid_i(resolve_valid_i),
@@ -333,6 +366,7 @@ module openrv64_exec_bp #(
                     tage_direction_response_taken),
                 .direction_response_weak_o(
                     tage_direction_response_weak),
+                .lookup_context_hit_o(lookup_context_hit_o),
                 .target_mispredict_o(tage_target_mispredict),
                 .allocation_stall_o(tage_allocation_stall),
                 .capacity_stall_o(tage_capacity_stall),
@@ -370,6 +404,7 @@ module openrv64_exec_bp #(
             assign tage_direction_response_pc = {`RV64_XLEN{1'b0}};
             assign tage_direction_response_taken = 1'b0;
             assign tage_direction_response_weak = 1'b0;
+            assign lookup_context_hit_o = 1'b0;
             assign tage_target_mispredict = 1'b0;
             assign tage_allocation_stall = 1'b0;
             assign tage_capacity_stall = 1'b0;
@@ -534,11 +569,21 @@ module openrv64_exec_bp #(
         (BP_TYPE == `OPENRV64_BP_GSHARE_BTB_512);
     wire use_tournament = BP_TYPE == `OPENRV64_BP_TOURNAMENT_BTB;
     wire use_table_predictor = use_advanced || use_tournament || use_tage;
-    wire selected_target_valid = use_advanced ?
+    wire selected_target_valid_raw = use_advanced ?
         advanced_prediction_target_valid :
         (use_tournament ? tournament_prediction_target_valid :
          (use_tage ? tage_prediction_target_valid :
                      ras_prediction_valid));
+    wire selected_target_valid = lookup_path_override_valid &&
+        lookup_path_override_target_valid_i ? 1'b1 :
+        selected_target_valid_raw;
+    wire [`RV64_XLEN-1:0] selected_target =
+        lookup_path_override_valid &&
+        lookup_path_override_target_valid_i ?
+            lookup_path_override_target_i :
+        use_advanced ? advanced_prediction_target :
+        (use_tournament ? tournament_prediction_target :
+         (use_tage ? tage_prediction_target : ras_prediction_target));
     wire selected_allocation_stall = use_advanced ?
         advanced_allocation_stall :
         (use_tournament ? tournament_allocation_stall :
@@ -546,25 +591,21 @@ module openrv64_exec_bp #(
     wire effective_lookup_requires_stall = lookup_valid_i &&
         (policy_stalls_all ||
          (lookup_indirect_i && !selected_target_valid));
-    assign prediction_taken_o = use_advanced ? advanced_prediction_taken :
+    wire selected_prediction_taken = use_advanced ?
+        advanced_prediction_taken :
         (use_tournament ? tournament_prediction_taken :
          (use_tage ? tage_prediction_taken :
           (lookup_valid_i &&
            (ras_prediction_valid ||
             (!lookup_indirect_i && policy_prediction_taken)))));
+    assign prediction_taken_o = lookup_path_override_valid ?
+        lookup_path_override_taken_i : selected_prediction_taken;
     assign prediction_weak_o = lookup_valid_i && lookup_branch_i &&
         (use_advanced ? advanced_prediction_weak :
          (use_tournament ? tournament_prediction_weak :
           (use_tage ? tage_prediction_weak : policy_prediction_weak)));
-    assign prediction_target_valid_o = use_advanced ?
-        advanced_prediction_target_valid :
-        (use_tournament ? tournament_prediction_target_valid :
-         (use_tage ? tage_prediction_target_valid :
-                     (lookup_valid_i && ras_prediction_valid)));
-    assign prediction_target_o = use_advanced ?
-        advanced_prediction_target :
-        (use_tournament ? tournament_prediction_target :
-         (use_tage ? tage_prediction_target : ras_prediction_target));
+    assign prediction_target_valid_o = selected_target_valid;
+    assign prediction_target_o = selected_target;
     assign direction_response_valid_o = use_tage &&
         tage_direction_response_valid;
     assign direction_response_pc_o = tage_direction_response_pc;

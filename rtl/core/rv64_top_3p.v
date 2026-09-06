@@ -335,14 +335,20 @@ module openrv64_rv64_top_3p #(
     wire fetch3_cancel;
     wire fetch3_cancel_stash;
     wire [63:0] fetch3_stream_pc;
+    wire [63:0] fetch3_next_pc;
     wire [3:0] fetch3_consumed_halfwords;
+    wire fetch3_istream_splice_valid;
+    wire [3:0] fetch3_istream_splice_halfword;
+    wire [2:0] fetch_decode_splice_successor;
     wire fetch3_istream_prediction_valid;
     wire [63:0] fetch3_istream_control_pc;
     wire [63:0] fetch3_istream_control_end_pc;
     wire [63:0] fetch3_istream_prediction_successor;
     wire fetch3_istream_prediction_taken;
+    wire fetch3_istream_prediction_refined;
     wire [31:0] fetch3_istream_prediction_token;
     wire fetch3_istream_prediction_accept;
+    wire [63:0] fetch3_istream_segment_start_pc;
     wire fetch_alt_restart_hit;
     // Stable simulation-observation seam across the legacy and stream
     // frontends.  Testbenches must not bind to implementation-specific
@@ -376,13 +382,24 @@ module openrv64_rv64_top_3p #(
     wire fetch_observe_stream_btb_lookup;
     wire fetch_observe_stream_btb_response;
     wire fetch_observe_stream_btb_hit;
+    wire fetch_observe_stream_splice;
+    wire fetch_observe_stream_splice_younger;
     wire fetch_observe_stream_btb_way1;
     wire fetch_observe_stream_btb_train;
     wire fetch_observe_stream_btb_update;
     wire fetch_observe_stream_btb_insert;
     wire fetch_observe_stream_btb_replacement;
-    wire fetch_observe_stream_btb_same_sector_second;
-    wire fetch_observe_stream_btb_same_sector_overflow;
+    wire fetch_observe_stream_btb_train_shorter;
+    wire fetch_observe_stream_btb_train_later_ignored;
+    wire fetch_observe_stream_btb_root_lookup;
+    wire fetch_observe_stream_btb_chain_lookup;
+    wire fetch_observe_stream_btb_queue_enqueue;
+    wire fetch_observe_stream_btb_queue_dequeue;
+    wire fetch_observe_stream_btb_queue_full_stall;
+    wire [2:0] fetch_observe_stream_btb_queue_count;
+    wire fetch_observe_stream_btb_train_run_overflow;
+    wire fetch_observe_stream_btb_train_conditional;
+    wire fetch_observe_stream_btb_train_taken;
     wire fetch_observe_stream_transfer;
     wire fetch_observe_stream_reject;
     // Tomasulo-only stream-BTB to BP9 lookahead seam.  Every non-istream
@@ -391,10 +408,24 @@ module openrv64_rv64_top_3p #(
     wire istream_tage_lookup_accept;
     wire [63:0] istream_tage_lookup_pc;
     wire istream_tage_lookup_backward;
+    wire [31:0] istream_tage_lookup_token;
     wire fetch_observe_istream_tage_candidate;
     wire fetch_observe_istream_tage_lookup;
     wire fetch_observe_istream_tage_response;
     wire fetch_observe_istream_tage_taken;
+    wire fetch_observe_istream_tage_busy_skip;
+    wire [3:0] fetch_observe_istream_tage_queue_count;
+    wire fetch_observe_istream_tage_context_hit;
+    wire fetch_observe_istream_tage_context_claim;
+    wire fetch_observe_istream_tage_context_miss;
+    wire fetch_observe_istream_refinement_accept;
+    wire fetch_observe_istream_refinement_changed;
+    wire fetch_observe_istream_refinement_late;
+    wire fetch_observe_stream_context_bind;
+    wire fetch_observe_stream_context_match;
+    wire fetch_observe_stream_context_miss;
+    wire fetch_observe_stream_context_invalid;
+    wire fetch_observe_stream_late_path_bind;
     wire use_icx_bus = (BUS_CONFIG == `OPENRV64_BUS_AXI);
 
     wire backend_redirect;
@@ -512,6 +543,15 @@ module openrv64_rv64_top_3p #(
     localparam bit BP_REGISTERED_LOOKUP =
         BP_TYPE == `OPENRV64_BP_TAGE_BTB;
     localparam integer RETIRE_SLOT_WIDTH = $clog2(RETIRE_DEPTH);
+    reg stream_context_valid_q [0:RETIRE_DEPTH-1];
+    reg [`OPENRV64_INSTR_ID_WIDTH-1:0]
+        stream_context_id_q [0:RETIRE_DEPTH-1];
+    reg [63:0] stream_context_start_pc_q [0:RETIRE_DEPTH-1];
+    wire stream_btb_train_context_match = branch_resolved &&
+        stream_context_valid_q[branch_slot] &&
+        (stream_context_id_q[branch_slot] == branch_id);
+    wire [63:0] stream_btb_train_start_pc =
+        stream_context_start_pc_q[branch_slot];
     wire [1:0] bp_stage_output_count;
     wire l1i_speculation_sv39 =
         (csr_priv_mode != `RV64_PRIV_M) &&
@@ -624,7 +664,11 @@ module openrv64_rv64_top_3p #(
             assign fetch3_cancel = 1'b0;
             assign fetch3_cancel_stash = 1'b1;
             assign fetch3_stream_pc = 64'd0;
+            assign fetch3_next_pc = 64'd0;
             assign fetch3_consumed_halfwords = 4'd0;
+            assign fetch3_istream_splice_valid = 1'b0;
+            assign fetch3_istream_splice_halfword = 4'd0;
+            assign fetch_decode_splice_successor = 3'b000;
             assign {
                 fetch3_istream_prediction_valid,
                 fetch3_istream_control_pc,
@@ -633,6 +677,8 @@ module openrv64_rv64_top_3p #(
                 fetch3_istream_prediction_taken,
                 fetch3_istream_prediction_token
             } = 226'd0;
+            assign fetch3_istream_segment_start_pc = 64'd0;
+            assign fetch3_istream_prediction_refined = 1'b0;
             assign fetch_alt_restart_hit = 1'b0;
             assign pair512_req_valid = 1'b0;
             assign pair512_req_predicted_addr = 64'd0;
@@ -677,11 +723,20 @@ module openrv64_rv64_top_3p #(
                 fetch_observe_stream_btb_update,
                 fetch_observe_stream_btb_insert,
                 fetch_observe_stream_btb_replacement,
-                fetch_observe_stream_btb_same_sector_second,
-                fetch_observe_stream_btb_same_sector_overflow,
+                fetch_observe_stream_btb_root_lookup,
+                fetch_observe_stream_btb_chain_lookup,
                 fetch_observe_stream_transfer,
                 fetch_observe_stream_reject
             } = 12'd0;
+            assign fetch_observe_stream_btb_queue_enqueue = 1'b0;
+            assign fetch_observe_stream_btb_queue_dequeue = 1'b0;
+            assign fetch_observe_stream_btb_queue_full_stall = 1'b0;
+            assign fetch_observe_stream_btb_queue_count = 3'd0;
+            assign fetch_observe_stream_btb_train_run_overflow = 1'b0;
+            assign fetch_observe_stream_btb_train_shorter = 1'b0;
+            assign fetch_observe_stream_btb_train_later_ignored = 1'b0;
+            assign fetch_observe_stream_btb_train_conditional = 1'b0;
+            assign fetch_observe_stream_btb_train_taken = 1'b0;
             assign {
                 istream_tage_lookup_valid,
                 istream_tage_lookup_pc,
@@ -691,6 +746,11 @@ module openrv64_rv64_top_3p #(
                 fetch_observe_istream_tage_response,
                 fetch_observe_istream_tage_taken
             } = 70'd0;
+            assign fetch_observe_istream_tage_busy_skip = 1'b0;
+            assign fetch_observe_istream_tage_queue_count = 4'd0;
+            assign fetch_observe_istream_refinement_accept = 1'b0;
+            assign fetch_observe_istream_refinement_changed = 1'b0;
+            assign fetch_observe_istream_refinement_late = 1'b0;
         end else if (BUS_CONFIG == `OPENRV64_BUS_GEN) begin : g_fetch_gen
             openrv64_fetch #(
                 .ENABLE_TRACE(ENABLE_TRACE),
@@ -742,7 +802,11 @@ module openrv64_rv64_top_3p #(
             assign fetch3_cancel = 1'b0;
             assign fetch3_cancel_stash = 1'b1;
             assign fetch3_stream_pc = 64'd0;
+            assign fetch3_next_pc = 64'd0;
             assign fetch3_consumed_halfwords = 4'd0;
+            assign fetch3_istream_splice_valid = 1'b0;
+            assign fetch3_istream_splice_halfword = 4'd0;
+            assign fetch_decode_splice_successor = 3'b000;
             assign {
                 fetch3_istream_prediction_valid,
                 fetch3_istream_control_pc,
@@ -751,6 +815,8 @@ module openrv64_rv64_top_3p #(
                 fetch3_istream_prediction_taken,
                 fetch3_istream_prediction_token
             } = 226'd0;
+            assign fetch3_istream_segment_start_pc = 64'd0;
+            assign fetch3_istream_prediction_refined = 1'b0;
             assign fetch_alt_restart_hit = 1'b0;
             assign pair512_req_valid = 1'b0;
             assign pair512_req_predicted_addr = 64'd0;
@@ -795,11 +861,20 @@ module openrv64_rv64_top_3p #(
                 fetch_observe_stream_btb_update,
                 fetch_observe_stream_btb_insert,
                 fetch_observe_stream_btb_replacement,
-                fetch_observe_stream_btb_same_sector_second,
-                fetch_observe_stream_btb_same_sector_overflow,
+                fetch_observe_stream_btb_root_lookup,
+                fetch_observe_stream_btb_chain_lookup,
                 fetch_observe_stream_transfer,
                 fetch_observe_stream_reject
             } = 12'd0;
+            assign fetch_observe_stream_btb_queue_enqueue = 1'b0;
+            assign fetch_observe_stream_btb_queue_dequeue = 1'b0;
+            assign fetch_observe_stream_btb_queue_full_stall = 1'b0;
+            assign fetch_observe_stream_btb_queue_count = 3'd0;
+            assign fetch_observe_stream_btb_train_run_overflow = 1'b0;
+            assign fetch_observe_stream_btb_train_shorter = 1'b0;
+            assign fetch_observe_stream_btb_train_later_ignored = 1'b0;
+            assign fetch_observe_stream_btb_train_conditional = 1'b0;
+            assign fetch_observe_stream_btb_train_taken = 1'b0;
             assign {
                 istream_tage_lookup_valid,
                 istream_tage_lookup_pc,
@@ -809,6 +884,11 @@ module openrv64_rv64_top_3p #(
                 fetch_observe_istream_tage_response,
                 fetch_observe_istream_tage_taken
             } = 70'd0;
+            assign fetch_observe_istream_tage_busy_skip = 1'b0;
+            assign fetch_observe_istream_tage_queue_count = 4'd0;
+            assign fetch_observe_istream_refinement_accept = 1'b0;
+            assign fetch_observe_istream_refinement_changed = 1'b0;
+            assign fetch_observe_istream_refinement_late = 1'b0;
         end else begin : g_fetch_axi
             if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) begin : g_istream
                 wire istream_valid;
@@ -825,9 +905,11 @@ module openrv64_rv64_top_3p #(
                 wire istream_btb_raw_response_valid;
                 wire istream_btb_raw_response_ready;
                 wire [31:0] istream_btb_raw_response_request_id;
+                wire [63:0] istream_btb_raw_response_stream_pc;
                 wire istream_btb_raw_response_hit;
                 wire [63:0] istream_btb_raw_response_control_pc;
                 wire [63:0] istream_btb_raw_response_control_end_pc;
+                wire [2:0] istream_btb_raw_response_control_class;
                 wire istream_btb_raw_response_conditional;
                 wire [63:0] istream_btb_raw_response_target_pc;
                 wire [63:0] istream_btb_raw_response_successor_pc;
@@ -836,22 +918,29 @@ module openrv64_rv64_top_3p #(
                 wire istream_btb_response_valid;
                 wire istream_btb_response_ready;
                 wire [31:0] istream_btb_response_request_id;
+                wire [63:0] istream_btb_response_stream_pc;
                 wire istream_btb_response_hit;
                 wire [63:0] istream_btb_response_control_pc;
                 wire [63:0] istream_btb_response_control_end_pc;
+                wire [2:0] istream_btb_response_control_class;
                 wire [63:0] istream_btb_response_successor_pc;
                 wire istream_btb_response_taken;
                 wire [31:0] istream_btb_response_prediction_token;
+                wire istream_btb_cancel;
+                wire istream_refinement_valid;
+                wire [31:0] istream_refinement_prediction_token;
+                wire [63:0] istream_refinement_control_pc;
+                wire istream_refinement_taken;
+                wire [63:0] istream_refinement_successor_pc;
 
-                // Fetch needs a next-control directory, not the exact-PC
-                // indirect-target BTB inside the execution predictor.  This
-                // two-way sector table supplies BTFNT/direct steering one
-                // cycle after the query; decode-time TAGE remains the
-                // correcting predictor.
+                // This two-way table is keyed by the exact stream start and
+                // returns the run to its next control.  Hits autonomously
+                // chain through selected successors; misses end the chain.
                 openrv64_fetch_stream_btb #(
                     .ENTRIES(BP_BTB_ENTRIES)
                 ) u_stream_btb (
                     .clk(clk), .rst_n(rst_n),
+                    .cancel_i(istream_btb_cancel),
                     .lookup_valid_i(istream_btb_lookup_valid),
                     .lookup_ready_o(istream_btb_lookup_ready),
                     .lookup_pc_i(istream_btb_lookup_pc),
@@ -861,11 +950,15 @@ module openrv64_rv64_top_3p #(
                     .response_ready_i(istream_btb_raw_response_ready),
                     .response_request_id_o(
                         istream_btb_raw_response_request_id),
+                    .response_stream_pc_o(
+                        istream_btb_raw_response_stream_pc),
                     .response_hit_o(istream_btb_raw_response_hit),
                     .response_control_pc_o(
                         istream_btb_raw_response_control_pc),
                     .response_control_end_pc_o(
                         istream_btb_raw_response_control_end_pc),
+                    .response_control_class_o(
+                        istream_btb_raw_response_control_class),
                     .response_conditional_o(
                         istream_btb_raw_response_conditional),
                     .response_target_pc_o(
@@ -876,15 +969,20 @@ module openrv64_rv64_top_3p #(
                     .response_prediction_token_o(
                         istream_btb_raw_response_prediction_token),
                     .train_valid_i((ENABLE_STREAM_BTB != 0) &&
-                                   branch_resolved &&
+                                   stream_btb_train_context_match &&
                                    (SIM_BRANCH_ORACLE == 0)),
+                    .train_stream_pc_i(stream_btb_train_start_pc),
                     .train_conditional_i(branch_conditional),
+                    .train_taken_i(branch_taken),
                     .train_length_32_i(1'b1),
                     .train_instr_i(branch_instr),
                     .train_pc_i(branch_pc),
                     .train_next_pc_i(branch_target),
-                    .diag_lookup_fire_o(
-                        fetch_observe_stream_btb_lookup),
+                    .diag_lookup_fire_o(fetch_observe_stream_btb_lookup),
+                    .diag_root_lookup_o(
+                        fetch_observe_stream_btb_root_lookup),
+                    .diag_chain_lookup_o(
+                        fetch_observe_stream_btb_chain_lookup),
                     .diag_response_fire_o(
                         fetch_observe_stream_btb_response),
                     .diag_response_hit_o(
@@ -899,15 +997,30 @@ module openrv64_rv64_top_3p #(
                         fetch_observe_stream_btb_insert),
                     .diag_train_replacement_o(
                         fetch_observe_stream_btb_replacement),
-                    .diag_train_same_sector_second_o(
-                        fetch_observe_stream_btb_same_sector_second),
-                    .diag_train_same_sector_overflow_o(
-                        fetch_observe_stream_btb_same_sector_overflow)
+                    .diag_train_shorter_o(
+                        fetch_observe_stream_btb_train_shorter),
+                    .diag_train_later_ignored_o(
+                        fetch_observe_stream_btb_train_later_ignored),
+                    .diag_queue_enqueue_o(
+                        fetch_observe_stream_btb_queue_enqueue),
+                    .diag_queue_dequeue_o(
+                        fetch_observe_stream_btb_queue_dequeue),
+                    .diag_queue_full_stall_o(
+                        fetch_observe_stream_btb_queue_full_stall),
+                    .diag_queue_count_o(
+                        fetch_observe_stream_btb_queue_count),
+                    .diag_train_run_overflow_o(
+                        fetch_observe_stream_btb_train_run_overflow),
+                    .diag_train_conditional_o(
+                        fetch_observe_stream_btb_train_conditional),
+                    .diag_train_taken_o(
+                        fetch_observe_stream_btb_train_taken)
                 );
 
-                // This adapter exists only in the Tomasulo istream generate
-                // branch.  A conditional stream-BTB hit waits one cycle for
-                // BP9 direction; BTFNT remains the decode-side miss fallback.
+                // Conditional RLE results enter the FTQ immediately.  BP9 is
+                // advisory here: a later token-matched response may confirm
+                // and annotate an unconsumed boundary without blocking fetch.
+                // Changed-path responses remain decode's responsibility.
                 openrv64_fetch_istream_bp9 u_istream_bp9 (
                     .clk(clk), .rst_n(rst_n),
                     .cancel_i(fetch3_restart || fetch3_invalidate),
@@ -919,12 +1032,16 @@ module openrv64_rv64_top_3p #(
                     .btb_ready_o(istream_btb_raw_response_ready),
                     .btb_request_id_i(
                         istream_btb_raw_response_request_id),
+                    .btb_stream_pc_i(
+                        istream_btb_raw_response_stream_pc),
                     .btb_hit_i((ENABLE_STREAM_BTB != 0) &&
                                istream_btb_raw_response_hit),
                     .btb_control_pc_i(
                         istream_btb_raw_response_control_pc),
                     .btb_control_end_pc_i(
                         istream_btb_raw_response_control_end_pc),
+                    .btb_control_class_i(
+                        istream_btb_raw_response_control_class),
                     .btb_conditional_i(
                         istream_btb_raw_response_conditional),
                     .btb_target_pc_i(
@@ -938,11 +1055,15 @@ module openrv64_rv64_top_3p #(
                     .response_ready_i(istream_btb_response_ready),
                     .response_request_id_o(
                         istream_btb_response_request_id),
+                    .response_stream_pc_o(
+                        istream_btb_response_stream_pc),
                     .response_hit_o(istream_btb_response_hit),
                     .response_control_pc_o(
                         istream_btb_response_control_pc),
                     .response_control_end_pc_o(
                         istream_btb_response_control_end_pc),
+                    .response_control_class_o(
+                        istream_btb_response_control_class),
                     .response_successor_pc_o(
                         istream_btb_response_successor_pc),
                     .response_taken_o(istream_btb_response_taken),
@@ -953,9 +1074,18 @@ module openrv64_rv64_top_3p #(
                     .tage_lookup_pc_o(istream_tage_lookup_pc),
                     .tage_lookup_backward_o(
                         istream_tage_lookup_backward),
+                    .tage_lookup_token_o(istream_tage_lookup_token),
                     .tage_response_valid_i(bp_direction_response_valid),
                     .tage_response_pc_i(bp_direction_response_pc),
                     .tage_response_taken_i(bp_direction_response_taken),
+                    .refinement_valid_o(istream_refinement_valid),
+                    .refinement_prediction_token_o(
+                        istream_refinement_prediction_token),
+                    .refinement_control_pc_o(
+                        istream_refinement_control_pc),
+                    .refinement_taken_o(istream_refinement_taken),
+                    .refinement_successor_pc_o(
+                        istream_refinement_successor_pc),
                     .diag_early_candidate_o(
                         fetch_observe_istream_tage_candidate),
                     .diag_early_lookup_o(
@@ -963,7 +1093,11 @@ module openrv64_rv64_top_3p #(
                     .diag_early_response_o(
                         fetch_observe_istream_tage_response),
                     .diag_early_taken_o(
-                        fetch_observe_istream_tage_taken)
+                        fetch_observe_istream_tage_taken),
+                    .diag_early_busy_skip_o(
+                        fetch_observe_istream_tage_busy_skip),
+                    .diag_early_queue_count_o(
+                        fetch_observe_istream_tage_queue_count)
                 );
 
                 openrv64_fetch_istream #(
@@ -980,6 +1114,7 @@ module openrv64_rv64_top_3p #(
                     .stall_i(bp_fetch_stall_effective ||
                              translation_barrier_busy),
                     .cancel_o(fetch3_cancel),
+                    .btb_cancel_o(istream_btb_cancel),
                     .req_valid_o(fetch_pipe_req_valid),
                     .req_ready_i(fetch_pipe_req_ready),
                     .req_addr_o(fetch_pipe_req_addr),
@@ -999,6 +1134,8 @@ module openrv64_rv64_top_3p #(
                     .btb_response_valid_i(istream_btb_response_valid),
                     .btb_response_request_id_i(
                         istream_btb_response_request_id),
+                    .btb_response_stream_pc_i(
+                        istream_btb_response_stream_pc),
                     // Preserve the existing no-predict M-mode containment.
                     .btb_response_hit_i(istream_btb_response_hit &&
                         (csr_priv_mode != `RV64_PRIV_M) &&
@@ -1007,6 +1144,8 @@ module openrv64_rv64_top_3p #(
                         istream_btb_response_control_pc),
                     .btb_response_control_end_pc_i(
                         istream_btb_response_control_end_pc),
+                    .btb_response_control_class_i(
+                        istream_btb_response_control_class),
                     .btb_response_successor_pc_i(
                         istream_btb_response_successor_pc),
                     .btb_response_taken_i(
@@ -1014,6 +1153,20 @@ module openrv64_rv64_top_3p #(
                     .btb_response_prediction_token_i(
                         istream_btb_response_prediction_token),
                     .btb_response_ready_o(istream_btb_response_ready),
+                    .refinement_valid_i(istream_refinement_valid),
+                    .refinement_prediction_token_i(
+                        istream_refinement_prediction_token),
+                    .refinement_control_pc_i(
+                        istream_refinement_control_pc),
+                    .refinement_taken_i(istream_refinement_taken),
+                    .refinement_successor_pc_i(
+                        istream_refinement_successor_pc),
+                    .refinement_accept_o(
+                        fetch_observe_istream_refinement_accept),
+                    .refinement_changed_o(
+                        fetch_observe_istream_refinement_changed),
+                    .refinement_late_o(
+                        fetch_observe_istream_refinement_late),
                     .istream_valid_o(istream_valid),
                     .istream_data_o(istream_data),
                     .istream_halfword_valid_o(
@@ -1024,6 +1177,13 @@ module openrv64_rv64_top_3p #(
                     .istream_consume_halfwords_i(
                         istream_consume_halfwords),
                     .stream_pc_o(fetch3_stream_pc),
+                    .istream_next_pc_o(fetch3_next_pc),
+                    .istream_segment_start_pc_o(
+                        fetch3_istream_segment_start_pc),
+                    .istream_splice_valid_o(
+                        fetch3_istream_splice_valid),
+                    .istream_splice_halfword_o(
+                        fetch3_istream_splice_halfword),
                     .istream_prediction_valid_o(
                         fetch3_istream_prediction_valid),
                     .istream_control_pc_o(fetch3_istream_control_pc),
@@ -1033,6 +1193,8 @@ module openrv64_rv64_top_3p #(
                         fetch3_istream_prediction_successor),
                     .istream_prediction_taken_o(
                         fetch3_istream_prediction_taken),
+                    .istream_prediction_refined_o(
+                        fetch3_istream_prediction_refined),
                     .istream_prediction_token_o(
                         fetch3_istream_prediction_token),
                     .istream_prediction_accept_i(
@@ -1067,11 +1229,21 @@ module openrv64_rv64_top_3p #(
                     .istream_access_fault_i(istream_access_fault),
                     .istream_page_fault_i(istream_page_fault),
                     .stream_pc_i(fetch3_stream_pc),
+                    .istream_splice_valid_i(
+                        fetch3_istream_splice_valid),
+                    .istream_splice_halfword_i(
+                        fetch3_istream_splice_halfword),
+                    .istream_splice_pc_i(
+                        fetch3_istream_prediction_successor),
+                    .istream_splice_accept_i(
+                        fetch3_istream_prediction_accept),
                     .istream_advance_half_o(istream_advance_half),
                     .istream_consume_halfwords_o(
                         istream_consume_halfwords),
                     .consumed_halfwords_o(fetch3_consumed_halfwords),
                     .decode_valid_o(fetch_decode_valid),
+                    .decode_splice_successor_o(
+                        fetch_decode_splice_successor),
                     .decode_ready_i(fetch_decode_ready),
                     .decode_bus_o(fetch_decode_bus),
                     .trace_id_i(ENABLE_TRACE ? trace_next_id_q : 64'd0),
@@ -1213,6 +1385,11 @@ module openrv64_rv64_top_3p #(
                 {1'b0, legacy_decode_fire2};
             assign fetch3_consumed_halfwords =
                 {1'b0, legacy_decode_count, 1'b0};
+            assign fetch3_next_pc = fetch3_stream_pc +
+                ({60'd0, fetch3_consumed_halfwords} << 1);
+            assign fetch3_istream_splice_valid = 1'b0;
+            assign fetch3_istream_splice_halfword = 4'd0;
+            assign fetch_decode_splice_successor = 3'b000;
             assign fetch_observe_presentation_ready =
                 u_fetch.consume_line_hit;
             assign fetch_observe_current_pending =
@@ -1269,6 +1446,8 @@ module openrv64_rv64_top_3p #(
                 fetch3_istream_prediction_taken,
                 fetch3_istream_prediction_token
             } = 226'd0;
+            assign fetch3_istream_segment_start_pc = 64'd0;
+            assign fetch3_istream_prediction_refined = 1'b0;
             assign {
                 fetch_observe_stream_btb_lookup,
                 fetch_observe_stream_btb_response,
@@ -1278,11 +1457,20 @@ module openrv64_rv64_top_3p #(
                 fetch_observe_stream_btb_update,
                 fetch_observe_stream_btb_insert,
                 fetch_observe_stream_btb_replacement,
-                fetch_observe_stream_btb_same_sector_second,
-                fetch_observe_stream_btb_same_sector_overflow,
+                fetch_observe_stream_btb_root_lookup,
+                fetch_observe_stream_btb_chain_lookup,
                 fetch_observe_stream_transfer,
                 fetch_observe_stream_reject
             } = 12'd0;
+            assign fetch_observe_stream_btb_queue_enqueue = 1'b0;
+            assign fetch_observe_stream_btb_queue_dequeue = 1'b0;
+            assign fetch_observe_stream_btb_queue_full_stall = 1'b0;
+            assign fetch_observe_stream_btb_queue_count = 3'd0;
+            assign fetch_observe_stream_btb_train_run_overflow = 1'b0;
+            assign fetch_observe_stream_btb_train_shorter = 1'b0;
+            assign fetch_observe_stream_btb_train_later_ignored = 1'b0;
+            assign fetch_observe_stream_btb_train_conditional = 1'b0;
+            assign fetch_observe_stream_btb_train_taken = 1'b0;
             assign {
                 istream_tage_lookup_valid,
                 istream_tage_lookup_pc,
@@ -1292,6 +1480,12 @@ module openrv64_rv64_top_3p #(
                 fetch_observe_istream_tage_response,
                 fetch_observe_istream_tage_taken
             } = 70'd0;
+            assign istream_tage_lookup_token = 32'd0;
+            assign fetch_observe_istream_tage_busy_skip = 1'b0;
+            assign fetch_observe_istream_tage_queue_count = 4'd0;
+            assign fetch_observe_istream_refinement_accept = 1'b0;
+            assign fetch_observe_istream_refinement_changed = 1'b0;
+            assign fetch_observe_istream_refinement_late = 1'b0;
             end
             assign fetch_pc_ready = 1'b0;
             assign fetch_mem_valid = 1'b0;
@@ -1457,10 +1651,10 @@ module openrv64_rv64_top_3p #(
         end
     endgenerate
 
-    // The scalar predictor is shared by the oldest control instruction in
-    // the presented bundle.  Admission stops after that lane, so a
-    // predicted-taken redirect never deposits a sequential younger lane into
-    // the backend on the redirecting edge.
+    // The scalar predictor is shared by the oldest control instruction in the
+    // presented bundle.  Ordinarily admission stops after that lane.  A
+    // validated istream splice may also admit non-control instructions from
+    // the already-selected successor, stopping again at the next control.
     wire [2:0] frontend_control = fetch_decode_valid &
                                   (predecode_valid |
                                    decode_branch | decode_jump);
@@ -1469,11 +1663,33 @@ module openrv64_rv64_top_3p #(
         frontend_control[1] && !frontend_control[0],
         frontend_control[0]
     };
-    wire [2:0] frontend_prefix_allow = {
-        !frontend_control[0] && !frontend_control[1],
-        !frontend_control[0],
+    wire frontend_splice_path_safe;
+    wire bp_sideband_control_allow;
+    wire [2:0] frontend_control_prefix_allow = {
+        (!frontend_control[0] && !frontend_control[1]) ||
+            (fetch3_istream_prediction_accept &&
+             frontend_splice_path_safe &&
+             fetch_decode_splice_successor[2] &&
+             !frontend_control[2] &&
+             !(frontend_control[1] &&
+               fetch_decode_splice_successor[1])),
+        !frontend_control[0] ||
+            (fetch3_istream_prediction_accept &&
+             frontend_splice_path_safe &&
+             fetch_decode_splice_successor[1] &&
+             !frontend_control[1]),
         1'b1
     };
+    // A stale RLE entry can expose target bytes for inspection, but they are
+    // not consumable until decode proves the claimed boundary is this bundle's
+    // oldest actual control.  Prefix bytes remain independently admissible.
+    wire [2:0] frontend_splice_validation_allow =
+        (~fetch_decode_splice_successor) |
+        {3{fetch3_istream_prediction_accept &&
+            frontend_splice_path_safe &&
+            (!bp_sideband_lookup || bp_sideband_control_allow)}};
+    wire [2:0] frontend_prefix_allow =
+        frontend_control_prefix_allow & frontend_splice_validation_allow;
     wire [1:0] bp_live_lane = frontend_control_select[0] ? 2'd0 :
                               frontend_control_select[1] ? 2'd1 : 2'd2;
     wire bp_live_predecode = predecode_valid[bp_live_lane];
@@ -1543,10 +1759,17 @@ module openrv64_rv64_top_3p #(
     reg [63:0] bp_dispatch_selected_trace_q;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] bp_dispatch_selected_id_q;
     reg [RETIRE_SLOT_WIDTH-1:0] bp_dispatch_selected_slot_q;
+    reg [63:0] bp_dispatch_stream_start_q;
     reg bp_dispatch_allocated_q;
     reg bp_dispatch_lookup_branch_q;
     reg bp_dispatch_lookup_jump_q;
     reg bp_dispatch_lookup_indirect_q;
+    reg bp_dispatch_context_valid_q;
+    reg [31:0] bp_dispatch_context_token_q;
+    // Once successor instructions cross the boundary, the RLE-selected path
+    // is a backend checkpoint.  The next-cycle TAGE result may train normally,
+    // but cannot replace that path without a tagged backend squash.
+    reg bp_dispatch_path_locked_q;
     reg bp_dispatch_preliminary_taken_q;
     reg [63:0] bp_dispatch_preliminary_successor_q;
     wire bp_lookup_from_dispatch = BP_REGISTERED_LOOKUP &&
@@ -1574,6 +1797,23 @@ module openrv64_rv64_top_3p #(
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] bp_selected_id =
         bp_pending_trace_match ? bp_live_id :
         bp_lookup_from_dispatch ? bp_dispatch_selected_id_q : bp_live_id;
+    wire [RETIRE_SLOT_WIDTH-1:0] bp_live_selected_slot =
+        backend_decode_allocation_slot[
+            bp_live_allocation_lane*RETIRE_SLOT_WIDTH +:
+            RETIRE_SLOT_WIDTH];
+    wire [RETIRE_SLOT_WIDTH-1:0] bp_selected_slot =
+        bp_pending_trace_match ? bp_live_selected_slot :
+        bp_lookup_from_dispatch ? bp_dispatch_selected_slot_q :
+                                  bp_live_selected_slot;
+    // Capture the dynamic stream start with the control before the registered
+    // BP response arrives.  On a cold RLE miss several controls can share this
+    // open-stream key; the table retains the shortest observed run, independent
+    // of out-of-order resolution.  A branch-PC fallback is not useful: that PC
+    // is the end of the stream, not the start of a successor stream.
+    wire [63:0] bp_live_stream_start =
+        fetch3_istream_segment_start_pc;
+    wire [63:0] bp_selected_stream_start = bp_lookup_from_dispatch ?
+        bp_dispatch_stream_start_q : bp_live_stream_start;
     wire bp_lookup_branch = bp_lookup_from_dispatch ?
         bp_dispatch_lookup_branch_q : bp_live_branch;
     wire bp_lookup_jump = bp_lookup_from_dispatch ?
@@ -1609,12 +1849,27 @@ module openrv64_rv64_top_3p #(
         bp_selected_pc + 64'd4;
     wire bp_live_stream_prediction_match =
         fetch3_istream_prediction_accept;
+    wire bp_live_stream_prediction_refined =
+        bp_live_stream_prediction_match &&
+        fetch3_istream_prediction_refined;
     wire [63:0] bp_live_preliminary_successor =
         bp_live_stream_prediction_match ?
             fetch3_istream_prediction_successor :
         (bp_sideband_lookup && bp_live_preliminary_taken) ?
             bp_direct_target : (bp_live_pc + 64'd4);
+    // A stream-RLE response may arrive after a control was captured but before
+    // that still-visible control is admitted.  In that case fetch will follow
+    // the newly installed boundary on the admission edge.  Compare TAGE with
+    // that live path, not with the fallback path saved before the RLE response;
+    // otherwise the ROB can checkpoint fallthrough while fetch takes the RLE
+    // target and neither side subsequently detects a misprediction.
+    wire bp_pending_live_stream_path = bp_lookup_from_dispatch &&
+        !bp_dispatch_allocated_q && bp_pending_trace_match &&
+        bp_live_stream_prediction_match;
+    assign fetch_observe_stream_late_path_bind =
+        bp_pending_live_stream_path && bp_pending_prediction_accept;
     wire [63:0] bp_selected_preliminary_successor =
+        bp_pending_live_stream_path ? fetch3_istream_prediction_successor :
         bp_lookup_from_dispatch ? bp_dispatch_preliminary_successor_q :
                                   bp_live_preliminary_successor;
     wire [63:0] bp_response_selected_successor =
@@ -1623,6 +1878,12 @@ module openrv64_rv64_top_3p #(
     wire bp_response_path_mismatch =
         bp_response_selected_successor !=
         bp_selected_preliminary_successor;
+    // A retained, not-yet-allocated branch already has its TAGE response.  If
+    // that response disagrees with the newly bound live RLE path, admit the
+    // control alone and perform the existing deferred frontend correction.
+    assign frontend_splice_path_safe =
+        !(bp_lookup_from_dispatch && !bp_dispatch_allocated_q &&
+          bp_pending_trace_match && bp_response_path_mismatch);
     wire bp_response_predict_redirect = bp_sideband_lookup ?
         bp_tage_resteer :
         (bp_branch_allocate && bp_response_path_mismatch);
@@ -1660,6 +1921,39 @@ module openrv64_rv64_top_3p #(
         bp_istream_lookup_select ? {`OPENRV64_INSTR_ID_WIDTH{1'b0}} :
                                    bp_selected_id;
     wire bp_predictor_lookup_observational = bp_istream_lookup_select;
+    wire bp_predictor_context_valid = bp_istream_lookup_select ? 1'b1 :
+        bp_pending_live_stream_path ? bp_live_branch :
+        bp_lookup_from_dispatch ? bp_dispatch_context_valid_q :
+        (bp_live_stream_prediction_match && bp_live_branch);
+    wire [31:0] bp_predictor_context_token = bp_istream_lookup_select ?
+        istream_tage_lookup_token :
+        bp_pending_live_stream_path ? fetch3_istream_prediction_token :
+        bp_lookup_from_dispatch ? bp_dispatch_context_token_q :
+        fetch3_istream_prediction_token;
+    assign fetch_observe_istream_tage_context_claim =
+        fetch_observe_istream_tage_context_hit && bp_branch_allocate &&
+        !bp_predictor_lookup_observational;
+    assign fetch_observe_istream_tage_context_miss =
+        bp_branch_allocate && bp_predictor_context_valid &&
+        !bp_predictor_lookup_observational &&
+        !fetch_observe_istream_tage_context_hit;
+    // A stream boundary that reached decode has already selected its
+    // successor.  The decode-time TAGE access allocates the normal training
+    // context, but must checkpoint that consumed path rather than substitute
+    // a second prediction made with a different history snapshot.
+    // Keep this strictly on the registered response side.  Feeding the live
+    // decode match into predictor outputs would create a path through
+    // resteer, fetch readiness, and decode consumption back to the match.
+    wire bp_predictor_path_override_valid = bp_lookup_from_dispatch &&
+        bp_dispatch_path_locked_q &&
+        !bp_istream_lookup_select;
+    wire bp_predictor_path_override_taken =
+        bp_dispatch_preliminary_taken_q;
+    wire [63:0] bp_predictor_path_override_target =
+        bp_dispatch_preliminary_successor_q;
+    wire bp_predictor_path_override_target_valid =
+        bp_predictor_path_override_valid && bp_predictor_lookup_indirect &&
+        bp_predictor_path_override_taken;
 
     openrv64_exec_bp #(
         .BP_TYPE(BP_TYPE),
@@ -1673,7 +1967,10 @@ module openrv64_rv64_top_3p #(
         .BTB_ENTRIES(BP_BTB_ENTRIES),
         .BTB_TAG_BITS(BP_BTB_TAG_BITS),
         .INFLIGHT_DEPTH(BP_INFLIGHT_DEPTH),
-        .ENABLE_TAGGED_RESOLUTION(ENABLE_SPECULATION_WINDOW)
+        .ENABLE_TAGGED_RESOLUTION(ENABLE_SPECULATION_WINDOW),
+        .ENABLE_LOOKUP_PATH_OVERRIDE(1),
+        .ENABLE_PREPARED_CONTEXT(1),
+        .PREPARED_CONTEXT_DEPTH(8)
     ) u_bp (
         .clk(clk), .rst_n(rst_n),
         // Memory replay and a deferred execution redirect name their cut
@@ -1698,6 +1995,16 @@ module openrv64_rv64_top_3p #(
         .lookup_pc_i(bp_predictor_lookup_pc),
         .lookup_id_i(bp_predictor_lookup_id),
         .lookup_observational_i(bp_predictor_lookup_observational),
+        .lookup_context_valid_i(bp_predictor_context_valid),
+        .lookup_context_token_i(bp_predictor_context_token),
+        .lookup_path_override_valid_i(
+            bp_predictor_path_override_valid),
+        .lookup_path_override_taken_i(
+            bp_predictor_path_override_taken),
+        .lookup_path_override_target_valid_i(
+            bp_predictor_path_override_target_valid),
+        .lookup_path_override_target_i(
+            bp_predictor_path_override_target),
         // The real predictor is observational only in oracle mode.  Gating
         // both sides avoids unmatched tagged resolutions after its queue
         // would otherwise fill while its backpressure is intentionally off.
@@ -1720,6 +2027,7 @@ module openrv64_rv64_top_3p #(
         .direction_response_pc_o(bp_direction_response_pc),
         .direction_response_taken_o(bp_direction_response_taken),
         .direction_response_weak_o(bp_direction_response_weak),
+        .lookup_context_hit_o(fetch_observe_istream_tage_context_hit),
         .target_mispredict_o(bp_target_mispredict),
         .update_overflow_o(bp_update_overflow),
         .fetch_stall_o(bp_fetch_stall),
@@ -1861,7 +2169,7 @@ module openrv64_rv64_top_3p #(
         (bp_live_trace == bp_dispatch_selected_trace_q) &&
         (bp_live_pc == bp_dispatch_selected_pc_q) &&
         (bp_live_instr == bp_dispatch_selected_instr_q);
-    wire bp_sideband_control_allow = !bp_dispatch_valid_q ?
+    assign bp_sideband_control_allow = !bp_dispatch_valid_q ?
         bp_sideband_port_available :
         (!bp_dispatch_allocated_q && bp_pending_live_match &&
          !bp_decode_stall);
@@ -2050,6 +2358,13 @@ module openrv64_rv64_top_3p #(
          {1'b0, backend_decode_fire[2], backend_decode_fire[1]} :
          (backend_decode_fire | bp_control_capture)) :
         backend_decode_fire;
+    wire bp_live_splice_younger_fire =
+        bp_live_stream_prediction_match &&
+        |(frontend_decode_fire & fetch_decode_splice_successor);
+    assign fetch_observe_stream_splice =
+        fetch3_istream_splice_valid;
+    assign fetch_observe_stream_splice_younger =
+        bp_live_splice_younger_fire;
     wire [1:0] frontend_decode_count =
         {1'b0, frontend_decode_fire[0]} +
         {1'b0, frontend_decode_fire[1]} +
@@ -2103,6 +2418,10 @@ module openrv64_rv64_top_3p #(
         if (rst_n && bp_preliminary_redirect &&
             !backend_decode_fire[bp_live_lane])
             $error("BP9 preliminary redirect lost its control allocation");
+        if (rst_n &&
+            |(frontend_decode_fire & frontend_control &
+              ~frontend_control_select))
+            $error("frontend admitted a second control without predictor allocation");
     end
 `endif
 
@@ -2124,6 +2443,55 @@ module openrv64_rv64_top_3p #(
         end
     end
 
+    // The RLE training key is the beginning of the dynamic stream, not the
+    // resolved control PC.  Keep that key in a ROB-slot sidecar rather than
+    // widening scheduler/ROB payloads.  The instruction ID rejects stale slot
+    // contents after squash and reuse.
+    wire stream_context_bind_candidate = (ENABLE_STREAM_BTB != 0) &&
+        use_icx_bus && (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
+        bp_branch_allocate;
+    wire stream_context_key_valid = !bp_selected_stream_start[0] &&
+        !bp_selected_pc[0] && (bp_selected_stream_start <= bp_selected_pc);
+    wire stream_context_bind = stream_context_bind_candidate &&
+        stream_context_key_valid;
+    assign fetch_observe_stream_context_bind = stream_context_bind;
+    assign fetch_observe_stream_context_match =
+        (ENABLE_STREAM_BTB != 0) && stream_btb_train_context_match;
+    assign fetch_observe_stream_context_miss =
+        (ENABLE_STREAM_BTB != 0) && branch_resolved &&
+        (SIM_BRANCH_ORACLE == 0) && !stream_btb_train_context_match;
+    assign fetch_observe_stream_context_invalid =
+        stream_context_bind_candidate && !stream_context_key_valid;
+
+    integer stream_context_reset_index;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (stream_context_reset_index = 0;
+                 stream_context_reset_index < RETIRE_DEPTH;
+                 stream_context_reset_index = stream_context_reset_index + 1) begin
+                stream_context_valid_q[stream_context_reset_index] <= 1'b0;
+                stream_context_id_q[stream_context_reset_index] <=
+                    {`OPENRV64_INSTR_ID_WIDTH{1'b0}};
+                stream_context_start_pc_q[stream_context_reset_index] <=
+                    64'd0;
+            end
+        end else if (control_flush) begin
+            for (stream_context_reset_index = 0;
+                 stream_context_reset_index < RETIRE_DEPTH;
+                 stream_context_reset_index = stream_context_reset_index + 1)
+                stream_context_valid_q[stream_context_reset_index] <= 1'b0;
+        end else begin
+            if (stream_btb_train_context_match)
+                stream_context_valid_q[branch_slot] <= 1'b0;
+            if (stream_context_bind) begin
+                stream_context_valid_q[bp_selected_slot] <= 1'b1;
+                stream_context_id_q[bp_selected_slot] <= bp_selected_id;
+                stream_context_start_pc_q[bp_selected_slot] <=
+                    bp_selected_stream_start;
+            end
+        end
+    end
+
     // Retain one control's lookup metadata, not the complete fetch bundle.
     // In Tomasulo sideband mode this does not retain or delay the instruction;
     // in the fallback path the saved payload is admitted on the response.
@@ -2140,10 +2508,14 @@ module openrv64_rv64_top_3p #(
             bp_dispatch_selected_trace_q <= 64'd0;
             bp_dispatch_selected_id_q <= 0;
             bp_dispatch_selected_slot_q <= {RETIRE_SLOT_WIDTH{1'b0}};
+            bp_dispatch_stream_start_q <= 64'd0;
             bp_dispatch_allocated_q <= 1'b0;
             bp_dispatch_lookup_branch_q <= 1'b0;
             bp_dispatch_lookup_jump_q <= 1'b0;
             bp_dispatch_lookup_indirect_q <= 1'b0;
+            bp_dispatch_context_valid_q <= 1'b0;
+            bp_dispatch_context_token_q <= 32'd0;
+            bp_dispatch_path_locked_q <= 1'b0;
             bp_dispatch_preliminary_taken_q <= 1'b0;
             bp_dispatch_preliminary_successor_q <= 64'd0;
         end else if (bp_delayed_lookup) begin
@@ -2151,12 +2523,16 @@ module openrv64_rv64_top_3p #(
                 wfi_sleep_q) begin
                 bp_dispatch_valid_q <= 1'b0;
                 bp_dispatch_allocated_q <= 1'b0;
+                bp_dispatch_path_locked_q <= 1'b0;
+                bp_dispatch_context_valid_q <= 1'b0;
                 bp_dispatch_preliminary_taken_q <= 1'b0;
                 bp_dispatch_preliminary_successor_q <= 64'd0;
             end else begin
                 if (bp_branch_allocate) begin
                     bp_dispatch_valid_q <= 1'b0;
                     bp_dispatch_allocated_q <= 1'b0;
+                    bp_dispatch_path_locked_q <= 1'b0;
+                    bp_dispatch_context_valid_q <= 1'b0;
                     bp_dispatch_preliminary_taken_q <= 1'b0;
                 end
                 if (bp_live_control_fire) begin
@@ -2176,16 +2552,24 @@ module openrv64_rv64_top_3p #(
                         backend_decode_allocation_slot[
                             bp_live_allocation_lane*RETIRE_SLOT_WIDTH +:
                             RETIRE_SLOT_WIDTH];
+                    bp_dispatch_stream_start_q <= bp_live_stream_start;
                     bp_dispatch_allocated_q <=
                         backend_decode_fire[bp_live_lane];
                     bp_dispatch_lookup_branch_q <= bp_live_branch;
                     bp_dispatch_lookup_jump_q <= bp_live_jump;
                     bp_dispatch_lookup_indirect_q <= bp_live_indirect;
+                    bp_dispatch_context_valid_q <=
+                        bp_live_stream_prediction_match && bp_live_branch;
+                    bp_dispatch_context_token_q <=
+                        fetch3_istream_prediction_token;
+                    bp_dispatch_path_locked_q <=
+                        bp_live_stream_prediction_refined ||
+                        bp_live_splice_younger_fire;
                     bp_dispatch_preliminary_taken_q <=
-                        backend_decode_fire[bp_live_lane] &&
-                        (bp_live_stream_prediction_match ?
-                         fetch3_istream_prediction_taken :
-                         bp_live_preliminary_taken);
+                        bp_live_stream_prediction_match ?
+                            fetch3_istream_prediction_taken :
+                            (backend_decode_fire[bp_live_lane] &&
+                             bp_live_preliminary_taken);
                     bp_dispatch_preliminary_successor_q <=
                         bp_live_stream_prediction_match ?
                             fetch3_istream_prediction_successor :
@@ -2197,6 +2581,8 @@ module openrv64_rv64_top_3p #(
         end else begin
             bp_dispatch_valid_q <= 1'b0;
             bp_dispatch_allocated_q <= 1'b0;
+            bp_dispatch_path_locked_q <= 1'b0;
+            bp_dispatch_context_valid_q <= 1'b0;
             bp_dispatch_preliminary_taken_q <= 1'b0;
             bp_dispatch_preliminary_successor_q <= 64'd0;
         end
@@ -3343,8 +3729,7 @@ module openrv64_rv64_top_3p #(
                 pc_q <= bp_predict_target;
             else if (use_icx_bus &&
                      (fetch3_consumed_halfwords != 0))
-                pc_q <= fetch3_stream_pc +
-                        ({60'd0, fetch3_consumed_halfwords} << 1);
+                pc_q <= fetch3_next_pc;
             else if (!use_icx_bus && fetch_pc_valid)
                 pc_q <= pc_q + (pc_q[2] ? 64'd4 : 64'd8);
 

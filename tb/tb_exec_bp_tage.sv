@@ -19,6 +19,9 @@ module tb_exec_bp_tage;
     logic [31:0] lookup_instr;
     logic [63:0] lookup_pc;
     logic [`OPENRV64_INSTR_ID_WIDTH-1:0] lookup_id;
+    logic lookup_observational;
+    logic lookup_context_valid;
+    logic [31:0] lookup_context_token;
     logic lookup_allocate;
     logic resolve_valid;
     logic resolve_branch;
@@ -35,6 +38,7 @@ module tb_exec_bp_tage;
     wire update_overflow;
     wire fetch_stall;
     wire decode_stall;
+    wire lookup_context_hit;
 
     always #5 clk = ~clk;
 
@@ -57,7 +61,9 @@ module tb_exec_bp_tage;
         .BTB_ENTRIES(8),
         .BTB_TAG_BITS(8),
         .INFLIGHT_DEPTH(4),
-        .ENABLE_TAGGED_RESOLUTION(1)
+        .ENABLE_TAGGED_RESOLUTION(1),
+        .ENABLE_PREPARED_CONTEXT(1),
+        .PREPARED_CONTEXT_DEPTH(4)
     ) dut (
         .clk(clk), .rst_n(rst_n), .flush_i(flush),
         .squash_i(squash),
@@ -69,7 +75,10 @@ module tb_exec_bp_tage;
         .lookup_indirect_i(lookup_indirect),
         .lookup_backward_i(lookup_backward),
         .lookup_instr_i(lookup_instr), .lookup_pc_i(lookup_pc),
-        .lookup_id_i(lookup_id), .lookup_observational_i(1'b0),
+        .lookup_id_i(lookup_id),
+        .lookup_observational_i(lookup_observational),
+        .lookup_context_valid_i(lookup_context_valid),
+        .lookup_context_token_i(lookup_context_token),
         .lookup_allocate_i(lookup_allocate),
         .resolve_valid_i(resolve_valid),
         .resolve_branch_i(resolve_branch),
@@ -82,6 +91,7 @@ module tb_exec_bp_tage;
         .prediction_weak_o(prediction_weak),
         .prediction_target_valid_o(prediction_target_valid),
         .prediction_target_o(prediction_target),
+        .lookup_context_hit_o(lookup_context_hit),
         .target_mispredict_o(target_mispredict),
         .update_overflow_o(update_overflow),
         .fetch_stall_o(fetch_stall), .decode_stall_o(decode_stall)
@@ -106,6 +116,9 @@ module tb_exec_bp_tage;
             lookup_instr = 32'h0000_0063;
             lookup_pc = 64'd0;
             lookup_id = '0;
+            lookup_observational = 1'b0;
+            lookup_context_valid = 1'b0;
+            lookup_context_token = 32'd0;
             lookup_allocate = 1'b0;
             resolve_valid = 1'b0;
             resolve_branch = 1'b0;
@@ -251,6 +264,32 @@ module tb_exec_bp_tage;
     logic [4:0] tag1;
 
     initial begin
+        reset_dut();
+
+        // An observational stream lookup is retained under its token.  The
+        // decoded branch can then use and allocate that exact snapshot without
+        // issuing a second synchronous RAM read.
+        present_branch(64'h080, 64'd0, 1'b1, 1'b0);
+        lookup_observational = 1'b1;
+        lookup_context_valid = 1'b1;
+        lookup_context_token = 32'h1234_0001;
+        if (!decode_stall)
+            $fatal(1, "prepared-context observation skipped its RAM read");
+        tick();
+        clear_inputs();
+        tick();
+        present_branch(64'h080, 64'd60, 1'b1, 1'b0);
+        lookup_context_valid = 1'b1;
+        lookup_context_token = 32'h1234_0001;
+        #1;
+        if (!lookup_context_hit || decode_stall || !prediction_taken)
+            $fatal(1, "decoded branch did not claim prepared TAGE context");
+        lookup_allocate = 1'b1;
+        tick();
+        if (lookup_context_hit ||
+            (dut.g_tage.u_tage.inflight_count_q != 1))
+            $fatal(1, "prepared TAGE context was not consumed exactly once");
+        clear_inputs();
         reset_dut();
 
         // A conditional lookup first stalls for the synchronous table read.

@@ -80,12 +80,16 @@ module openrv64_exec_bp_tage_btb #(
     parameter integer BTB_TAG_BITS = 16,
     parameter integer INFLIGHT_DEPTH = 16,
     parameter integer ENABLE_TAGGED_RESOLUTION = 0,
+    parameter integer ENABLE_PREPARED_CONTEXT = 0,
+    parameter integer PREPARED_CONTEXT_DEPTH = 8,
     parameter integer BASE_INDEX_WIDTH = $clog2(BASE_ENTRIES),
     parameter integer TABLE_INDEX_WIDTH = $clog2(TABLE_ENTRIES),
     parameter integer MAX_TAG_BITS = TAG3_BITS,
     parameter integer BTB_INDEX_WIDTH = $clog2(BTB_ENTRIES),
     parameter integer INFLIGHT_PTR_WIDTH = $clog2(INFLIGHT_DEPTH),
     parameter integer INFLIGHT_COUNT_WIDTH = $clog2(INFLIGHT_DEPTH + 1),
+    parameter integer PREPARED_CONTEXT_INDEX_WIDTH =
+        $clog2(PREPARED_CONTEXT_DEPTH),
     parameter integer AGE_COUNT_WIDTH = $clog2(AGE_INTERVAL)
 ) (
     input  wire                         clk,
@@ -104,7 +108,16 @@ module openrv64_exec_bp_tage_btb #(
     input  wire [`RV64_XLEN-1:0]        lookup_pc_i,
     input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0] lookup_id_i,
     input  wire                         lookup_observational_i,
+    input  wire                         lookup_context_valid_i,
+    input  wire [31:0]                  lookup_context_token_i,
     input  wire                         lookup_allocate_i,
+    // If an upstream stream predictor already selected and exposed a path,
+    // checkpoint that path rather than the independently recomputed TAGE/BTB
+    // answer.  The table snapshot is still retained and trained normally.
+    input  wire                         lookup_path_override_valid_i,
+    input  wire                         lookup_path_override_taken_i,
+    input  wire                         lookup_path_override_target_valid_i,
+    input  wire [`RV64_XLEN-1:0]        lookup_path_override_target_i,
     input  wire                         ras_prediction_valid_i,
     input  wire [`RV64_XLEN-1:0]        ras_prediction_target_i,
 
@@ -129,6 +142,7 @@ module openrv64_exec_bp_tage_btb #(
     output wire [`RV64_XLEN-1:0]        direction_response_pc_o,
     output wire                         direction_response_taken_o,
     output wire                         direction_response_weak_o,
+    output wire                         lookup_context_hit_o,
     output wire                         target_mispredict_o,
     output wire                         allocation_stall_o,
     output wire                         capacity_stall_o,
@@ -503,6 +517,67 @@ module openrv64_exec_bp_tage_btb #(
     reg [USEFUL_BITS-1:0] lookup_table1_useful_q;
     reg [USEFUL_BITS-1:0] lookup_table2_useful_q;
     reg [USEFUL_BITS-1:0] lookup_table3_useful_q;
+    reg [31:0] lookup_response_context_token_q;
+
+    // Direct-mapped cache of completed observational reads.  The stream token
+    // is monotonically allocated, so its low bits select a slot while the full
+    // token and PC prevent an aliased context from being consumed.  These are
+    // short-lived predictor snapshots, not architectural or recovery state.
+    reg prepared_valid_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [31:0] prepared_token_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [`RV64_XLEN-1:0] prepared_pc_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_prediction_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_weak_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_use_alt_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_provider_prediction_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_alternate_prediction_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_provider_weak_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_provider_useful_zero_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [2:0] prepared_provider_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [2:0] prepared_alternate_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [HISTORY_BITS-1:0]
+        prepared_history_before_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [BASE_INDEX_WIDTH-1:0]
+        prepared_base_index_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [BASE_COUNTER_BITS-1:0]
+        prepared_base_counter_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_base_valid_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TABLE_INDEX_WIDTH-1:0]
+        prepared_table0_index_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TABLE_INDEX_WIDTH-1:0]
+        prepared_table1_index_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TABLE_INDEX_WIDTH-1:0]
+        prepared_table2_index_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TABLE_INDEX_WIDTH-1:0]
+        prepared_table3_index_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TAG0_BITS-1:0]
+        prepared_table0_tag_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TAG1_BITS-1:0]
+        prepared_table1_tag_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TAG2_BITS-1:0]
+        prepared_table2_tag_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TAG3_BITS-1:0]
+        prepared_table3_tag_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TABLE0_WIDTH-1:0]
+        prepared_table0_word_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TABLE1_WIDTH-1:0]
+        prepared_table1_word_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TABLE2_WIDTH-1:0]
+        prepared_table2_word_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [TABLE3_WIDTH-1:0]
+        prepared_table3_word_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [USEFUL_BITS-1:0]
+        prepared_table0_useful_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [USEFUL_BITS-1:0]
+        prepared_table1_useful_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [USEFUL_BITS-1:0]
+        prepared_table2_useful_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg [USEFUL_BITS-1:0]
+        prepared_table3_useful_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_table0_valid_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_table1_valid_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_table2_valid_q [0:PREPARED_CONTEXT_DEPTH-1];
+    reg prepared_table3_valid_q [0:PREPARED_CONTEXT_DEPTH-1];
     reg lookup_btb_response_valid_q;
     reg [`RV64_XLEN-1:0] lookup_btb_response_pc_q;
     reg [`OPENRV64_INSTR_ID_WIDTH-1:0] lookup_btb_response_id_q;
@@ -514,13 +589,26 @@ module openrv64_exec_bp_tage_btb #(
     // control waiting behind frontend compaction can retain the same PC while
     // its projected allocation ID changes.  Reuse that PC-indexed response
     // and record the current lookup_id_i only when allocation is accepted.
+    wire [PREPARED_CONTEXT_INDEX_WIDTH-1:0] lookup_context_index =
+        lookup_context_token_i[PREPARED_CONTEXT_INDEX_WIDTH-1:0];
+    wire [PREPARED_CONTEXT_INDEX_WIDTH-1:0] prepared_response_index =
+        lookup_response_context_token_q[
+            PREPARED_CONTEXT_INDEX_WIDTH-1:0];
+    wire prepared_context_match = (ENABLE_PREPARED_CONTEXT != 0) &&
+        lookup_context_valid_i && lookup_valid_i && lookup_branch_i &&
+        prepared_valid_q[lookup_context_index] &&
+        (prepared_token_q[lookup_context_index] ==
+         lookup_context_token_i) &&
+        (prepared_pc_q[lookup_context_index] == lookup_pc_i);
     wire lookup_response_match = lookup_response_valid_q &&
         !lookup_response_observational_q &&
         lookup_valid_i && lookup_branch_i &&
         (lookup_response_pc_q == lookup_pc_i);
+    wire lookup_direction_match = prepared_context_match ||
+                                  lookup_response_match;
     wire lookup_read_fire = lookup_valid_i && lookup_branch_i &&
+        !prepared_context_match &&
         !(lookup_allocate_i && lookup_response_match);
-
     reg base_write_enable;
     reg [BASE_INDEX_WIDTH-1:0] base_write_index;
     reg [BASE_COUNTER_BITS-1:0] base_write_data;
@@ -726,15 +814,107 @@ module openrv64_exec_bp_tage_btb #(
         use_alt_q[USE_ALT_COUNTER_BITS-1];
     wire conditional_prediction_response = lookup_use_alt ?
         lookup_alternate_prediction : lookup_provider_prediction;
-    wire conditional_prediction = lookup_response_match ?
-        conditional_prediction_response : lookup_backward_i;
     wire conditional_prediction_response_weak =
         ((lookup_provider == PROVIDER_BASE) ? lookup_base_weak :
          (lookup_provider_weak || (lookup_provider_useful == 0) ||
           (lookup_provider_prediction != lookup_alternate_prediction)));
-    wire conditional_prediction_weak = !lookup_response_match ||
-        conditional_prediction_response_weak;
+    wire conditional_prediction = prepared_context_match ?
+        prepared_prediction_q[lookup_context_index] :
+        lookup_response_match ? conditional_prediction_response :
+                                lookup_backward_i;
+    wire conditional_prediction_weak = prepared_context_match ?
+        prepared_weak_q[lookup_context_index] :
+        !lookup_response_match || conditional_prediction_response_weak;
 
+    wire allocation_provider_prediction = prepared_context_match ?
+        prepared_provider_prediction_q[lookup_context_index] :
+        lookup_provider_prediction;
+    wire allocation_alternate_prediction = prepared_context_match ?
+        prepared_alternate_prediction_q[lookup_context_index] :
+        lookup_alternate_prediction;
+    wire allocation_provider_weak = prepared_context_match ?
+        prepared_provider_weak_q[lookup_context_index] :
+        lookup_provider_weak;
+    wire allocation_provider_useful_zero = prepared_context_match ?
+        prepared_provider_useful_zero_q[lookup_context_index] :
+        (lookup_provider_useful == 0);
+    wire [2:0] allocation_provider = prepared_context_match ?
+        prepared_provider_q[lookup_context_index] : lookup_provider;
+    wire [2:0] allocation_alternate = prepared_context_match ?
+        prepared_alternate_q[lookup_context_index] : lookup_alternate;
+    wire [HISTORY_BITS-1:0] allocation_history_before =
+        prepared_context_match ?
+            prepared_history_before_q[lookup_context_index] :
+            lookup_response_history_q;
+    wire [BASE_INDEX_WIDTH-1:0] allocation_base_index =
+        prepared_context_match ?
+            prepared_base_index_q[lookup_context_index] :
+            lookup_base_index_q;
+    wire [BASE_COUNTER_BITS-1:0] allocation_base_counter =
+        prepared_context_match ?
+            prepared_base_counter_q[lookup_context_index] :
+            lookup_base_data;
+    wire allocation_base_valid = prepared_context_match ?
+        prepared_base_valid_q[lookup_context_index] :
+        (lookup_base_valid_q ||
+         (base_write_enable &&
+          (base_write_index == lookup_base_index_q)));
+    wire [TABLE_INDEX_WIDTH-1:0] allocation_table0_index =
+        prepared_context_match ?
+            prepared_table0_index_q[lookup_context_index] :
+            lookup_table0_index_q;
+    wire [TABLE_INDEX_WIDTH-1:0] allocation_table1_index =
+        prepared_context_match ?
+            prepared_table1_index_q[lookup_context_index] :
+            lookup_table1_index_q;
+    wire [TABLE_INDEX_WIDTH-1:0] allocation_table2_index =
+        prepared_context_match ?
+            prepared_table2_index_q[lookup_context_index] :
+            lookup_table2_index_q;
+    wire [TABLE_INDEX_WIDTH-1:0] allocation_table3_index =
+        prepared_context_match ?
+            prepared_table3_index_q[lookup_context_index] :
+            lookup_table3_index_q;
+    wire [TAG0_BITS-1:0] allocation_table0_tag = prepared_context_match ?
+        prepared_table0_tag_q[lookup_context_index] : lookup_table0_tag_q;
+    wire [TAG1_BITS-1:0] allocation_table1_tag = prepared_context_match ?
+        prepared_table1_tag_q[lookup_context_index] : lookup_table1_tag_q;
+    wire [TAG2_BITS-1:0] allocation_table2_tag = prepared_context_match ?
+        prepared_table2_tag_q[lookup_context_index] : lookup_table2_tag_q;
+    wire [TAG3_BITS-1:0] allocation_table3_tag = prepared_context_match ?
+        prepared_table3_tag_q[lookup_context_index] : lookup_table3_tag_q;
+    wire [TABLE0_WIDTH-1:0] allocation_table0_word =
+        prepared_context_match ?
+            prepared_table0_word_q[lookup_context_index] :
+            lookup_table0_word;
+    wire [TABLE1_WIDTH-1:0] allocation_table1_word =
+        prepared_context_match ?
+            prepared_table1_word_q[lookup_context_index] :
+            lookup_table1_word;
+    wire [TABLE2_WIDTH-1:0] allocation_table2_word =
+        prepared_context_match ?
+            prepared_table2_word_q[lookup_context_index] :
+            lookup_table2_word;
+    wire [TABLE3_WIDTH-1:0] allocation_table3_word =
+        prepared_context_match ?
+            prepared_table3_word_q[lookup_context_index] :
+            lookup_table3_word;
+    wire [USEFUL_BITS-1:0] allocation_table0_useful =
+        prepared_context_match ?
+            prepared_table0_useful_q[lookup_context_index] :
+            lookup_table0_useful;
+    wire [USEFUL_BITS-1:0] allocation_table1_useful =
+        prepared_context_match ?
+            prepared_table1_useful_q[lookup_context_index] :
+            lookup_table1_useful;
+    wire [USEFUL_BITS-1:0] allocation_table2_useful =
+        prepared_context_match ?
+            prepared_table2_useful_q[lookup_context_index] :
+            lookup_table2_useful;
+    wire [USEFUL_BITS-1:0] allocation_table3_useful =
+        prepared_context_match ?
+            prepared_table3_useful_q[lookup_context_index] :
+            lookup_table3_useful;
     wire lookup_is_jal =
         `RV64_OPCODE(lookup_instr_i) == `RV64_OPCODE_JAL;
     wire lookup_is_jalr =
@@ -793,9 +973,19 @@ module openrv64_exec_bp_tage_btb #(
 
     wire queue_full = inflight_count_q == INFLIGHT_DEPTH;
     wire accepted_lookup = lookup_allocate_i && !queue_full &&
-        (!lookup_branch_i || lookup_response_match) &&
+        (!lookup_branch_i || lookup_direction_match) &&
         (!lookup_indirect_i || lookup_return ||
          lookup_btb_response_match);
+    wire accepted_prediction_taken = lookup_path_override_valid_i ?
+        lookup_path_override_taken_i : prediction_taken_o;
+    wire accepted_target_valid =
+        lookup_path_override_valid_i &&
+        lookup_path_override_target_valid_i ? 1'b1 :
+        prediction_target_valid_o;
+    wire [`RV64_XLEN-1:0] accepted_target =
+        lookup_path_override_valid_i &&
+        lookup_path_override_target_valid_i ?
+            lookup_path_override_target_i : prediction_target_o;
     reg resolve_tag_match;
     reg [INFLIGHT_PTR_WIDTH-1:0] resolve_tag_index;
     reg [INFLIGHT_COUNT_WIDTH-1:0] squash_keep_count;
@@ -1000,6 +1190,26 @@ module openrv64_exec_bp_tage_btb #(
                 train_allocation = PROVIDER_T3;
         end
     end
+    wire allocation_table0_valid = prepared_context_match ?
+        prepared_table0_valid_q[lookup_context_index] :
+        (lookup_table0_valid_q ||
+         (train_valid && (train_allocation == PROVIDER_T0) &&
+          (table0_write_index == lookup_table0_index_q)));
+    wire allocation_table1_valid = prepared_context_match ?
+        prepared_table1_valid_q[lookup_context_index] :
+        (lookup_table1_valid_q ||
+         (train_valid && (train_allocation == PROVIDER_T1) &&
+          (table1_write_index == lookup_table1_index_q)));
+    wire allocation_table2_valid = prepared_context_match ?
+        prepared_table2_valid_q[lookup_context_index] :
+        (lookup_table2_valid_q ||
+         (train_valid && (train_allocation == PROVIDER_T2) &&
+          (table2_write_index == lookup_table2_index_q)));
+    wire allocation_table3_valid = prepared_context_match ?
+        prepared_table3_valid_q[lookup_context_index] :
+        (lookup_table3_valid_q ||
+         (train_valid && (train_allocation == PROVIDER_T3) &&
+          (table3_write_index == lookup_table3_index_q)));
     wire train_allocation_failed = train_mispredict &&
         (train_provider != PROVIDER_T3) && (train_allocation == 0);
 
@@ -1212,20 +1422,23 @@ module openrv64_exec_bp_tage_btb #(
     assign direction_response_taken_o = conditional_prediction_response;
     assign direction_response_weak_o =
         conditional_prediction_response_weak;
+    assign lookup_context_hit_o = prepared_context_match;
     assign target_mispredict_o = resolve_has_record &&
         inflight_target_valid_q[resolve_index] && resolve_taken_i &&
         (resolve_target_i != inflight_target_q[resolve_index]);
     assign allocation_stall_o = lookup_valid_i &&
-        (queue_full || (lookup_branch_i && !lookup_response_match) ||
+        (queue_full || (lookup_branch_i && !lookup_direction_match) ||
          (lookup_indirect_i && !lookup_return &&
           !lookup_btb_response_match));
     assign capacity_stall_o = queue_full;
     assign update_overflow_o = update_overflow_q;
-    assign diag_lookup_provider_o = lookup_response_match ?
-                                    lookup_provider : PROVIDER_BASE;
-    assign diag_lookup_alternate_o = lookup_response_match ?
-                                     lookup_alternate : PROVIDER_BASE;
-    assign diag_lookup_use_alt_o = lookup_response_match && lookup_use_alt;
+    assign diag_lookup_provider_o = lookup_direction_match ?
+                                    allocation_provider : PROVIDER_BASE;
+    assign diag_lookup_alternate_o = lookup_direction_match ?
+                                     allocation_alternate : PROVIDER_BASE;
+    assign diag_lookup_use_alt_o = prepared_context_match ?
+        prepared_use_alt_q[lookup_context_index] :
+        (lookup_response_match && lookup_use_alt);
     assign diag_train_valid_o = train_valid;
     assign diag_train_mispredict_o = train_mispredict;
     assign diag_train_allocation_o = train_allocation;
@@ -1235,6 +1448,7 @@ module openrv64_exec_bp_tage_btb #(
         {USE_ALT_COUNTER_BITS{1'b1}};
     integer reset_index;
     integer forward_index;
+    integer prepared_forward_index;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             base_valid_q <= 0;
@@ -1278,6 +1492,7 @@ module openrv64_exec_bp_tage_btb #(
             lookup_table1_useful_q <= 0;
             lookup_table2_useful_q <= 0;
             lookup_table3_useful_q <= 0;
+            lookup_response_context_token_q <= 32'd0;
             lookup_btb_response_valid_q <= 1'b0;
             lookup_btb_response_pc_q <= 0;
             lookup_btb_response_id_q <= 0;
@@ -1327,10 +1542,50 @@ module openrv64_exec_bp_tage_btb #(
                 inflight_table3_valid_q[reset_index] <= 1'b0;
                 inflight_history_before_q[reset_index] <= 0;
             end
+            for (reset_index = 0;
+                 reset_index < PREPARED_CONTEXT_DEPTH;
+                 reset_index = reset_index + 1) begin
+                prepared_valid_q[reset_index] <= 1'b0;
+                prepared_token_q[reset_index] <= 32'd0;
+                prepared_pc_q[reset_index] <= {`RV64_XLEN{1'b0}};
+                prepared_prediction_q[reset_index] <= 1'b0;
+                prepared_weak_q[reset_index] <= 1'b0;
+                prepared_use_alt_q[reset_index] <= 1'b0;
+                prepared_provider_prediction_q[reset_index] <= 1'b0;
+                prepared_alternate_prediction_q[reset_index] <= 1'b0;
+                prepared_provider_weak_q[reset_index] <= 1'b0;
+                prepared_provider_useful_zero_q[reset_index] <= 1'b0;
+                prepared_provider_q[reset_index] <= PROVIDER_BASE;
+                prepared_alternate_q[reset_index] <= PROVIDER_BASE;
+                prepared_history_before_q[reset_index] <= 0;
+                prepared_base_index_q[reset_index] <= 0;
+                prepared_base_counter_q[reset_index] <= 0;
+                prepared_base_valid_q[reset_index] <= 1'b0;
+                prepared_table0_index_q[reset_index] <= 0;
+                prepared_table1_index_q[reset_index] <= 0;
+                prepared_table2_index_q[reset_index] <= 0;
+                prepared_table3_index_q[reset_index] <= 0;
+                prepared_table0_tag_q[reset_index] <= 0;
+                prepared_table1_tag_q[reset_index] <= 0;
+                prepared_table2_tag_q[reset_index] <= 0;
+                prepared_table3_tag_q[reset_index] <= 0;
+                prepared_table0_word_q[reset_index] <= 0;
+                prepared_table1_word_q[reset_index] <= 0;
+                prepared_table2_word_q[reset_index] <= 0;
+                prepared_table3_word_q[reset_index] <= 0;
+                prepared_table0_useful_q[reset_index] <= 0;
+                prepared_table1_useful_q[reset_index] <= 0;
+                prepared_table2_useful_q[reset_index] <= 0;
+                prepared_table3_useful_q[reset_index] <= 0;
+                prepared_table0_valid_q[reset_index] <= 1'b0;
+                prepared_table1_valid_q[reset_index] <= 1'b0;
+                prepared_table2_valid_q[reset_index] <= 1'b0;
+                prepared_table3_valid_q[reset_index] <= 1'b0;
+            end
         end else begin
             if (lookup_allocate_i &&
                 (queue_full ||
-                 (lookup_branch_i && !lookup_response_match) ||
+                 (lookup_branch_i && !lookup_direction_match) ||
                  (lookup_indirect_i && !lookup_return &&
                   !lookup_btb_response_match)))
                 update_overflow_q <= 1'b1;
@@ -1360,6 +1615,8 @@ module openrv64_exec_bp_tage_btb #(
             if (lookup_read_fire) begin
                 lookup_response_observational_q <=
                     lookup_observational_i;
+                lookup_response_context_token_q <=
+                    lookup_context_token_i;
                 lookup_response_pc_q <= lookup_pc_i;
                 lookup_response_id_q <= lookup_id_i;
                 lookup_response_backward_q <= lookup_backward_i;
@@ -1408,6 +1665,103 @@ module openrv64_exec_bp_tage_btb #(
                     (table3_useful_write_index == launch_table3_index) ?
                     table3_useful_write_data :
                     table3_useful_q[launch_table3_index];
+            end
+
+            if (accepted_lookup && prepared_context_match)
+                prepared_valid_q[lookup_context_index] <= 1'b0;
+
+            // Materialize the completed early read under its stream token.
+            // All RAM values include the same-cycle training bypasses above,
+            // matching a normal decode-time snapshot.
+            if ((ENABLE_PREPARED_CONTEXT != 0) &&
+                lookup_response_valid_q &&
+                lookup_response_observational_q &&
+                !flush_i && !squash_i && !recovery_i) begin
+                prepared_valid_q[prepared_response_index] <= 1'b1;
+                prepared_token_q[prepared_response_index] <=
+                    lookup_response_context_token_q;
+                prepared_pc_q[prepared_response_index] <=
+                    lookup_response_pc_q;
+                prepared_prediction_q[prepared_response_index] <=
+                    conditional_prediction_response;
+                prepared_weak_q[prepared_response_index] <=
+                    conditional_prediction_response_weak;
+                prepared_use_alt_q[prepared_response_index] <=
+                    lookup_use_alt;
+                prepared_provider_prediction_q[prepared_response_index] <=
+                    lookup_provider_prediction;
+                prepared_alternate_prediction_q[prepared_response_index] <=
+                    lookup_alternate_prediction;
+                prepared_provider_weak_q[prepared_response_index] <=
+                    lookup_provider_weak;
+                prepared_provider_useful_zero_q[prepared_response_index] <=
+                    lookup_provider_useful == 0;
+                prepared_provider_q[prepared_response_index] <=
+                    lookup_provider;
+                prepared_alternate_q[prepared_response_index] <=
+                    lookup_alternate;
+                prepared_history_before_q[prepared_response_index] <=
+                    lookup_response_history_q;
+                prepared_base_index_q[prepared_response_index] <=
+                    lookup_base_index_q;
+                prepared_base_counter_q[prepared_response_index] <=
+                    lookup_base_data;
+                prepared_base_valid_q[prepared_response_index] <=
+                    lookup_base_valid_q ||
+                    (base_write_enable &&
+                     (base_write_index == lookup_base_index_q));
+                prepared_table0_index_q[prepared_response_index] <=
+                    lookup_table0_index_q;
+                prepared_table1_index_q[prepared_response_index] <=
+                    lookup_table1_index_q;
+                prepared_table2_index_q[prepared_response_index] <=
+                    lookup_table2_index_q;
+                prepared_table3_index_q[prepared_response_index] <=
+                    lookup_table3_index_q;
+                prepared_table0_tag_q[prepared_response_index] <=
+                    lookup_table0_tag_q;
+                prepared_table1_tag_q[prepared_response_index] <=
+                    lookup_table1_tag_q;
+                prepared_table2_tag_q[prepared_response_index] <=
+                    lookup_table2_tag_q;
+                prepared_table3_tag_q[prepared_response_index] <=
+                    lookup_table3_tag_q;
+                prepared_table0_word_q[prepared_response_index] <=
+                    lookup_table0_word;
+                prepared_table1_word_q[prepared_response_index] <=
+                    lookup_table1_word;
+                prepared_table2_word_q[prepared_response_index] <=
+                    lookup_table2_word;
+                prepared_table3_word_q[prepared_response_index] <=
+                    lookup_table3_word;
+                prepared_table0_useful_q[prepared_response_index] <=
+                    lookup_table0_useful;
+                prepared_table1_useful_q[prepared_response_index] <=
+                    lookup_table1_useful;
+                prepared_table2_useful_q[prepared_response_index] <=
+                    lookup_table2_useful;
+                prepared_table3_useful_q[prepared_response_index] <=
+                    lookup_table3_useful;
+                prepared_table0_valid_q[prepared_response_index] <=
+                    lookup_table0_valid_q ||
+                    (train_valid &&
+                     (train_allocation == PROVIDER_T0) &&
+                     (table0_write_index == lookup_table0_index_q));
+                prepared_table1_valid_q[prepared_response_index] <=
+                    lookup_table1_valid_q ||
+                    (train_valid &&
+                     (train_allocation == PROVIDER_T1) &&
+                     (table1_write_index == lookup_table1_index_q));
+                prepared_table2_valid_q[prepared_response_index] <=
+                    lookup_table2_valid_q ||
+                    (train_valid &&
+                     (train_allocation == PROVIDER_T2) &&
+                     (table2_write_index == lookup_table2_index_q));
+                prepared_table3_valid_q[prepared_response_index] <=
+                    lookup_table3_valid_q ||
+                    (train_valid &&
+                     (train_allocation == PROVIDER_T3) &&
+                     (table3_write_index == lookup_table3_index_q));
             end
 
             if (base_write_enable)
@@ -1551,6 +1905,97 @@ module openrv64_exec_bp_tage_btb #(
                 end
             end
 
+            for (prepared_forward_index = 0;
+                 prepared_forward_index < PREPARED_CONTEXT_DEPTH;
+                 prepared_forward_index = prepared_forward_index + 1) begin
+                if (prepared_valid_q[prepared_forward_index] &&
+                    !((ENABLE_PREPARED_CONTEXT != 0) &&
+                      lookup_response_valid_q &&
+                      lookup_response_observational_q &&
+                      (prepared_response_index ==
+                       prepared_forward_index[
+                           PREPARED_CONTEXT_INDEX_WIDTH-1:0]))) begin
+                    if (base_write_enable &&
+                        (prepared_base_index_q[prepared_forward_index] ==
+                         base_write_index)) begin
+                        prepared_base_counter_q[prepared_forward_index] <=
+                            base_write_data;
+                        prepared_base_valid_q[prepared_forward_index] <= 1'b1;
+                    end
+                    if (table0_write_enable &&
+                        (prepared_table0_index_q[prepared_forward_index] ==
+                         table0_write_index))
+                        prepared_table0_word_q[prepared_forward_index] <=
+                            table0_write_data;
+                    if (table1_write_enable &&
+                        (prepared_table1_index_q[prepared_forward_index] ==
+                         table1_write_index))
+                        prepared_table1_word_q[prepared_forward_index] <=
+                            table1_write_data;
+                    if (table2_write_enable &&
+                        (prepared_table2_index_q[prepared_forward_index] ==
+                         table2_write_index))
+                        prepared_table2_word_q[prepared_forward_index] <=
+                            table2_write_data;
+                    if (table3_write_enable &&
+                        (prepared_table3_index_q[prepared_forward_index] ==
+                         table3_write_index))
+                        prepared_table3_word_q[prepared_forward_index] <=
+                            table3_write_data;
+                    if (table0_useful_write_enable &&
+                        (prepared_table0_index_q[prepared_forward_index] ==
+                         table0_useful_write_index))
+                        prepared_table0_useful_q[prepared_forward_index] <=
+                            table0_useful_write_data;
+                    if (table1_useful_write_enable &&
+                        (prepared_table1_index_q[prepared_forward_index] ==
+                         table1_useful_write_index))
+                        prepared_table1_useful_q[prepared_forward_index] <=
+                            table1_useful_write_data;
+                    if (table2_useful_write_enable &&
+                        (prepared_table2_index_q[prepared_forward_index] ==
+                         table2_useful_write_index))
+                        prepared_table2_useful_q[prepared_forward_index] <=
+                            table2_useful_write_data;
+                    if (table3_useful_write_enable &&
+                        (prepared_table3_index_q[prepared_forward_index] ==
+                         table3_useful_write_index))
+                        prepared_table3_useful_q[prepared_forward_index] <=
+                            table3_useful_write_data;
+                    if (train_valid &&
+                        (train_allocation == PROVIDER_T0) &&
+                        (prepared_table0_index_q[prepared_forward_index] ==
+                         table0_write_index))
+                        prepared_table0_valid_q[prepared_forward_index] <=
+                            1'b1;
+                    if (train_valid &&
+                        (train_allocation == PROVIDER_T1) &&
+                        (prepared_table1_index_q[prepared_forward_index] ==
+                         table1_write_index))
+                        prepared_table1_valid_q[prepared_forward_index] <=
+                            1'b1;
+                    if (train_valid &&
+                        (train_allocation == PROVIDER_T2) &&
+                        (prepared_table2_index_q[prepared_forward_index] ==
+                         table2_write_index))
+                        prepared_table2_valid_q[prepared_forward_index] <=
+                            1'b1;
+                    if (train_valid &&
+                        (train_allocation == PROVIDER_T3) &&
+                        (prepared_table3_index_q[prepared_forward_index] ==
+                         table3_write_index))
+                        prepared_table3_valid_q[prepared_forward_index] <=
+                            1'b1;
+                end
+            end
+
+            if (flush_i || squash_i || recovery_i) begin
+                for (reset_index = 0;
+                     reset_index < PREPARED_CONTEXT_DEPTH;
+                     reset_index = reset_index + 1)
+                    prepared_valid_q[reset_index] <= 1'b0;
+            end
+
             if (flush_i) begin
                 inflight_head_q <= 0;
                 inflight_tail_q <= 0;
@@ -1639,89 +2084,77 @@ module openrv64_exec_bp_tage_btb #(
                     inflight_id_q[inflight_tail_q] <= lookup_id_i;
                     inflight_branch_q[inflight_tail_q] <= lookup_branch_i;
                     inflight_predicted_taken_q[inflight_tail_q] <=
-                        prediction_taken_o;
+                        accepted_prediction_taken;
                     inflight_provider_prediction_q[inflight_tail_q] <=
-                        lookup_provider_prediction;
+                        allocation_provider_prediction;
                     inflight_alternate_prediction_q[inflight_tail_q] <=
-                        lookup_alternate_prediction;
+                        allocation_alternate_prediction;
                     inflight_provider_weak_q[inflight_tail_q] <=
-                        lookup_provider_weak;
+                        allocation_provider_weak;
                     inflight_provider_useful_zero_q[inflight_tail_q] <=
-                        lookup_provider_useful == 0;
-                    inflight_provider_q[inflight_tail_q] <= lookup_provider;
-                    inflight_alternate_q[inflight_tail_q] <= lookup_alternate;
+                        allocation_provider_useful_zero;
+                    inflight_provider_q[inflight_tail_q] <=
+                        allocation_provider;
+                    inflight_alternate_q[inflight_tail_q] <=
+                        allocation_alternate;
                     inflight_target_valid_q[inflight_tail_q] <=
-                        prediction_target_valid_o;
-                    inflight_target_q[inflight_tail_q] <= prediction_target_o;
+                        accepted_target_valid;
+                    inflight_target_q[inflight_tail_q] <= accepted_target;
                     inflight_pc_q[inflight_tail_q] <= lookup_pc_i;
                     inflight_ras_action_q[inflight_tail_q] <=
                         lookup_ras_action;
                     inflight_base_index_q[inflight_tail_q] <=
-                        lookup_base_index_q;
+                        allocation_base_index;
                     inflight_base_counter_q[inflight_tail_q] <=
-                        lookup_base_data;
+                        allocation_base_counter;
                     inflight_base_valid_q[inflight_tail_q] <=
-                        lookup_base_valid_q ||
-                        (base_write_enable &&
-                         (base_write_index == lookup_base_index_q));
+                        allocation_base_valid;
                     inflight_table0_index_q[inflight_tail_q] <=
-                        lookup_table0_index_q;
+                        allocation_table0_index;
                     inflight_table1_index_q[inflight_tail_q] <=
-                        lookup_table1_index_q;
+                        allocation_table1_index;
                     inflight_table2_index_q[inflight_tail_q] <=
-                        lookup_table2_index_q;
+                        allocation_table2_index;
                     inflight_table3_index_q[inflight_tail_q] <=
-                        lookup_table3_index_q;
+                        allocation_table3_index;
                     inflight_table0_tag_q[inflight_tail_q] <=
-                        lookup_table0_tag_q;
+                        allocation_table0_tag;
                     inflight_table1_tag_q[inflight_tail_q] <=
-                        lookup_table1_tag_q;
+                        allocation_table1_tag;
                     inflight_table2_tag_q[inflight_tail_q] <=
-                        lookup_table2_tag_q;
+                        allocation_table2_tag;
                     inflight_table3_tag_q[inflight_tail_q] <=
-                        lookup_table3_tag_q;
+                        allocation_table3_tag;
                     inflight_table0_word_q[inflight_tail_q] <=
-                        lookup_table0_word;
+                        allocation_table0_word;
                     inflight_table1_word_q[inflight_tail_q] <=
-                        lookup_table1_word;
+                        allocation_table1_word;
                     inflight_table2_word_q[inflight_tail_q] <=
-                        lookup_table2_word;
+                        allocation_table2_word;
                     inflight_table3_word_q[inflight_tail_q] <=
-                        lookup_table3_word;
+                        allocation_table3_word;
                     inflight_table0_useful_q[inflight_tail_q] <=
-                        lookup_table0_useful;
+                        allocation_table0_useful;
                     inflight_table1_useful_q[inflight_tail_q] <=
-                        lookup_table1_useful;
+                        allocation_table1_useful;
                     inflight_table2_useful_q[inflight_tail_q] <=
-                        lookup_table2_useful;
+                        allocation_table2_useful;
                     inflight_table3_useful_q[inflight_tail_q] <=
-                        lookup_table3_useful;
+                        allocation_table3_useful;
                     inflight_table0_valid_q[inflight_tail_q] <=
-                        lookup_table0_valid_q ||
-                        (train_valid &&
-                         (train_allocation == PROVIDER_T0) &&
-                         (table0_write_index == lookup_table0_index_q));
+                        allocation_table0_valid;
                     inflight_table1_valid_q[inflight_tail_q] <=
-                        lookup_table1_valid_q ||
-                        (train_valid &&
-                         (train_allocation == PROVIDER_T1) &&
-                         (table1_write_index == lookup_table1_index_q));
+                        allocation_table1_valid;
                     inflight_table2_valid_q[inflight_tail_q] <=
-                        lookup_table2_valid_q ||
-                        (train_valid &&
-                         (train_allocation == PROVIDER_T2) &&
-                         (table2_write_index == lookup_table2_index_q));
+                        allocation_table2_valid;
                     inflight_table3_valid_q[inflight_tail_q] <=
-                        lookup_table3_valid_q ||
-                        (train_valid &&
-                         (train_allocation == PROVIDER_T3) &&
-                         (table3_write_index == lookup_table3_index_q));
+                        allocation_table3_valid;
                     inflight_history_before_q[inflight_tail_q] <=
-                        lookup_response_history_q;
+                        allocation_history_before;
                     if (lookup_branch_i)
                         speculative_history_q <= {
-                            lookup_response_history_q[HISTORY_BITS-2:0],
-                            conditional_prediction_response};
+                            allocation_history_before[HISTORY_BITS-2:0],
+                            accepted_prediction_taken};
                 end
             end
         end
@@ -1756,6 +2189,10 @@ module openrv64_exec_bp_tage_btb #(
         if ((INFLIGHT_DEPTH < 2) ||
             ((1 << INFLIGHT_PTR_WIDTH) != INFLIGHT_DEPTH))
             $fatal(1, "TAGE inflight depth must be a power of two");
+        if ((PREPARED_CONTEXT_DEPTH < 2) ||
+            ((1 << PREPARED_CONTEXT_INDEX_WIDTH) !=
+             PREPARED_CONTEXT_DEPTH))
+            $fatal(1, "TAGE prepared-context depth must be a power of two");
         if (INFLIGHT_DEPTH >=
             (1 << (`OPENRV64_INSTR_ID_WIDTH - 1)))
             $fatal(1, "TAGE inflight depth exceeds modular ID half-range");
@@ -1766,8 +2203,8 @@ module openrv64_exec_bp_tage_btb #(
 
     always @(posedge clk) begin
         if (rst_n && lookup_allocate_i && lookup_branch_i &&
-            !lookup_response_match)
-            $error("TAGE conditional lookup allocated without RAM response");
+            !lookup_direction_match)
+            $error("TAGE conditional lookup allocated without direction context");
         if (rst_n && resolve_valid_i &&
             (ENABLE_TAGGED_RESOLUTION != 0) && !resolve_tag_match)
             $error("TAGE tagged resolution missed id=%016x pc=%016x",

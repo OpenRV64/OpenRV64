@@ -986,6 +986,8 @@ module openrv64_rv64_top #(
         .lookup_pc_i(if_id_pc),
         .lookup_id_i({`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .lookup_observational_i(1'b0),
+        .lookup_context_valid_i(1'b0),
+        .lookup_context_token_i(32'd0),
         .lookup_allocate_i(bp_branch_allocate),
         .resolve_valid_i(bp_branch_resolve),
         .resolve_branch_i(dispatch_exec_branch),

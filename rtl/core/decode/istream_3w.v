@@ -25,11 +25,20 @@ module openrv64_decode_istream_3w #(
     input  wire [5:0]                   istream_access_fault_i,
     input  wire [5:0]                   istream_page_fault_i,
     input  wire [`RV64_XLEN-1:0]        stream_pc_i,
+    // A raw window may cross one predicted-control boundary.  Parcels below
+    // the index use stream_pc_i; parcels at and above it use splice_pc_i.
+    // accept_i only permits a target-side incomplete parcel to enter the
+    // straddle stash after the architectural decoder validates the control.
+    input  wire                         istream_splice_valid_i,
+    input  wire [3:0]                   istream_splice_halfword_i,
+    input  wire [`RV64_XLEN-1:0]        istream_splice_pc_i,
+    input  wire                         istream_splice_accept_i,
     output wire                         istream_advance_half_o,
     output wire [3:0]                   istream_consume_halfwords_o,
     output wire [3:0]                   consumed_halfwords_o,
 
     output wire [2:0]                   decode_valid_o,
+    output wire [2:0]                   decode_splice_successor_o,
     input  wire [2:0]                   decode_ready_i,
     output wire [3*`RV64_FETCH_DECODE_BUS_WIDTH-1:0] decode_bus_o,
     input  wire [63:0]                  trace_id_i,
@@ -49,7 +58,9 @@ module openrv64_decode_istream_3w #(
     reg [2:0] lane_page_fault_r;
     reg [1:0] lane_input_halfwords_r [0:2];
     reg [2:0] lane_compressed_r;
+    reg [2:0] lane_splice_successor_r;
     reg incomplete_valid_r;
+    reg incomplete_splice_successor_r;
     reg [15:0] incomplete_lower_r;
     reg [`RV64_XLEN-1:0] incomplete_pc_r;
 
@@ -74,7 +85,9 @@ module openrv64_decode_istream_3w #(
         lane_access_fault_r = 3'b000;
         lane_page_fault_r = 3'b000;
         lane_compressed_r = 3'b000;
+        lane_splice_successor_r = 3'b000;
         incomplete_valid_r = 1'b0;
+        incomplete_splice_successor_r = 1'b0;
         incomplete_lower_r = 16'd0;
         incomplete_pc_r = {`RV64_XLEN{1'b0}};
         parcel_cursor = 0;
@@ -130,7 +143,15 @@ module openrv64_decode_istream_3w #(
                         istream_access_fault_i[parcel_cursor];
                     parse_lower_page_fault =
                         istream_page_fault_i[parcel_cursor];
-                    parse_pc = stream_pc_i + (parcel_cursor * 2);
+                    parse_pc = (istream_splice_valid_i &&
+                                (parcel_cursor >=
+                                 istream_splice_halfword_i)) ?
+                        istream_splice_pc_i +
+                            ((parcel_cursor-istream_splice_halfword_i) * 2) :
+                        stream_pc_i + (parcel_cursor * 2);
+                    lane_splice_successor_r[parse_lane] =
+                        istream_splice_valid_i &&
+                        (parcel_cursor >= istream_splice_halfword_i);
                     if (parse_lower_access_fault |
                         parse_lower_page_fault) begin
                         lane_valid_r[parse_lane] = 1'b1;
@@ -185,6 +206,8 @@ module openrv64_decode_istream_3w #(
                         incomplete_valid_r = 1'b1;
                         incomplete_lower_r = parse_lower;
                         incomplete_pc_r = parse_pc;
+                        incomplete_splice_successor_r =
+                            lane_splice_successor_r[parse_lane];
                         parse_open = 1'b0;
                     end
                 end else begin
@@ -198,6 +221,8 @@ module openrv64_decode_istream_3w #(
     assign decode_valid_o[1] = lane_valid_r[0] && lane_valid_r[1];
     assign decode_valid_o[2] = lane_valid_r[0] && lane_valid_r[1] &&
                                lane_valid_r[2];
+    assign decode_splice_successor_o = lane_splice_successor_r &
+                                       decode_valid_o;
 
     wire decode_fire0 = decode_valid_o[0] && decode_ready_i[0];
     wire decode_fire1 = decode_valid_o[1] && decode_fire0 &&
@@ -213,7 +238,9 @@ module openrv64_decode_istream_3w #(
         (!decode_valid_o[1] || decode_fire1) &&
         (!decode_valid_o[2] || decode_fire2);
     wire stash_capture = !stash_valid_q && incomplete_valid_r &&
-                         all_presented_fire;
+                         all_presented_fire &&
+                         (!incomplete_splice_successor_r ||
+                          istream_splice_accept_i);
     wire [3:0] total_consumed_halfwords = accepted_halfwords +
                                           {3'd0, stash_capture};
     wire compressed_fast_advance = !stash_valid_q && !stash_capture &&

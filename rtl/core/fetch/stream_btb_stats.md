@@ -6,6 +6,81 @@ Do not treat structural depth as physical timing.
 
 <!-- module-statistics-entries: newest-first -->
 
+<!-- module-statistics-entry:start id=fpga-xc7k480t-module-stats-stream-btb-20260905T173905Z:openrv64_fetch_stream_btb -->
+## 2026-09-05T17:39:06+00:00 — `fpga-xc7k480t-module-stats-stream-btb-20260905T173905Z`
+
+| Build field | Value |
+|---|---|
+| Status | **mapped** |
+| Module | `openrv64_fetch_stream_btb` |
+| RTL source | `rtl/core/fetch/stream_btb.v` |
+| Profile | `xc7k480t-3p-linux` — Standalone module-local XC7 mappings for the full single-hart 3P Linux profile. |
+| Synthesis boundary | This module is the standalone top; only logic below this boundary is flattened. |
+| Target | Generic Xilinx 7-series primitives (`xc7`); no part-specific placement or routing |
+| Git commit | `b1354ee725642024c02befe1d8f42da993a747ce` |
+| Worktree | `dirty` |
+| RTL input SHA-256 | `0a6f8b8c70d0885624299fc839b0155f6157f89fd93f078c443ca2ae778204a3` |
+| Tool | `Yosys 0.66 (git sha1 86f2ddebc-dirty, g++ 16.1.1 -march=x86-64 -mtune=generic -O2 -fno-plt -fexceptions -fstack-clash-protection -fcf-protection -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=/build/yosys/src=/usr/src/debug/yosys -fPIC -O3) [startdir/yosys at makepkg]` |
+| Elapsed | 16.9 s |
+| Build log | `build/fpga/xc7k480t/module-stats-stream-btb/fetch_stream_btb/yosys.log` |
+
+### Effective parameters
+
+| Parameter | Value |
+|---|---:|
+| `ENTRIES` | 256 |
+| `REQUEST_ID_WIDTH` | 32 |
+| `RESPONSE_QUEUE_COUNT_WIDTH` | 3 |
+| `RESPONSE_QUEUE_DEPTH` | 4 |
+| `RESPONSE_QUEUE_INDEX_WIDTH` | 2 |
+| `RUN_HALFWORD_WIDTH` | 16 |
+| `SETS` | 128 |
+| `SET_INDEX_WIDTH` | 7 |
+
+### Resources
+
+| Metric | Count |
+|---|---:|
+| Estimated logic cells | 2,267 |
+| LUT primitives | 3,190 |
+| Flip-flops | 2,497 |
+| Latches | 0 |
+| CARRY4 | 85 |
+| MUXF7/8/9 | 498 |
+| DSP48E1 | 0 |
+| RAMB36E1 | 8 |
+| RAMB18E1 | 0 |
+| Distributed-RAM primitives | 0 |
+| SRL primitives | 0 |
+| Total mapped cells | 8,598 |
+
+Raw nonzero primitive counts:
+
+| Primitive | Count |
+|---|---:|
+| `CARRY4` | 85 |
+| `FDCE` | 2,277 |
+| `FDPE` | 2 |
+| `FDRE` | 218 |
+| `INV` | 2,320 |
+| `LUT1` | 13 |
+| `LUT2` | 910 |
+| `LUT3` | 713 |
+| `LUT4` | 447 |
+| `LUT5` | 250 |
+| `LUT6` | 857 |
+| `MUXF7` | 363 |
+| `MUXF8` | 135 |
+| `RAMB36E1` | 8 |
+
+### Timing and diagnostics
+
+- Longest mapped topological path: **280 netlist cells** (`ltp -noff`).
+- Physical delay, WNS, and Fmax: **not measured**. These require part-specific implementation and are not inferable from topological depth.
+- Logic-loop warnings: **0**; ABC loop cuts: **0**.
+- Total Yosys warnings: **24149**.
+
+<!-- module-statistics-entry:end id=fpga-xc7k480t-module-stats-stream-btb-20260905T173905Z:openrv64_fetch_stream_btb -->
 <!-- module-statistics-entry:start id=fpga-xc7k480t-module-stats-stream-btb-20260905T082402Z:openrv64_fetch_stream_btb -->
 ## 2026-09-05T08:24:03+00:00 — `fpga-xc7k480t-module-stats-stream-btb-20260905T082402Z`
 

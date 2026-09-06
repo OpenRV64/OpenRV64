@@ -12,10 +12,15 @@ module tb_decode_istream_3w;
     logic [5:0] istream_access_fault;
     logic [5:0] istream_page_fault;
     logic [63:0] stream_pc;
+    logic istream_splice_valid;
+    logic [3:0] istream_splice_halfword;
+    logic [63:0] istream_splice_pc;
+    logic istream_splice_accept;
     wire istream_advance_half;
     wire [3:0] istream_consume_halfwords;
     wire [3:0] consumed_halfwords;
     wire [2:0] decode_valid;
+    wire [2:0] decode_splice_successor;
     logic [2:0] decode_ready;
     wire [3*`RV64_FETCH_DECODE_BUS_WIDTH-1:0] decode_bus;
     wire [191:0] trace_id;
@@ -41,10 +46,15 @@ module tb_decode_istream_3w;
         .istream_access_fault_i(istream_access_fault),
         .istream_page_fault_i(istream_page_fault),
         .stream_pc_i(stream_pc),
+        .istream_splice_valid_i(istream_splice_valid),
+        .istream_splice_halfword_i(istream_splice_halfword),
+        .istream_splice_pc_i(istream_splice_pc),
+        .istream_splice_accept_i(istream_splice_accept),
         .istream_advance_half_o(istream_advance_half),
         .istream_consume_halfwords_o(istream_consume_halfwords),
         .consumed_halfwords_o(consumed_halfwords),
         .decode_valid_o(decode_valid),
+        .decode_splice_successor_o(decode_splice_successor),
         .decode_ready_i(decode_ready),
         .decode_bus_o(decode_bus),
         .trace_id_i(64'd40), .trace_id_o(trace_id)
@@ -68,6 +78,10 @@ module tb_decode_istream_3w;
             istream_access_fault = 6'b000000;
             istream_page_fault = 6'b000000;
             stream_pc = 64'd0;
+            istream_splice_valid = 1'b0;
+            istream_splice_halfword = 4'd0;
+            istream_splice_pc = 64'd0;
+            istream_splice_accept = 1'b0;
             decode_ready = 3'b000;
         end
     endtask
@@ -175,11 +189,35 @@ module tb_decode_istream_3w;
         expect_lane(1, 64'h2004, 32'h00200113);
         tick();
 
+        // One presentation may end with a control and continue at a
+        // noncontiguous predicted successor.  Only the successor PC from the
+        // control context is needed to reconstruct the ordinary lane PCs.
+        istream_data = 96'd0;
+        istream_data[31:0] = 32'h00000063;
+        istream_data[63:32] = 32'h00100093;
+        istream_data[95:64] = 32'h00200113;
+        istream_halfword_valid = 6'b111111;
+        stream_pc = 64'h4000;
+        istream_splice_valid = 1'b1;
+        istream_splice_halfword = 4'd2;
+        istream_splice_pc = 64'h8000;
+        istream_splice_accept = 1'b1;
+        #1;
+        if (decode_valid !== 3'b111 ||
+            decode_splice_successor !== 3'b110 ||
+            consumed_halfwords !== 4'd6)
+            $fatal(1, "cross-control decode splice qualification mismatch");
+        expect_lane(0, 64'h4000, 32'h00000063);
+        expect_lane(1, 64'h8000, 32'h00100093);
+        expect_lane(2, 64'h8004, 32'h00200113);
+        tick();
+
         // Faulted data cannot be used to infer length or expose suffix lanes.
         istream_data = 96'd0;
         istream_halfword_valid = 6'b111111;
         istream_access_fault = 6'b000001;
         stream_pc = 64'h3000;
+        istream_splice_valid = 1'b0;
         #1;
         if (decode_valid !== 3'b001 || consumed_halfwords !== 4'd1 ||
             !bus0[`RV64_FETCH_DECODE_BUS_ACCESS_FAULT_BIT])

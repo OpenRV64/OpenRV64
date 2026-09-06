@@ -1,20 +1,26 @@
 `timescale 1ns/1ps
 `include "core/isa/rv64-i.v"
 
-// Tomasulo fetch-stream adapter for the synchronous BP9 direction tables.
+// Nonblocking Tomasulo stream-RLE to BP9 refinement adapter.
 //
-// The stream BTB discovers the next control before decode.  Unconditional
-// controls and misses pass through immediately.  A conditional hit is held at
-// the BTB response boundary while this adapter issues a direction-only TAGE
-// lookup.  The FTQ therefore receives one final successor rather than first
-// following BTFNT and later repairing the queued stream.
+// Every RLE result passes to the FTQ immediately.  A conditional hit may also
+// borrow the BP9 direction read port.  The eventual result is returned as a
+// token-tagged refinement.  Fetch currently accepts only exact-path
+// confirmation on an unconsumed FTQ boundary; a changed path is left to the
+// authoritative decode prediction because the frontend does not yet carry an
+// emitted/decoded generation watermark.  Predictor-port contention can delay
+// or drop refinement, but can never stop RLE/FTQ progress.
 //
-// The ordinary decode lookup remains authoritative for allocation, history,
-// RAS state, and training context.  This adapter is observational and may be
-// denied the shared read port without affecting correctness; in that case the
-// BTB response remains held until the request is accepted.  It is instantiated
-// only by the Tomasulo fetch_istream path.
-module openrv64_fetch_istream_bp9 (
+// A small FIFO decouples bursty autonomous RLE output from the shared TAGE
+// read port.  One issued request may be outstanding; its response may retire
+// while the next queued request launches, sustaining one refinement per cycle
+// when the predictor port is available.  This is advisory state, not
+// correctness state, and overflow still cannot block RLE/FTQ progress.
+module openrv64_fetch_istream_bp9 #(
+    parameter integer CANDIDATE_DEPTH = 8,
+    parameter integer CANDIDATE_INDEX_WIDTH = $clog2(CANDIDATE_DEPTH),
+    parameter integer CANDIDATE_COUNT_WIDTH = $clog2(CANDIDATE_DEPTH + 1)
+) (
     input  wire                         clk,
     input  wire                         rst_n,
     input  wire                         cancel_i,
@@ -23,9 +29,11 @@ module openrv64_fetch_istream_bp9 (
     input  wire                         btb_valid_i,
     output wire                         btb_ready_o,
     input  wire [31:0]                  btb_request_id_i,
+    input  wire [`RV64_XLEN-1:0]        btb_stream_pc_i,
     input  wire                         btb_hit_i,
     input  wire [`RV64_XLEN-1:0]        btb_control_pc_i,
     input  wire [`RV64_XLEN-1:0]        btb_control_end_pc_i,
+    input  wire [2:0]                   btb_control_class_i,
     input  wire                         btb_conditional_i,
     input  wire [`RV64_XLEN-1:0]        btb_target_pc_i,
     input  wire [`RV64_XLEN-1:0]        btb_successor_pc_i,
@@ -35,9 +43,11 @@ module openrv64_fetch_istream_bp9 (
     output wire                         response_valid_o,
     input  wire                         response_ready_i,
     output wire [31:0]                  response_request_id_o,
+    output wire [`RV64_XLEN-1:0]        response_stream_pc_o,
     output wire                         response_hit_o,
     output wire [`RV64_XLEN-1:0]        response_control_pc_o,
     output wire [`RV64_XLEN-1:0]        response_control_end_pc_o,
+    output wire [2:0]                   response_control_class_o,
     output wire [`RV64_XLEN-1:0]        response_successor_pc_o,
     output wire                         response_taken_o,
     output wire [31:0]                  response_prediction_token_o,
@@ -46,112 +56,168 @@ module openrv64_fetch_istream_bp9 (
     input  wire                         tage_lookup_accept_i,
     output wire [`RV64_XLEN-1:0]        tage_lookup_pc_o,
     output wire                         tage_lookup_backward_o,
+    output wire [31:0]                  tage_lookup_token_o,
     input  wire                         tage_response_valid_i,
     input  wire [`RV64_XLEN-1:0]        tage_response_pc_i,
     input  wire                         tage_response_taken_i,
 
+    output wire                         refinement_valid_o,
+    output wire [31:0]                  refinement_prediction_token_o,
+    output wire [`RV64_XLEN-1:0]        refinement_control_pc_o,
+    output wire                         refinement_taken_o,
+    output wire [`RV64_XLEN-1:0]        refinement_successor_pc_o,
+
     output wire                         diag_early_candidate_o,
     output wire                         diag_early_lookup_o,
     output wire                         diag_early_response_o,
-    output wire                         diag_early_taken_o
+    output wire                         diag_early_taken_o,
+    output wire                         diag_early_busy_skip_o,
+    output wire [CANDIDATE_COUNT_WIDTH-1:0]
+                                            diag_early_queue_count_o
 );
-    reg tage_pending_q;
-    reg [`RV64_XLEN-1:0] tage_pending_pc_q;
-    reg tage_result_valid_q;
-    reg tage_result_taken_q;
-    reg tage_candidate_seen_q;
+    reg [`RV64_XLEN-1:0]
+        candidate_control_pc_q [0:CANDIDATE_DEPTH-1];
+    reg [`RV64_XLEN-1:0]
+        candidate_control_end_pc_q [0:CANDIDATE_DEPTH-1];
+    reg [`RV64_XLEN-1:0]
+        candidate_target_pc_q [0:CANDIDATE_DEPTH-1];
+    reg [31:0] candidate_prediction_token_q [0:CANDIDATE_DEPTH-1];
+    reg [CANDIDATE_INDEX_WIDTH-1:0] candidate_head_q;
+    reg [CANDIDATE_INDEX_WIDTH-1:0] candidate_tail_q;
+    reg [CANDIDATE_COUNT_WIDTH-1:0] candidate_count_q;
 
-    wire conditional_hit = enable_i && btb_valid_i && btb_hit_i &&
-                           btb_conditional_i;
-    wire tage_response_match = tage_pending_q && tage_response_valid_i &&
-        (tage_response_pc_i == tage_pending_pc_q) &&
-        (btb_control_pc_i == tage_pending_pc_q);
-    wire tage_result_available = tage_result_valid_q || tage_response_match;
-    wire tage_result_taken = tage_result_valid_q ? tage_result_taken_q :
-                                                   tage_response_taken_i;
-    wire conditional_response_valid = conditional_hit &&
-                                      tage_result_available;
-    wire passthrough = !conditional_hit;
+    reg inflight_valid_q;
+    reg [`RV64_XLEN-1:0] inflight_control_pc_q;
+    reg [`RV64_XLEN-1:0] inflight_control_end_pc_q;
+    reg [`RV64_XLEN-1:0] inflight_target_pc_q;
+    reg [31:0] inflight_prediction_token_q;
 
-    assign tage_lookup_valid_o = conditional_hit && !tage_pending_q &&
-                                 !cancel_i;
-    assign tage_lookup_pc_o = btb_control_pc_i;
-    assign tage_lookup_backward_o = btb_target_pc_i < btb_control_pc_i;
+    wire response_fire = btb_valid_i && btb_ready_o;
+    wire incoming_candidate = enable_i && !cancel_i && response_fire &&
+                              btb_hit_i &&
+                              btb_conditional_i;
+    wire tage_response_match = inflight_valid_q &&
+        tage_response_valid_i &&
+        (tage_response_pc_i == inflight_control_pc_q);
+    wire inflight_slot_available = !inflight_valid_q ||
+                                   tage_response_match;
+    wire candidate_available = candidate_count_q != 0;
+    wire candidate_pop = !cancel_i && candidate_available &&
+        inflight_slot_available && tage_lookup_accept_i;
+    wire candidate_space = candidate_count_q != CANDIDATE_DEPTH;
+    wire candidate_enqueue = incoming_candidate &&
+        (candidate_space || candidate_pop);
 
-    assign response_valid_o = !cancel_i && btb_valid_i &&
-        (passthrough || conditional_response_valid);
+    assign response_valid_o = btb_valid_i && !cancel_i;
+    assign btb_ready_o = cancel_i || response_ready_i;
     assign response_request_id_o = btb_request_id_i;
+    assign response_stream_pc_o = btb_stream_pc_i;
     assign response_hit_o = btb_hit_i;
     assign response_control_pc_o = btb_control_pc_i;
     assign response_control_end_pc_o = btb_control_end_pc_i;
-    assign response_successor_pc_o = conditional_hit ?
-        (tage_result_taken ? btb_target_pc_i : btb_control_end_pc_i) :
-        btb_successor_pc_i;
-    assign response_taken_o = conditional_hit ? tage_result_taken :
-                                                btb_taken_i;
+    assign response_control_class_o = btb_control_class_i;
+    assign response_successor_pc_o = btb_successor_pc_i;
+    assign response_taken_o = btb_taken_i;
     assign response_prediction_token_o = btb_prediction_token_i;
 
-    // The synchronous BTB holds its registered response while ready is low.
-    // Retire it only after an unconditional/miss pass-through or the matching
-    // TAGE response has been accepted by fetch_istream.
-    assign btb_ready_o = cancel_i ||
-        (response_valid_o && response_ready_i);
+    // Incoming RLE results always enter the FIFO first.  This keeps the new
+    // request off the RLE response-ready path while allowing a completed
+    // inflight response and the next registered candidate to overlap.
+    assign tage_lookup_valid_o = !cancel_i && candidate_available &&
+                                 inflight_slot_available;
+    assign tage_lookup_pc_o =
+        candidate_control_pc_q[candidate_head_q];
+    assign tage_lookup_backward_o =
+        candidate_target_pc_q[candidate_head_q] <
+        candidate_control_pc_q[candidate_head_q];
+    assign tage_lookup_token_o =
+        candidate_prediction_token_q[candidate_head_q];
 
-    assign diag_early_candidate_o = conditional_hit &&
-                                    !tage_candidate_seen_q;
+    assign refinement_valid_o = !cancel_i && tage_response_match;
+    assign refinement_prediction_token_o = inflight_prediction_token_q;
+    assign refinement_control_pc_o = inflight_control_pc_q;
+    assign refinement_taken_o = tage_response_taken_i;
+    assign refinement_successor_pc_o = tage_response_taken_i ?
+        inflight_target_pc_q : inflight_control_end_pc_q;
+
+    assign diag_early_candidate_o = incoming_candidate;
     assign diag_early_lookup_o = tage_lookup_valid_o &&
                                  tage_lookup_accept_i;
-    assign diag_early_response_o = conditional_response_valid &&
-                                   response_ready_i;
-    assign diag_early_taken_o = diag_early_response_o &&
-                                tage_result_taken;
+    assign diag_early_response_o = refinement_valid_o;
+    assign diag_early_taken_o = refinement_valid_o &&
+                                tage_response_taken_i;
+    assign diag_early_busy_skip_o = incoming_candidate &&
+                                    !candidate_space && !candidate_pop;
+    assign diag_early_queue_count_o = candidate_count_q;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            tage_pending_q <= 1'b0;
-            tage_pending_pc_q <= {`RV64_XLEN{1'b0}};
-            tage_result_valid_q <= 1'b0;
-            tage_result_taken_q <= 1'b0;
-            tage_candidate_seen_q <= 1'b0;
+            candidate_head_q <= {CANDIDATE_INDEX_WIDTH{1'b0}};
+            candidate_tail_q <= {CANDIDATE_INDEX_WIDTH{1'b0}};
+            candidate_count_q <= {CANDIDATE_COUNT_WIDTH{1'b0}};
+            inflight_valid_q <= 1'b0;
+            inflight_control_pc_q <= {`RV64_XLEN{1'b0}};
+            inflight_control_end_pc_q <= {`RV64_XLEN{1'b0}};
+            inflight_target_pc_q <= {`RV64_XLEN{1'b0}};
+            inflight_prediction_token_q <= 32'd0;
         end else if (cancel_i) begin
-            tage_pending_q <= 1'b0;
-            tage_result_valid_q <= 1'b0;
-            tage_candidate_seen_q <= 1'b0;
+            candidate_head_q <= {CANDIDATE_INDEX_WIDTH{1'b0}};
+            candidate_tail_q <= {CANDIDATE_INDEX_WIDTH{1'b0}};
+            candidate_count_q <= {CANDIDATE_COUNT_WIDTH{1'b0}};
+            inflight_valid_q <= 1'b0;
         end else begin
-            if (conditional_hit && !tage_candidate_seen_q)
-                tage_candidate_seen_q <= 1'b1;
-            if (btb_ready_o && btb_valid_i)
-                tage_candidate_seen_q <= 1'b0;
+            if (tage_response_match)
+                inflight_valid_q <= 1'b0;
 
-            if (tage_lookup_valid_o && tage_lookup_accept_i) begin
-                tage_pending_q <= 1'b1;
-                tage_pending_pc_q <= btb_control_pc_i;
+            if (candidate_pop) begin
+                candidate_head_q <= candidate_head_q + 1'b1;
+                inflight_valid_q <= 1'b1;
+                inflight_control_pc_q <=
+                    candidate_control_pc_q[candidate_head_q];
+                inflight_control_end_pc_q <=
+                    candidate_control_end_pc_q[candidate_head_q];
+                inflight_target_pc_q <=
+                    candidate_target_pc_q[candidate_head_q];
+                inflight_prediction_token_q <=
+                    candidate_prediction_token_q[candidate_head_q];
             end
 
-            // BP9 has no response backpressure.  Bypass its response directly
-            // when fetch_istream is ready, otherwise retain the direction until
-            // the held stream-BTB response can be consumed.
-            if (tage_response_match) begin
-                tage_pending_q <= 1'b0;
-                tage_result_taken_q <= tage_response_taken_i;
-                tage_result_valid_q <= !response_ready_i;
-            end else if (tage_result_valid_q && conditional_hit &&
-                         response_ready_i) begin
-                tage_result_valid_q <= 1'b0;
+            if (candidate_enqueue) begin
+                candidate_control_pc_q[candidate_tail_q] <=
+                    btb_control_pc_i;
+                candidate_control_end_pc_q[candidate_tail_q] <=
+                    btb_control_end_pc_i;
+                candidate_target_pc_q[candidate_tail_q] <=
+                    btb_target_pc_i;
+                candidate_prediction_token_q[candidate_tail_q] <=
+                    btb_prediction_token_i;
+                candidate_tail_q <= candidate_tail_q + 1'b1;
             end
+
+            case ({candidate_enqueue, candidate_pop})
+                2'b10: candidate_count_q <= candidate_count_q + 1'b1;
+                2'b01: candidate_count_q <= candidate_count_q - 1'b1;
+                default: begin
+                end
+            endcase
         end
     end
 
 `ifndef SYNTHESIS
+    initial begin
+        if ((CANDIDATE_DEPTH < 2) ||
+            ((1 << CANDIDATE_INDEX_WIDTH) != CANDIDATE_DEPTH))
+            $fatal(1, "istream BP9 candidate depth must be a power of two");
+    end
+
     always @(posedge clk) begin
-        if (rst_n && tage_pending_q && btb_valid_i &&
-            (btb_control_pc_i != tage_pending_pc_q))
-            $fatal(1, "istream BP9 adapter lost held BTB response");
-        if (rst_n && diag_early_response_o && !btb_conditional_i)
-            $fatal(1, "istream BP9 response lost conditional class");
-        if (rst_n && tage_result_valid_q && !tage_pending_q &&
-            btb_valid_i && (btb_control_pc_i != tage_pending_pc_q))
-            $fatal(1, "istream BP9 adapter changed held result identity");
+        if (rst_n && refinement_valid_o &&
+            !inflight_valid_q)
+            $fatal(1, "istream BP9 refined an unissued candidate");
+        if (rst_n && response_fire && !cancel_i && !response_valid_o)
+            $fatal(1, "istream BP9 blocked the RLE pass-through");
+        if (rst_n && (candidate_count_q > CANDIDATE_DEPTH))
+            $fatal(1, "istream BP9 candidate FIFO overflow");
     end
 `endif
 endmodule

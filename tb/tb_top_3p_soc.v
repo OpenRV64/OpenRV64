@@ -878,14 +878,40 @@ module tb_top_3p_soc #(
     integer stream_btb_updates;
     integer stream_btb_inserts;
     integer stream_btb_replacements;
-    integer stream_btb_same_sector_seconds;
-    integer stream_btb_same_sector_overflows;
+    integer stream_btb_train_shorter;
+    integer stream_btb_train_later_ignored;
+    integer stream_btb_root_lookups;
+    integer stream_btb_chain_lookups;
+    integer stream_btb_queue_enqueues;
+    integer stream_btb_queue_dequeues;
+    integer stream_btb_queue_full_stalls;
+    integer stream_btb_queue_max;
+    integer stream_btb_train_run_overflows;
+    integer stream_btb_train_conditionals;
+    integer stream_btb_train_taken;
+    integer stream_btb_context_binds;
+    integer stream_btb_context_matches;
+    integer stream_btb_context_misses;
+    integer stream_btb_context_invalid;
+    integer stream_btb_late_path_binds;
     integer stream_btb_transfers;
     integer stream_btb_rejects;
+    integer stream_splice_present_cycles;
+    integer stream_splice_transfers;
+    integer stream_splice_younger_events;
+    integer stream_splice_younger_instructions;
+    integer stream_splice_locked_responses;
     integer stream_tage_candidates;
     integer stream_tage_lookups;
     integer stream_tage_responses;
     integer stream_tage_taken;
+    integer stream_tage_busy_skips;
+    integer stream_tage_queue_max;
+    integer stream_tage_refinement_accepts;
+    integer stream_tage_refinement_changes;
+    integer stream_tage_refinement_late;
+    integer stream_tage_context_claims;
+    integer stream_tage_context_misses;
     integer bp_ras_lookups;
     integer bp_ras_hits;
     integer bp_ras_misses;
@@ -1408,6 +1434,27 @@ module tb_top_3p_soc #(
     integer frontend_empty_dispatch_full;
     integer frontend_empty_l1i_external_miss;
     integer frontend_empty_pending_no_external_miss;
+    integer istream_ftq_active_cycles;
+    integer istream_ftq_zero_cycles;
+    integer istream_ftq_one_cycles;
+    integer istream_ftq_two_cycles;
+    integer istream_ftq_three_four_cycles;
+    integer istream_ftq_five_plus_cycles;
+    integer frontend_empty_ftq_zero;
+    integer frontend_empty_ftq_nonzero;
+    integer frontend_empty_ftq_nonzero_head_open;
+    integer frontend_empty_ftq_nonzero_present_empty;
+    integer frontend_empty_backend_ready_ftq_zero;
+    integer frontend_empty_backend_ready_ftq_nonzero;
+    integer istream_transfer_refill_ready;
+    integer istream_transfer_refill_missing;
+    integer istream_transfer_prefill_hit;
+    integer istream_transfer_response_bypass;
+    integer istream_transfer_prefill_resident_0;
+    integer istream_transfer_prefill_resident_1;
+    integer istream_transfer_prefill_resident_2;
+    integer istream_transfer_prefill_resident_3;
+    integer istream_transfer_prefill_resident_4;
     integer fetch_page_screen_requests;
     integer fetch_page_screen_hits;
     integer fetch_page_screen_redirect_hits;
@@ -4907,14 +4954,40 @@ module tb_top_3p_soc #(
         stream_btb_updates = 0;
         stream_btb_inserts = 0;
         stream_btb_replacements = 0;
-        stream_btb_same_sector_seconds = 0;
-        stream_btb_same_sector_overflows = 0;
+        stream_btb_train_shorter = 0;
+        stream_btb_train_later_ignored = 0;
+        stream_btb_root_lookups = 0;
+        stream_btb_chain_lookups = 0;
+        stream_btb_queue_enqueues = 0;
+        stream_btb_queue_dequeues = 0;
+        stream_btb_queue_full_stalls = 0;
+        stream_btb_queue_max = 0;
+        stream_btb_train_run_overflows = 0;
+        stream_btb_train_conditionals = 0;
+        stream_btb_train_taken = 0;
+        stream_btb_context_binds = 0;
+        stream_btb_context_matches = 0;
+        stream_btb_context_misses = 0;
+        stream_btb_context_invalid = 0;
+        stream_btb_late_path_binds = 0;
         stream_btb_transfers = 0;
         stream_btb_rejects = 0;
+        stream_splice_present_cycles = 0;
+        stream_splice_transfers = 0;
+        stream_splice_younger_events = 0;
+        stream_splice_younger_instructions = 0;
+        stream_splice_locked_responses = 0;
         stream_tage_candidates = 0;
         stream_tage_lookups = 0;
         stream_tage_responses = 0;
         stream_tage_taken = 0;
+        stream_tage_busy_skips = 0;
+        stream_tage_queue_max = 0;
+        stream_tage_refinement_accepts = 0;
+        stream_tage_refinement_changes = 0;
+        stream_tage_refinement_late = 0;
+        stream_tage_context_claims = 0;
+        stream_tage_context_misses = 0;
         bp_ras_lookups = 0;
         bp_ras_hits = 0;
         bp_ras_misses = 0;
@@ -5398,6 +5471,27 @@ module tb_top_3p_soc #(
         frontend_empty_dispatch_full = 0;
         frontend_empty_l1i_external_miss = 0;
         frontend_empty_pending_no_external_miss = 0;
+        istream_ftq_active_cycles = 0;
+        istream_ftq_zero_cycles = 0;
+        istream_ftq_one_cycles = 0;
+        istream_ftq_two_cycles = 0;
+        istream_ftq_three_four_cycles = 0;
+        istream_ftq_five_plus_cycles = 0;
+        frontend_empty_ftq_zero = 0;
+        frontend_empty_ftq_nonzero = 0;
+        frontend_empty_ftq_nonzero_head_open = 0;
+        frontend_empty_ftq_nonzero_present_empty = 0;
+        frontend_empty_backend_ready_ftq_zero = 0;
+        frontend_empty_backend_ready_ftq_nonzero = 0;
+        istream_transfer_refill_ready = 0;
+        istream_transfer_refill_missing = 0;
+        istream_transfer_prefill_hit = 0;
+        istream_transfer_response_bypass = 0;
+        istream_transfer_prefill_resident_0 = 0;
+        istream_transfer_prefill_resident_1 = 0;
+        istream_transfer_prefill_resident_2 = 0;
+        istream_transfer_prefill_resident_3 = 0;
+        istream_transfer_prefill_resident_4 = 0;
         fetch_page_screen_requests = 0;
         fetch_page_screen_hits = 0;
         fetch_page_screen_redirect_hits = 0;
@@ -7220,7 +7314,44 @@ module tb_top_3p_soc #(
                     .lsu_page_screen_invalidate)
                 lsu_page_screen_invalidates =
                     lsu_page_screen_invalidates + 1;
+            if (dut.g_fetch_axi.g_istream.u_fetch.active_q) begin
+                istream_ftq_active_cycles = istream_ftq_active_cycles + 1;
+                case (dut.g_fetch_axi.g_istream.u_fetch.ftq_count_q)
+                    0: istream_ftq_zero_cycles =
+                        istream_ftq_zero_cycles + 1;
+                    1: istream_ftq_one_cycles =
+                        istream_ftq_one_cycles + 1;
+                    2: istream_ftq_two_cycles =
+                        istream_ftq_two_cycles + 1;
+                    3, 4: istream_ftq_three_four_cycles =
+                        istream_ftq_three_four_cycles + 1;
+                    default: istream_ftq_five_plus_cycles =
+                        istream_ftq_five_plus_cycles + 1;
+                endcase
+            end
             if (dut.fetch_decode_valid == 0) begin
+                if (dut.g_fetch_axi.g_istream.u_fetch.ftq_count_q == 0) begin
+                    frontend_empty_ftq_zero = frontend_empty_ftq_zero + 1;
+                    if (dut.backend_decode_ready[0] &&
+                        dut.frontend_decode_enable)
+                        frontend_empty_backend_ready_ftq_zero =
+                            frontend_empty_backend_ready_ftq_zero + 1;
+                end else begin
+                    frontend_empty_ftq_nonzero =
+                        frontend_empty_ftq_nonzero + 1;
+                    if (!dut.g_fetch_axi.g_istream.u_fetch.
+                            active_segment_end_valid)
+                        frontend_empty_ftq_nonzero_head_open =
+                            frontend_empty_ftq_nonzero_head_open + 1;
+                    if (dut.g_fetch_axi.g_istream.u_fetch.
+                            present_count_q == 0)
+                        frontend_empty_ftq_nonzero_present_empty =
+                            frontend_empty_ftq_nonzero_present_empty + 1;
+                    if (dut.backend_decode_ready[0] &&
+                        dut.frontend_decode_enable)
+                        frontend_empty_backend_ready_ftq_nonzero =
+                            frontend_empty_backend_ready_ftq_nonzero + 1;
+                end
                 if (dut.backend_decode_ready[0] &&
                     dut.frontend_decode_enable)
                     frontend_empty_backend_ready =
@@ -7758,16 +7889,103 @@ module tb_top_3p_soc #(
                 stream_btb_inserts = stream_btb_inserts + 1;
             if (dut.fetch_observe_stream_btb_replacement)
                 stream_btb_replacements = stream_btb_replacements + 1;
-            if (dut.fetch_observe_stream_btb_same_sector_second)
-                stream_btb_same_sector_seconds =
-                    stream_btb_same_sector_seconds + 1;
-            if (dut.fetch_observe_stream_btb_same_sector_overflow)
-                stream_btb_same_sector_overflows =
-                    stream_btb_same_sector_overflows + 1;
-            if (dut.fetch_observe_stream_transfer)
+            if (dut.fetch_observe_stream_btb_train_shorter)
+                stream_btb_train_shorter =
+                    stream_btb_train_shorter + 1;
+            if (dut.fetch_observe_stream_btb_train_later_ignored)
+                stream_btb_train_later_ignored =
+                    stream_btb_train_later_ignored + 1;
+            if (dut.fetch_observe_stream_btb_root_lookup)
+                stream_btb_root_lookups = stream_btb_root_lookups + 1;
+            if (dut.fetch_observe_stream_btb_chain_lookup)
+                stream_btb_chain_lookups = stream_btb_chain_lookups + 1;
+            if (dut.fetch_observe_stream_btb_queue_enqueue)
+                stream_btb_queue_enqueues = stream_btb_queue_enqueues + 1;
+            if (dut.fetch_observe_stream_btb_queue_dequeue)
+                stream_btb_queue_dequeues = stream_btb_queue_dequeues + 1;
+            if (dut.fetch_observe_stream_btb_queue_full_stall)
+                stream_btb_queue_full_stalls =
+                    stream_btb_queue_full_stalls + 1;
+            if (dut.fetch_observe_stream_btb_queue_count >
+                stream_btb_queue_max)
+                stream_btb_queue_max =
+                    dut.fetch_observe_stream_btb_queue_count;
+            if (dut.fetch_observe_stream_btb_train_run_overflow)
+                stream_btb_train_run_overflows =
+                    stream_btb_train_run_overflows + 1;
+            if (dut.fetch_observe_stream_btb_train_conditional)
+                stream_btb_train_conditionals =
+                    stream_btb_train_conditionals + 1;
+            if (dut.fetch_observe_stream_btb_train_taken)
+                stream_btb_train_taken = stream_btb_train_taken + 1;
+            if (dut.fetch_observe_stream_context_bind)
+                stream_btb_context_binds = stream_btb_context_binds + 1;
+            if (dut.fetch_observe_stream_context_match)
+                stream_btb_context_matches =
+                    stream_btb_context_matches + 1;
+            if (dut.fetch_observe_stream_context_miss)
+                stream_btb_context_misses = stream_btb_context_misses + 1;
+            if (dut.fetch_observe_stream_context_invalid)
+                stream_btb_context_invalid =
+                    stream_btb_context_invalid + 1;
+            if (dut.fetch_observe_stream_late_path_bind)
+                stream_btb_late_path_binds =
+                    stream_btb_late_path_binds + 1;
+            if (dut.fetch_observe_stream_transfer) begin
                 stream_btb_transfers = stream_btb_transfers + 1;
+                if (dut.g_fetch_axi.g_istream.u_fetch.
+                        refill_sector_valid_r)
+                    istream_transfer_refill_ready =
+                        istream_transfer_refill_ready + 1;
+                else
+                    istream_transfer_refill_missing =
+                        istream_transfer_refill_missing + 1;
+                if (dut.g_fetch_axi.g_istream.u_fetch.
+                        refill_successor_prefill_hit_r)
+                    istream_transfer_prefill_hit =
+                        istream_transfer_prefill_hit + 1;
+                if (dut.g_fetch_axi.g_istream.u_fetch.
+                        refill_response_bypass_hit_r)
+                    istream_transfer_response_bypass =
+                        istream_transfer_response_bypass + 1;
+                case (dut.g_fetch_axi.g_istream.u_fetch.
+                          successor_prefill_resident_count_r)
+                    0: istream_transfer_prefill_resident_0 =
+                        istream_transfer_prefill_resident_0 + 1;
+                    1: istream_transfer_prefill_resident_1 =
+                        istream_transfer_prefill_resident_1 + 1;
+                    2: istream_transfer_prefill_resident_2 =
+                        istream_transfer_prefill_resident_2 + 1;
+                    3: istream_transfer_prefill_resident_3 =
+                        istream_transfer_prefill_resident_3 + 1;
+                    default: istream_transfer_prefill_resident_4 =
+                        istream_transfer_prefill_resident_4 + 1;
+                endcase
+            end
             if (dut.fetch_observe_stream_reject)
                 stream_btb_rejects = stream_btb_rejects + 1;
+            if (dut.fetch_observe_stream_splice)
+                stream_splice_present_cycles =
+                    stream_splice_present_cycles + 1;
+            if (dut.fetch_observe_stream_splice &&
+                dut.fetch_observe_stream_transfer)
+                stream_splice_transfers = stream_splice_transfers + 1;
+            if (dut.fetch_observe_stream_splice_younger) begin
+                stream_splice_younger_events =
+                    stream_splice_younger_events + 1;
+                stream_splice_younger_instructions =
+                    stream_splice_younger_instructions +
+                    (dut.frontend_decode_fire[0] &&
+                     dut.fetch_decode_splice_successor[0]) +
+                    (dut.frontend_decode_fire[1] &&
+                     dut.fetch_decode_splice_successor[1]) +
+                    (dut.frontend_decode_fire[2] &&
+                     dut.fetch_decode_splice_successor[2]);
+            end
+            if (dut.bp_predictor_path_override_valid &&
+                dut.bp_dispatch_path_locked_q)
+                stream_splice_locked_responses =
+                    stream_splice_locked_responses + 1;
             if (dut.fetch_observe_istream_tage_candidate)
                 stream_tage_candidates = stream_tage_candidates + 1;
             if (dut.fetch_observe_istream_tage_lookup)
@@ -7776,6 +7994,27 @@ module tb_top_3p_soc #(
                 stream_tage_responses = stream_tage_responses + 1;
             if (dut.fetch_observe_istream_tage_taken)
                 stream_tage_taken = stream_tage_taken + 1;
+            if (dut.fetch_observe_istream_tage_busy_skip)
+                stream_tage_busy_skips = stream_tage_busy_skips + 1;
+            if (dut.fetch_observe_istream_tage_queue_count >
+                stream_tage_queue_max)
+                stream_tage_queue_max =
+                    dut.fetch_observe_istream_tage_queue_count;
+            if (dut.fetch_observe_istream_refinement_accept)
+                stream_tage_refinement_accepts =
+                    stream_tage_refinement_accepts + 1;
+            if (dut.fetch_observe_istream_refinement_changed)
+                stream_tage_refinement_changes =
+                    stream_tage_refinement_changes + 1;
+            if (dut.fetch_observe_istream_refinement_late)
+                stream_tage_refinement_late =
+                    stream_tage_refinement_late + 1;
+            if (dut.fetch_observe_istream_tage_context_claim)
+                stream_tage_context_claims =
+                    stream_tage_context_claims + 1;
+            if (dut.fetch_observe_istream_tage_context_miss)
+                stream_tage_context_misses =
+                    stream_tage_context_misses + 1;
             if (dut.u_bp.diag_btb_lookup)
                 bp_btb_lookups = bp_btb_lookups + 1;
             if (dut.u_bp.diag_btb_hit)
@@ -8280,7 +8519,7 @@ module tb_top_3p_soc #(
                 dut.bp_decode_stall, dut.frontend_decode_enable,
                 dut.control_redirect, dut.backend_memory_replay);
             $display(
-                "PERF_ICX_L2_TIMEOUT_ISTREAM active=%0d generation=%0d ftq=%0d head=%0d tail=%0d present_pc=%h present_bytes=%0d end_valid=%0d control=%h end=%h successor=%h scan=%h outstanding=%0d lookup=%0d/%0d response=%0d hit=%0d req=%0d/%0d addr=%h pending=%0d refill=%0d/%0d refill_addr=%h halt=%0d restart=%0d invalidate=%0d stash=%0d",
+                "PERF_ICX_L2_TIMEOUT_ISTREAM active=%0d generation=%0d ftq=%0d head=%0d tail=%0d present_pc=%h present_bytes=%0d end_valid=%0d control=%h end=%h successor=%h segment_start=%h outstanding=%0d lookup=%0d/%0d response=%0d hit=%0d req=%0d/%0d addr=%h pending=%0d refill=%0d/%0d refill_addr=%h halt=%0d restart=%0d invalidate=%0d stash=%0d",
                 dut.g_fetch_axi.g_istream.u_fetch.active_q,
                 dut.g_fetch_axi.g_istream.u_fetch.generation_q,
                 dut.g_fetch_axi.g_istream.u_fetch.ftq_count_q,
@@ -8296,7 +8535,7 @@ module tb_top_3p_soc #(
                     active_segment_control_end_pc,
                 dut.g_fetch_axi.g_istream.u_fetch.
                     active_segment_successor_pc,
-                dut.g_fetch_axi.g_istream.u_fetch.btb_scan_pc_q,
+                dut.fetch3_istream_segment_start_pc,
                 dut.g_fetch_axi.g_istream.u_fetch.btb_outstanding_q,
                 dut.g_fetch_axi.g_istream.istream_btb_lookup_valid,
                 dut.g_fetch_axi.g_istream.istream_btb_lookup_ready,
@@ -8903,18 +9142,40 @@ module tb_top_3p_soc #(
             bp_btb_wrong_targets, bp_ras_lookups, bp_ras_hits,
             bp_ras_misses, bp_ras_wrong_targets);
         $display(
-            "PERF_ICX_L2_STREAM_BTB entries=%0d ways=2 lookups=%0d responses=%0d hits=%0d misses=%0d way1_hits=%0d trains=%0d updates=%0d inserts=%0d replacements=%0d same_sector_second=%0d same_sector_overflow=%0d transfers=%0d rejects=%0d",
-            256, stream_btb_lookups, stream_btb_responses,
+            "PERF_ICX_L2_STREAM_RLE entries=%0d ways=2 lookups=%0d roots=%0d chained=%0d responses=%0d hits=%0d misses=%0d way1_hits=%0d trains=%0d updates=%0d inserts=%0d replacements=%0d shorter=%0d later_ignored=%0d run_overflows=%0d conditional_trains=%0d taken_trains=%0d transfers=%0d rejects=%0d",
+            256, stream_btb_lookups, stream_btb_root_lookups,
+            stream_btb_chain_lookups, stream_btb_responses,
             stream_btb_hits, stream_btb_responses - stream_btb_hits,
             stream_btb_way1_hits, stream_btb_trains,
             stream_btb_updates, stream_btb_inserts,
-            stream_btb_replacements, stream_btb_same_sector_seconds,
-            stream_btb_same_sector_overflows, stream_btb_transfers,
-            stream_btb_rejects);
+            stream_btb_replacements, stream_btb_train_shorter,
+            stream_btb_train_later_ignored,
+            stream_btb_train_run_overflows,
+            stream_btb_train_conditionals, stream_btb_train_taken,
+            stream_btb_transfers, stream_btb_rejects);
         $display(
-            "PERF_ICX_L2_STREAM_TAGE candidates=%0d lookups=%0d responses=%0d taken=%0d",
+            "PERF_ICX_L2_STREAM_RLE_QUEUE enqueues=%0d dequeues=%0d full_stalls=%0d max_occupancy=%0d",
+            stream_btb_queue_enqueues, stream_btb_queue_dequeues,
+            stream_btb_queue_full_stalls, stream_btb_queue_max);
+        $display(
+            "PERF_ICX_L2_STREAM_SPLICE present_cycles=%0d transfers=%0d younger_events=%0d younger_instructions=%0d locked_responses=%0d",
+            stream_splice_present_cycles, stream_splice_transfers,
+            stream_splice_younger_events,
+            stream_splice_younger_instructions,
+            stream_splice_locked_responses);
+        $display(
+            "PERF_ICX_L2_STREAM_RLE_CONTEXT binds=%0d matches=%0d misses=%0d invalid=%0d late_path_binds=%0d",
+            stream_btb_context_binds, stream_btb_context_matches,
+            stream_btb_context_misses, stream_btb_context_invalid,
+            stream_btb_late_path_binds);
+        $display(
+            "PERF_ICX_L2_STREAM_TAGE candidates=%0d lookups=%0d responses=%0d taken=%0d busy_skips=%0d queue_max=%0d refinement_accepts=%0d refinement_changes=%0d refinement_late=%0d context_claims=%0d context_misses=%0d",
             stream_tage_candidates, stream_tage_lookups,
-            stream_tage_responses, stream_tage_taken);
+            stream_tage_responses, stream_tage_taken,
+            stream_tage_busy_skips, stream_tage_queue_max,
+            stream_tage_refinement_accepts,
+            stream_tage_refinement_changes, stream_tage_refinement_late,
+            stream_tage_context_claims, stream_tage_context_misses);
         $display(
             "PERF_ICX_L2_RAS_MISS_CAUSE empty=%0d order_pending=%0d pending_unresolved=%0d pending_resolved=%0d head_unresolved=%0d",
             bp_ras_miss_empty, bp_ras_miss_order_pending,
@@ -9603,6 +9864,27 @@ module tb_top_3p_soc #(
             frontend_empty_dispatch_nonempty, frontend_empty_dispatch_full,
             frontend_empty_l1i_external_miss,
             frontend_empty_pending_no_external_miss);
+        $display(
+            "PERF_ICX_L2_ISTREAM_FTQ active=%0d zero=%0d one=%0d two=%0d three_four=%0d five_plus=%0d empty_output_zero=%0d empty_output_nonzero=%0d empty_nonzero_head_open=%0d empty_nonzero_present_empty=%0d backend_ready_zero=%0d backend_ready_nonzero=%0d",
+            istream_ftq_active_cycles, istream_ftq_zero_cycles,
+            istream_ftq_one_cycles, istream_ftq_two_cycles,
+            istream_ftq_three_four_cycles, istream_ftq_five_plus_cycles,
+            frontend_empty_ftq_zero, frontend_empty_ftq_nonzero,
+            frontend_empty_ftq_nonzero_head_open,
+            frontend_empty_ftq_nonzero_present_empty,
+            frontend_empty_backend_ready_ftq_zero,
+            frontend_empty_backend_ready_ftq_nonzero);
+        $display(
+            "PERF_ICX_L2_ISTREAM_PREFILL blocks=4 transfer_ready=%0d transfer_missing=%0d protected_hits=%0d response_bypasses=%0d resident_0=%0d resident_1=%0d resident_2=%0d resident_3=%0d resident_4=%0d",
+            istream_transfer_refill_ready,
+            istream_transfer_refill_missing,
+            istream_transfer_prefill_hit,
+            istream_transfer_response_bypass,
+            istream_transfer_prefill_resident_0,
+            istream_transfer_prefill_resident_1,
+            istream_transfer_prefill_resident_2,
+            istream_transfer_prefill_resident_3,
+            istream_transfer_prefill_resident_4);
         $display(
             "PERF_ICX_L2_FETCH_PAGE_SCREEN entries=4 requests=%0d hits=%0d hit_pct_x100=%0d redirect_hits=%0d predicted_hits=%0d correction_hits=%0d fills=%0d launches=%0d response_bypasses=%0d invalidates=%0d",
             fetch_page_screen_requests,

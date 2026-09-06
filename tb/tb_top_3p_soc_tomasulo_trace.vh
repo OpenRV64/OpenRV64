@@ -379,12 +379,23 @@ generate
                             `OPENRV64_TTRACE_STAGE_DISPATCH, -1,
                             dut.bp_dispatch_lane_q,
                             ttrace_state, ttrace_reason, 64'd0,
-                            {59'd0, dut.bp_dispatch_allocated_q,
+                            {50'd0,
+                             dut.fetch3_istream_prediction_refined,
+                             dut.bp_predictor_path_override_valid,
+                             dut.bp_live_stream_prediction_match,
+                             dut.bp_deferred_predict_redirect_q,
+                             dut.bp_resident_prediction_accept,
+                             dut.bp_pending_prediction_accept,
+                             dut.bp_response_path_mismatch,
+                             dut.bp_dispatch_preliminary_taken_q,
+                             dut.bp_dispatch_path_locked_q,
+                             dut.bp_dispatch_allocated_q,
                              dut.bp_dispatch_valid_q,
                              dut.bp_prediction_taken_effective,
                              dut.bp_decode_stall,
                              dut.bp_branch_allocate},
-                            64'd0, 64'd0);
+                            dut.bp_dispatch_preliminary_successor_q,
+                            dut.bp_response_selected_successor);
                     end
 
                     // Tomasulo scheduler: one row for every live scheduler

@@ -1,4 +1,5 @@
 `timescale 1ns/1ps
+`include "core/fetch/fetch-defs.v"
 
 module tb_fetch_istream;
     logic clk;
@@ -11,6 +12,7 @@ module tb_fetch_istream;
     logic flush;
     logic stall;
     wire cancel;
+    wire btb_cancel;
 
     wire req_valid;
     logic req_ready;
@@ -30,12 +32,23 @@ module tb_fetch_istream;
     wire [31:0] btb_lookup_request_id;
     logic btb_response_valid;
     logic [31:0] btb_response_request_id;
+    logic [63:0] btb_response_stream_pc;
     logic btb_response_hit;
     logic [63:0] btb_response_control_pc;
     logic [63:0] btb_response_control_end_pc;
+    logic [2:0] btb_response_control_class;
     logic [63:0] btb_response_successor_pc;
     logic btb_response_taken;
     logic [31:0] btb_response_prediction_token;
+    wire btb_response_ready;
+    logic refinement_valid;
+    logic [31:0] refinement_prediction_token;
+    logic [63:0] refinement_control_pc;
+    logic refinement_taken;
+    logic [63:0] refinement_successor_pc;
+    wire refinement_accept;
+    wire refinement_changed;
+    wire refinement_late;
 
     wire istream_valid;
     wire [95:0] istream_data;
@@ -45,11 +58,16 @@ module tb_fetch_istream;
     logic istream_advance_half;
     logic [3:0] istream_consume_halfwords;
     wire [63:0] stream_pc;
+    wire [63:0] istream_next_pc;
+    wire [63:0] istream_segment_start_pc;
+    wire istream_splice_valid;
+    wire [3:0] istream_splice_halfword;
     wire istream_prediction_valid;
     wire [63:0] istream_control_pc;
     wire [63:0] istream_control_end_pc;
     wire [63:0] istream_prediction_successor;
     wire istream_prediction_taken;
+    wire istream_prediction_refined;
     wire [31:0] istream_prediction_token;
     logic istream_prediction_accept;
     wire [15:0] stream_generation;
@@ -61,21 +79,22 @@ module tb_fetch_istream;
     wire [31:0] predicted_transfer_token;
 
     integer request_count;
-    reg [63:0] request_addr_log [0:31];
-    reg request_stash_log [0:31];
+    reg [63:0] request_addr_log [0:127];
+    reg request_stash_log [0:127];
 
     openrv64_fetch_istream #(
         .BLOCK_DEPTH(8),
-        .PENDING_DEPTH(4),
+        .PENDING_DEPTH(8),
         .FTQ_DEPTH(4),
-        .LOOKAHEAD_BLOCKS(2),
-        .PREDICT_LOOKAHEAD_SECTORS(4)
+        .LOOKAHEAD_BLOCKS(4),
+        .SUCCESSOR_PREFILL_BLOCKS(4)
     ) dut (
         .clk(clk), .rst_n(rst_n),
         .restart_i(restart), .restart_pc_i(restart_pc),
         .redirect_i(redirect), .redirect_pc_i(redirect_pc),
         .invalidate_i(invalidate), .flush_i(flush), .stall_i(stall),
         .cancel_o(cancel),
+        .btb_cancel_o(btb_cancel),
         .req_valid_o(req_valid), .req_ready_i(req_ready),
         .req_addr_o(req_addr), .req_stash_o(req_stash),
         .req_demand_o(req_demand),
@@ -89,14 +108,24 @@ module tb_fetch_istream;
         .btb_lookup_request_id_o(btb_lookup_request_id),
         .btb_response_valid_i(btb_response_valid),
         .btb_response_request_id_i(btb_response_request_id),
+        .btb_response_stream_pc_i(btb_response_stream_pc),
         .btb_response_hit_i(btb_response_hit),
         .btb_response_control_pc_i(btb_response_control_pc),
         .btb_response_control_end_pc_i(btb_response_control_end_pc),
+        .btb_response_control_class_i(btb_response_control_class),
         .btb_response_successor_pc_i(btb_response_successor_pc),
         .btb_response_taken_i(btb_response_taken),
         .btb_response_prediction_token_i(
             btb_response_prediction_token),
-        .btb_response_ready_o(),
+        .btb_response_ready_o(btb_response_ready),
+        .refinement_valid_i(refinement_valid),
+        .refinement_prediction_token_i(refinement_prediction_token),
+        .refinement_control_pc_i(refinement_control_pc),
+        .refinement_taken_i(refinement_taken),
+        .refinement_successor_pc_i(refinement_successor_pc),
+        .refinement_accept_o(refinement_accept),
+        .refinement_changed_o(refinement_changed),
+        .refinement_late_o(refinement_late),
         .istream_valid_o(istream_valid),
         .istream_data_o(istream_data),
         .istream_halfword_valid_o(istream_halfword_valid),
@@ -105,11 +134,16 @@ module tb_fetch_istream;
         .istream_advance_half_i(istream_advance_half),
         .istream_consume_halfwords_i(istream_consume_halfwords),
         .stream_pc_o(stream_pc),
+        .istream_next_pc_o(istream_next_pc),
+        .istream_segment_start_pc_o(istream_segment_start_pc),
+        .istream_splice_valid_o(istream_splice_valid),
+        .istream_splice_halfword_o(istream_splice_halfword),
         .istream_prediction_valid_o(istream_prediction_valid),
         .istream_control_pc_o(istream_control_pc),
         .istream_control_end_pc_o(istream_control_end_pc),
         .istream_prediction_successor_o(istream_prediction_successor),
         .istream_prediction_taken_o(istream_prediction_taken),
+        .istream_prediction_refined_o(istream_prediction_refined),
         .istream_prediction_token_o(istream_prediction_token),
         .istream_prediction_accept_i(istream_prediction_accept),
         .stream_generation_o(stream_generation),
@@ -245,6 +279,26 @@ module tb_fetch_istream;
         end
     endtask
 
+    task automatic expect_block_resident(
+        input [63:0] addr,
+        input expected_resident
+    );
+        integer index;
+        reg found;
+        begin
+            found = 1'b0;
+            for (index = 0; index < 8; index = index + 1) begin
+                if (dut.block_valid_q[index] &&
+                    (dut.block_addr_q[index] == addr))
+                    found = 1'b1;
+            end
+            if (found != expected_resident)
+                $fatal(1,
+                    "block residency mismatch addr=%h expected=%b actual=%b",
+                    addr, expected_resident, found);
+        end
+    endtask
+
     initial begin
         reg [15:0] partial_halfword;
         integer stale_lookup_timeout;
@@ -270,12 +324,20 @@ module tb_fetch_istream;
         btb_lookup_ready = 1'b0;
         btb_response_valid = 1'b0;
         btb_response_request_id = 32'd0;
+        btb_response_stream_pc = 64'd0;
         btb_response_hit = 1'b0;
         btb_response_control_pc = 64'd0;
         btb_response_control_end_pc = 64'd0;
+        btb_response_control_class =
+            `OPENRV64_STREAM_CONTROL_DIRECT_JUMP;
         btb_response_successor_pc = 64'd0;
         btb_response_taken = 1'b0;
         btb_response_prediction_token = 32'd0;
+        refinement_valid = 1'b0;
+        refinement_prediction_token = 32'd0;
+        refinement_control_pc = 64'd0;
+        refinement_taken = 1'b0;
+        refinement_successor_pc = 64'd0;
         istream_advance_half = 1'b0;
         istream_consume_halfwords = 4'd0;
         istream_prediction_accept = 1'b1;
@@ -299,14 +361,17 @@ module tb_fetch_istream;
         btb_response_valid = 1'b1;
         btb_response_hit = 1'b0;
         #1;
-        if (!btb_lookup_valid || (btb_lookup_pc != 64'h10) ||
-            (btb_lookup_request_id == btb_response_request_id))
+        if (btb_lookup_valid)
             $fatal(1,
-                "BTB miss did not pipeline the next-sector lookup");
+                "RLE miss incorrectly resumed sector scanning");
         tick();
         btb_response_valid = 1'b0;
+        tick();
+        if (btb_lookup_valid)
+            $fatal(1, "RLE miss retried the same open stream");
 
-        // A hit closing the sole FTQ entry may launch its successor directly.
+        // A hit closes the sole FTQ entry.  Successor lookup is internal to
+        // the RLE predictor, so fetch must not issue a second external root.
         btb_lookup_ready = 1'b0;
         restart = 1'b1;
         tick();
@@ -318,27 +383,71 @@ module tb_fetch_istream;
         tick();
         btb_response_valid = 1'b1;
         btb_response_hit = 1'b1;
+        btb_response_stream_pc = 64'h0;
         btb_response_control_pc = 64'h0a;
         btb_response_control_end_pc = 64'h0e;
         btb_response_successor_pc = 64'h100;
         btb_response_taken = 1'b1;
         btb_response_prediction_token = 32'h55;
         #1;
-        if (!btb_lookup_valid || (btb_lookup_pc != 64'h100) ||
-            (btb_lookup_request_id == btb_response_request_id))
+        if (btb_lookup_valid)
             $fatal(1,
-                "sole-entry BTB hit did not pipeline the successor lookup");
+                "RLE hit leaked an external successor lookup");
         tick();
         btb_response_valid = 1'b0;
 
         if (ftq_count != 2)
             $fatal(1, "BTB hit did not append a successor segment");
+
+        // Close two more predicted streams so lookahead has enough distinct
+        // blocks to overflow the block store.  Blocks 0x0 (active) and
+        // 0x100 through 0x160 (the four-block successor prefill) must survive
+        // while an unprotected deeper-lookahead block is selected as victim.
+        btb_response_valid = 1'b1;
+        btb_response_stream_pc = 64'h100;
+        btb_response_control_pc = 64'h16a;
+        btb_response_control_end_pc = 64'h16e;
+        btb_response_successor_pc = 64'h300;
+        btb_response_prediction_token = 32'h56;
+        tick();
+        btb_response_stream_pc = 64'h300;
+        btb_response_control_pc = 64'h38a;
+        btb_response_control_end_pc = 64'h38e;
+        btb_response_successor_pc = 64'h500;
+        btb_response_prediction_token = 32'h57;
+        tick();
+        btb_response_valid = 1'b0;
+        if (ftq_count != 4)
+            $fatal(1, "prefill eviction setup did not fill FTQ");
+
         return_block(64'h0, source_block());
         if (!istream_valid || (stream_pc != 64'h0))
             $fatal(1, "returning instruction block missed presentation bypass");
         wait_request(64'h100, 1'b1);
         return_block(64'h100, target_block());
-
+        wait_request(64'h120, 1'b1);
+        return_block(64'h120, compressed_fill());
+        wait_request(64'h140, 1'b1);
+        return_block(64'h140, compressed_fill());
+        wait_request(64'h160, 1'b1);
+        return_block(64'h160, compressed_fill());
+        wait_request(64'h300, 1'b1);
+        return_block(64'h300, compressed_fill());
+        wait_request(64'h320, 1'b1);
+        return_block(64'h320, compressed_fill());
+        wait_request(64'h340, 1'b1);
+        return_block(64'h340, compressed_fill());
+        wait_request(64'h360, 1'b1);
+        return_block(64'h360, compressed_fill());
+        expect_block_resident(64'h0, 1'b1);
+        expect_block_resident(64'h100, 1'b1);
+        expect_block_resident(64'h120, 1'b1);
+        expect_block_resident(64'h140, 1'b1);
+        expect_block_resident(64'h160, 1'b1);
+        expect_block_resident(64'h300, 1'b0);
+        if (dut.successor_prefill_resident_count_r != 4)
+            $fatal(1,
+                "successor block did not enter protected prefill window");
         wait_stream_pc(64'h0);
         if (istream_halfword_valid != 6'h3f ||
             istream_data[15:0] != 16'h0001 ||
@@ -357,25 +466,32 @@ module tb_fetch_istream;
         istream_consume_halfwords = 4'd4;
         tick();
         istream_consume_halfwords = 4'd0;
-        if (stream_pc != 64'h8 || istream_halfword_valid != 6'h07 ||
+        if (stream_pc != 64'h8 || istream_halfword_valid != 6'h3f ||
             istream_data[15:0] != 16'h0001 ||
-            istream_data[47:16] != 32'h00000063)
-            $fatal(1, "exclusive control boundary did not clip suffix");
+            istream_data[47:16] != 32'h00000063 ||
+            istream_data[63:48] != 16'h0001 ||
+            istream_data[79:64] != 16'h0001 ||
+            istream_data[95:80] != 16'h0013 ||
+            !istream_splice_valid || istream_splice_halfword != 4'd3)
+            $fatal(1, "resident successor did not splice after control");
 
-        istream_consume_halfwords = 4'd3;
+        // Consume the control plus two compressed target instructions.  The
+        // next-PC sideband and presentation state must both advance within the
+        // noncontiguous successor rather than add five parcels to 0x8.
+        istream_consume_halfwords = 4'd5;
         #1;
         if (!predicted_transfer_valid ||
             predicted_transfer_source_pc != 64'h0a ||
             predicted_transfer_target_pc != 64'h100 ||
-            predicted_transfer_token != 32'h55)
+            predicted_transfer_token != 32'h55 ||
+            istream_next_pc != 64'h104 ||
+            !dut.refill_successor_prefill_hit_r)
             $fatal(1, "predicted transfer sideband mismatch");
         tick();
         istream_consume_halfwords = 4'd0;
-        wait_stream_pc(64'h100);
-        if (istream_data[15:0] != 16'h0001 ||
-            istream_data[31:16] != 16'h0001 ||
-            istream_data[63:32] != 32'h00000013)
-            $fatal(1, "ready predicted target presentation mismatch");
+        wait_stream_pc(64'h104);
+        if (istream_data[31:0] != 32'h00000013)
+            $fatal(1, "partly consumed predicted target mismatch");
 
         // A speculative redirect is not a context restart.  A resident target
         // must be presented immediately and the memory interface must not be
@@ -466,6 +582,7 @@ module tb_fetch_istream;
         tick();
         btb_response_valid = 1'b1;
         btb_response_hit = 1'b1;
+        btb_response_stream_pc = 64'h0;
         btb_response_control_pc = 64'h2;
         btb_response_control_end_pc = 64'h6;
         btb_response_successor_pc = 64'h300;
@@ -503,6 +620,7 @@ module tb_fetch_istream;
         istream_consume_halfwords = 4'd3;
         btb_response_valid = 1'b1;
         btb_response_hit = 1'b1;
+        btb_response_stream_pc = 64'h0;
         btb_response_control_pc = 64'h0a;
         btb_response_control_end_pc = 64'h0e;
         btb_response_successor_pc = 64'h100;
@@ -513,9 +631,9 @@ module tb_fetch_istream;
             (ftq_count != 1))
             $fatal(1, "late BTB response installed a consumed boundary");
 
-        // Do not combinationally recurse through a second predicted segment.
-        // That response may append normally, but the next lookup must observe
-        // the registered FTQ topology.
+        // Autonomous responses retain the root request ID while each response
+        // names its own stream start.  Fetch appends them without issuing a
+        // second root lookup.
         restart_pc = 64'h0;
         btb_lookup_ready = 1'b0;
         restart = 1'b1;
@@ -527,25 +645,105 @@ module tb_fetch_istream;
         tick();
         btb_response_valid = 1'b1;
         btb_response_hit = 1'b1;
+        btb_response_stream_pc = 64'h0;
         btb_response_control_pc = 64'h0a;
         btb_response_control_end_pc = 64'h0e;
         btb_response_successor_pc = 64'h100;
-        #1;
-        if (!btb_lookup_valid || (btb_lookup_pc != 64'h100))
-            $fatal(1, "sole-entry hit did not chain in depth test");
-        chained_lookup_request_id = btb_lookup_request_id;
+        chained_lookup_request_id = btb_response_request_id;
         tick();
         btb_response_request_id = chained_lookup_request_id;
+        btb_response_stream_pc = 64'h100;
         btb_response_control_pc = 64'h10a;
         btb_response_control_end_pc = 64'h10e;
         btb_response_successor_pc = 64'h200;
         #1;
         if (btb_lookup_valid)
-            $fatal(1, "BTB recursively chained through speculative FTQ state");
+            $fatal(1, "autonomous RLE chain requested a second root");
         tick();
         btb_response_valid = 1'b0;
         if (ftq_count != 3)
             $fatal(1, "registered second hit did not append normally");
+
+        // A direction response for the active FTQ head is already too late.
+        // A path-changing response for a younger segment is also rejected:
+        // autonomous chaining may already have emitted bytes from its old
+        // successor.  Only an exact-path response may annotate it as refined.
+        refinement_prediction_token = 32'h66;
+        refinement_control_pc = 64'h0a;
+        refinement_taken = 1'b0;
+        refinement_successor_pc = 64'h0e;
+        refinement_valid = 1'b1;
+        #1;
+        if (refinement_accept || !refinement_late)
+            $fatal(1, "active-head refinement was not rejected as late");
+        tick();
+        refinement_valid = 1'b0;
+
+        refinement_control_pc = 64'h10a;
+        refinement_successor_pc = 64'h10e;
+        refinement_valid = 1'b1;
+        #1;
+        if (refinement_accept || refinement_changed || !refinement_late)
+            $fatal(1, "changed-path future refinement was not rejected");
+        tick();
+        refinement_valid = 1'b0;
+
+        refinement_taken = 1'b1;
+        refinement_successor_pc = 64'h200;
+        refinement_valid = 1'b1;
+        #1;
+        if (!refinement_accept || refinement_changed || refinement_late)
+            $fatal(1, "same-path future refinement was not accepted");
+        tick();
+        refinement_valid = 1'b0;
+
+        // Fill the FTQ, then close its open tail on the same edge the active
+        // head transfers.  The appended successor reuses the just-freed ring
+        // slot; its valid bit and payload must survive the head pop.
+        btb_response_valid = 1'b1;
+        btb_response_stream_pc = 64'h200;
+        // This future run spans a second 32-byte instruction block.  Its
+        // known interior block must be requested before the segment becomes
+        // active, rather than waiting for demand presentation to reach it.
+        btb_response_control_pc = 64'h22a;
+        btb_response_control_end_pc = 64'h22e;
+        btb_response_successor_pc = 64'h300;
+        btb_response_prediction_token = 32'h67;
+        tick();
+        if (ftq_count != 4)
+            $fatal(1, "third autonomous hit did not fill FTQ");
+        btb_response_valid = 1'b0;
+        wait_request(64'h220, 1'b1);
+        btb_response_valid = 1'b1;
+        btb_response_stream_pc = 64'h300;
+        btb_response_control_pc = 64'h30a;
+        btb_response_control_end_pc = 64'h30e;
+        btb_response_successor_pc = 64'h400;
+        btb_response_prediction_token = 32'h68;
+        #1;
+        if (btb_response_ready)
+            $fatal(1, "full FTQ admitted a hit before head transfer");
+
+        wait_stream_pc(64'h0);
+        istream_consume_halfwords = 4'd4;
+        tick();
+        istream_consume_halfwords = 4'd3;
+        #1;
+        if (!btb_response_ready || !predicted_transfer_valid)
+            $fatal(1, "head transfer did not release one FTQ slot");
+        tick();
+        istream_consume_halfwords = 4'd0;
+        btb_response_valid = 1'b0;
+        if ((ftq_count != 4) ||
+            (dut.ftq_start_pc_q[dut.ftq_head_q] != 64'h100) ||
+            (dut.ftq_start_pc_q[dut.ftq_tail_q] != 64'h400) ||
+            !dut.ftq_valid_q[dut.ftq_tail_q])
+            $fatal(1, "simultaneous full-FTQ pop/append corrupted ring");
+        wait_stream_pc(64'h100);
+        if (!istream_prediction_refined ||
+            (istream_prediction_successor != 64'h200) ||
+            !istream_prediction_taken)
+            $fatal(1, "accepted future refinement was not retained");
 
         // Fetch preserves raw data and supplies fault qualification; decode
         // decides how to represent the fault and must not depend on fake NOPs.

@@ -1,5 +1,23 @@
 # Performance TODO
 
+## Provisional stream-RLE output queue
+
+- [ ] Re-evaluate the four-entry output queue between the stream-start RLE
+      predictor and the instruction-stream FTQ.  The FTQ is already the
+      architectural buffering point; this second queue is justified only if
+      autonomous successor chaining measurably runs ahead while FTQ admission
+      is paused.  Keep queue occupancy, enqueue/dequeue, and full-stall
+      counters through the RLE experiments.  Remove the queue and retain only
+      the single synchronous-result bypass if the warm benchmark traces do not
+      show useful occupancy or avoided fetch starvation.
+
+  Current evidence (2026-09-05): the final source-matched warm-four CoreMark run
+  hit occupancy four and counted 9,334 full-stall cycles, so the queue is active.
+  The standalone RLE module maps to eight RAMB36E1s, 3,190 LUT primitives, and
+  2,497 flip-flops; the earlier queue-free sector module used the same BRAM
+  count but 2,101 LUTs and 806 flip-flops.  This delta is not a queue-only
+  attribution, but it makes a queue-bypass or queue-removal A/B mandatory.
+
 ## Conservative store-guard relaxation
 
 The compact four-load/four-store LSU currently uses folded cache-line hashes

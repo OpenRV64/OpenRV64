@@ -39,6 +39,7 @@ module tb_exec_bp_tagged_speculation;
         .lookup_backward_i(lookup_backward),
         .lookup_instr_i(lookup_instr), .lookup_pc_i(lookup_pc),
         .lookup_id_i(lookup_id), .lookup_observational_i(1'b0),
+        .lookup_context_valid_i(1'b0), .lookup_context_token_i(32'd0),
         .lookup_allocate_i(lookup_allocate),
         .resolve_valid_i(resolve_valid), .resolve_branch_i(1'b1),
         .resolve_taken_i(resolve_taken), .resolve_instr_i(resolve_instr),
