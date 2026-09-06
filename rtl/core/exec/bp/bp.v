@@ -91,6 +91,17 @@ module openrv64_exec_bp #(
     input  wire lookup_path_override_target_valid_i,
     input  wire [`RV64_XLEN-1:0] lookup_path_override_target_i,
 
+    // Independent observational direction lookup used by the Tomasulo
+    // instruction-stream frontend.  This is a separate physical read path
+    // from the decode lookup; it never allocates predictor or RAS state.
+    input  wire early_lookup_valid_i,
+    input  wire early_lookup_cancel_i,
+    input  wire early_history_repair_i,
+    input  wire early_lookup_backward_i,
+    input  wire early_lookup_taken_i,
+    input  wire [`RV64_XLEN-1:0] early_lookup_pc_i,
+    input  wire [31:0] early_lookup_context_token_i,
+
     input  wire resolve_valid_i,
     input  wire resolve_branch_i,
     input  wire resolve_taken_i,
@@ -112,6 +123,11 @@ module openrv64_exec_bp #(
     output wire [`RV64_XLEN-1:0] direction_response_pc_o,
     output wire direction_response_taken_o,
     output wire direction_response_weak_o,
+    output wire early_lookup_accept_o,
+    output wire early_direction_response_valid_o,
+    output wire [`RV64_XLEN-1:0] early_direction_response_pc_o,
+    output wire early_direction_response_taken_o,
+    output wire early_direction_response_weak_o,
     output wire lookup_context_hit_o,
     output wire target_mispredict_o,
     output wire update_overflow_o,
@@ -217,6 +233,11 @@ module openrv64_exec_bp #(
     wire [`RV64_XLEN-1:0] tage_direction_response_pc;
     wire tage_direction_response_taken;
     wire tage_direction_response_weak;
+    wire tage_early_lookup_accept;
+    wire tage_early_direction_response_valid;
+    wire [`RV64_XLEN-1:0] tage_early_direction_response_pc;
+    wire tage_early_direction_response_taken;
+    wire tage_early_direction_response_weak;
     wire tage_target_mispredict;
     wire tage_allocation_stall;
     wire tage_capacity_stall;
@@ -228,6 +249,31 @@ module openrv64_exec_bp #(
     wire tage_train_mispredict;
     wire [2:0] tage_train_allocation;
     wire tage_train_allocation_failed;
+    wire diag_tage_decode_direction_read;
+    wire diag_tage_early_direction_read;
+    wire diag_tage_dual_direction_read;
+    wire diag_tage_coalesced_direction_read;
+    wire diag_tage_early_direction_blocked;
+    wire diag_tage_early_context_write;
+    // Counterfactual shared-bank selectors.  These are diagnostics for sizing a
+    // banked two-client direction store; all TAGE tables must use the same bank
+    // for a request or independent per-table conflicts become nearly certain.
+    wire [1:0] diag_tage_decode_bank = {
+        lookup_pc_i[3] ^ lookup_pc_i[8] ^ lookup_pc_i[13],
+        lookup_pc_i[2] ^ lookup_pc_i[7] ^ lookup_pc_i[12]
+    };
+    wire [1:0] diag_tage_early_bank = {
+        early_lookup_pc_i[3] ^ early_lookup_pc_i[8] ^
+            early_lookup_pc_i[13],
+        early_lookup_pc_i[2] ^ early_lookup_pc_i[7] ^
+            early_lookup_pc_i[12]
+    };
+    wire diag_tage_dual_bank2_conflict =
+        diag_tage_dual_direction_read &&
+        (diag_tage_decode_bank[0] == diag_tage_early_bank[0]);
+    wire diag_tage_dual_bank4_conflict =
+        diag_tage_dual_direction_read &&
+        (diag_tage_decode_bank == diag_tage_early_bank);
     wire lookup_path_override_valid =
         (ENABLE_LOOKUP_PATH_OVERRIDE != 0) &&
         lookup_path_override_valid_i && lookup_valid_i;
@@ -346,6 +392,14 @@ module openrv64_exec_bp #(
                     lookup_path_override_target_valid_i),
                 .lookup_path_override_target_i(
                     lookup_path_override_target_i),
+                .early_lookup_valid_i(early_lookup_valid_i),
+                .early_lookup_cancel_i(early_lookup_cancel_i),
+                .early_history_repair_i(early_history_repair_i),
+                .early_lookup_backward_i(early_lookup_backward_i),
+                .early_lookup_taken_i(early_lookup_taken_i),
+                .early_lookup_pc_i(early_lookup_pc_i),
+                .early_lookup_context_token_i(
+                    early_lookup_context_token_i),
                 .ras_prediction_valid_i(ras_prediction_valid),
                 .ras_prediction_target_i(ras_prediction_target),
                 .resolve_valid_i(resolve_valid_i),
@@ -366,6 +420,15 @@ module openrv64_exec_bp #(
                     tage_direction_response_taken),
                 .direction_response_weak_o(
                     tage_direction_response_weak),
+                .early_lookup_accept_o(tage_early_lookup_accept),
+                .early_direction_response_valid_o(
+                    tage_early_direction_response_valid),
+                .early_direction_response_pc_o(
+                    tage_early_direction_response_pc),
+                .early_direction_response_taken_o(
+                    tage_early_direction_response_taken),
+                .early_direction_response_weak_o(
+                    tage_early_direction_response_weak),
                 .lookup_context_hit_o(lookup_context_hit_o),
                 .target_mispredict_o(tage_target_mispredict),
                 .allocation_stall_o(tage_allocation_stall),
@@ -393,7 +456,19 @@ module openrv64_exec_bp #(
                 .diag_train_mispredict_o(tage_train_mispredict),
                 .diag_train_allocation_o(tage_train_allocation),
                 .diag_train_allocation_failed_o(
-                    tage_train_allocation_failed)
+                    tage_train_allocation_failed),
+                .diag_decode_direction_read_o(
+                    diag_tage_decode_direction_read),
+                .diag_early_direction_read_o(
+                    diag_tage_early_direction_read),
+                .diag_dual_direction_read_o(
+                    diag_tage_dual_direction_read),
+                .diag_coalesced_direction_read_o(
+                    diag_tage_coalesced_direction_read),
+                .diag_early_direction_blocked_o(
+                    diag_tage_early_direction_blocked),
+                .diag_early_context_write_o(
+                    diag_tage_early_context_write)
             );
         end else begin : g_no_tage
             assign tage_prediction_taken = 1'b0;
@@ -404,6 +479,11 @@ module openrv64_exec_bp #(
             assign tage_direction_response_pc = {`RV64_XLEN{1'b0}};
             assign tage_direction_response_taken = 1'b0;
             assign tage_direction_response_weak = 1'b0;
+            assign tage_early_lookup_accept = 1'b0;
+            assign tage_early_direction_response_valid = 1'b0;
+            assign tage_early_direction_response_pc = {`RV64_XLEN{1'b0}};
+            assign tage_early_direction_response_taken = 1'b0;
+            assign tage_early_direction_response_weak = 1'b0;
             assign lookup_context_hit_o = 1'b0;
             assign tage_target_mispredict = 1'b0;
             assign tage_allocation_stall = 1'b0;
@@ -428,6 +508,12 @@ module openrv64_exec_bp #(
             assign tage_train_valid = 1'b0;
             assign tage_train_mispredict = 1'b0;
             assign tage_train_allocation = 3'd0;
+            assign diag_tage_decode_direction_read = 1'b0;
+            assign diag_tage_early_direction_read = 1'b0;
+            assign diag_tage_dual_direction_read = 1'b0;
+            assign diag_tage_coalesced_direction_read = 1'b0;
+            assign diag_tage_early_direction_blocked = 1'b0;
+            assign diag_tage_early_context_write = 1'b0;
             assign tage_train_allocation_failed = 1'b0;
         end
     endgenerate
@@ -613,6 +699,14 @@ module openrv64_exec_bp #(
         tage_direction_response_taken;
     assign direction_response_weak_o = use_tage &&
         tage_direction_response_weak;
+    assign early_lookup_accept_o = use_tage && tage_early_lookup_accept;
+    assign early_direction_response_valid_o = use_tage &&
+        tage_early_direction_response_valid;
+    assign early_direction_response_pc_o = tage_early_direction_response_pc;
+    assign early_direction_response_taken_o = use_tage &&
+        tage_early_direction_response_taken;
+    assign early_direction_response_weak_o = use_tage &&
+        tage_early_direction_response_weak;
     assign update_overflow_o = use_advanced ? advanced_update_overflow :
         (use_tournament ? tournament_update_overflow :
          (use_tage ? tage_update_overflow : policy_update_overflow));

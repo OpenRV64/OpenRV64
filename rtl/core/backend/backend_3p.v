@@ -39,6 +39,7 @@ module openrv64_backend_3p #(
     parameter integer RENAME_MODE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
     parameter integer ENABLE_ZICCLSM = 1,
+    parameter integer LOAD_QUEUE_DEPTH = 4,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer ENABLE_COHERENT_ATOMICS = 0,
     parameter integer BANKED_GPR = 0,
@@ -5852,6 +5853,7 @@ module openrv64_backend_3p #(
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
         .ENABLE_COMMITTED_STORE_QUEUE_3P(ENABLE_POSTED_STORES),
         .ENABLE_ZICCLSM_3P(ENABLE_ZICCLSM),
+        .LOAD_QUEUE_DEPTH_3P(LOAD_QUEUE_DEPTH),
         .STORE_QUEUE_DEPTH_3P(STORE_QUEUE_DEPTH),
         .ENABLE_COHERENT_ATOMICS_3P(ENABLE_COHERENT_ATOMICS),
         .ENABLE_MEMORY_DISAMBIGUATION_3P(
@@ -6782,8 +6784,9 @@ module openrv64_backend_3p #(
             $fatal(1, "identity banked 3P requires p0-p31 tags");
         if ((BANKED_GPR != 0) &&
             (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) &&
-            ((PHYS_REG_COUNT != 63) || (PHYS_REG_ADDR_WIDTH != 6)))
-            $fatal(1, "renamed banked 3P requires p0-p63 tags");
+            (PHYS_REG_COUNT < 63))
+            $fatal(1,
+                   "renamed banked 3P requires at least p0-p63 tags");
         if ((RENAME_MODE != `OPENRV64_RENAME_IDENTITY) &&
             (RENAME_MODE != `OPENRV64_RENAME_TOMASULO))
             $fatal(1, "unsupported integer rename mode");

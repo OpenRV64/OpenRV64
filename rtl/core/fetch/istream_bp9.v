@@ -56,6 +56,7 @@ module openrv64_fetch_istream_bp9 #(
     input  wire                         tage_lookup_accept_i,
     output wire [`RV64_XLEN-1:0]        tage_lookup_pc_o,
     output wire                         tage_lookup_backward_o,
+    output wire                         tage_lookup_taken_o,
     output wire [31:0]                  tage_lookup_token_o,
     input  wire                         tage_response_valid_i,
     input  wire [`RV64_XLEN-1:0]        tage_response_pc_i,
@@ -81,6 +82,7 @@ module openrv64_fetch_istream_bp9 #(
         candidate_control_end_pc_q [0:CANDIDATE_DEPTH-1];
     reg [`RV64_XLEN-1:0]
         candidate_target_pc_q [0:CANDIDATE_DEPTH-1];
+    reg candidate_taken_q [0:CANDIDATE_DEPTH-1];
     reg [31:0] candidate_prediction_token_q [0:CANDIDATE_DEPTH-1];
     reg [CANDIDATE_INDEX_WIDTH-1:0] candidate_head_q;
     reg [CANDIDATE_INDEX_WIDTH-1:0] candidate_tail_q;
@@ -130,6 +132,7 @@ module openrv64_fetch_istream_bp9 #(
     assign tage_lookup_backward_o =
         candidate_target_pc_q[candidate_head_q] <
         candidate_control_pc_q[candidate_head_q];
+    assign tage_lookup_taken_o = candidate_taken_q[candidate_head_q];
     assign tage_lookup_token_o =
         candidate_prediction_token_q[candidate_head_q];
 
@@ -189,6 +192,7 @@ module openrv64_fetch_istream_bp9 #(
                     btb_control_end_pc_i;
                 candidate_target_pc_q[candidate_tail_q] <=
                     btb_target_pc_i;
+                candidate_taken_q[candidate_tail_q] <= btb_taken_i;
                 candidate_prediction_token_q[candidate_tail_q] <=
                     btb_prediction_token_i;
                 candidate_tail_q <= candidate_tail_q + 1'b1;

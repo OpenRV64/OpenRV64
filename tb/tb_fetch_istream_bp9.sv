@@ -28,6 +28,7 @@ module tb_fetch_istream_bp9;
     logic tage_lookup_accept;
     wire [63:0] tage_lookup_pc;
     wire tage_lookup_backward;
+    wire tage_lookup_taken;
     wire [31:0] tage_lookup_token;
     logic tage_response_valid;
     logic [63:0] tage_response_pc;
@@ -71,6 +72,7 @@ module tb_fetch_istream_bp9;
         .tage_lookup_accept_i(tage_lookup_accept),
         .tage_lookup_pc_o(tage_lookup_pc),
         .tage_lookup_backward_o(tage_lookup_backward),
+        .tage_lookup_taken_o(tage_lookup_taken),
         .tage_lookup_token_o(tage_lookup_token),
         .tage_response_valid_i(tage_response_valid),
         .tage_response_pc_i(tage_response_pc),
@@ -248,7 +250,8 @@ module tb_fetch_istream_bp9;
             $fatal(1, "backward candidate did not pass into pipeline");
         tick();
         clear_btb();
-        if (!tage_lookup_valid || !tage_lookup_backward)
+        if (!tage_lookup_valid || !tage_lookup_backward ||
+            !tage_lookup_taken)
             $fatal(1, "registered backward candidate did not launch");
         tick();
         tage_lookup_accept = 1'b0;

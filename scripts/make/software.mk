@@ -450,6 +450,7 @@ sim-core-3p-icx-l2: $(CORE_3P_ICX_L2_VERILATOR_BUILD) \
 		+memh_words=$(CORE_3P_ICX_L2_MEMH_WORDS) \
 		+max_cycles=$(CORE_3P_ICX_L2_MAX_CYCLES) \
 		$(if $(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE),+pipeline_state_trace=$(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE) +pipeline_state_trace_start=$(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_START) +pipeline_state_trace_cycles=$(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_CYCLES) +pipeline_state_trace_flush=$(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_FLUSH)) \
+		$(if $(CORE_3P_ICX_L2_FRONTEND_TRACE),+frontend_trace=$(CORE_3P_ICX_L2_FRONTEND_TRACE) +frontend_trace_start=$(CORE_3P_ICX_L2_FRONTEND_TRACE_START) +frontend_trace_cycles=$(CORE_3P_ICX_L2_FRONTEND_TRACE_CYCLES) +frontend_trace_flush=$(CORE_3P_ICX_L2_FRONTEND_TRACE_FLUSH)) \
 		$(if $(CORE_3P_ICX_L2_STORE_WAVE_PATH),+store_wave=$(CORE_3P_ICX_L2_STORE_WAVE_PATH) +store_wave_start=$(CORE_3P_ICX_L2_STORE_WAVE_START) +store_wave_cycles=$(CORE_3P_ICX_L2_STORE_WAVE_CYCLES)) \
 		$(CORE_3P_ICX_L2_ARGS)
 
@@ -475,6 +476,21 @@ check-core-3p-pipeline-state-trace: \
 	python3 tools/pipeline_state_trace.py \
 		$(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_BZIP2) \
 		--output $(CORE_3P_ICX_L2_PIPELINE_STATE_TRACE_REPORT)
+
+compress-core-3p-frontend-trace:
+	test -n "$(CORE_3P_ICX_L2_FRONTEND_TRACE)"
+	test -n "$(CORE_3P_ICX_L2_FRONTEND_TRACE_BZIP2)"
+	if test -f "$(CORE_3P_ICX_L2_FRONTEND_TRACE)"; then \
+		pbzip2 -9 -f "$(CORE_3P_ICX_L2_FRONTEND_TRACE)"; \
+	fi
+	test -f "$(CORE_3P_ICX_L2_FRONTEND_TRACE_BZIP2)"
+	pbzip2 -t "$(CORE_3P_ICX_L2_FRONTEND_TRACE_BZIP2)"
+
+check-core-3p-frontend-trace: compress-core-3p-frontend-trace
+	test -n "$(CORE_3P_ICX_L2_FRONTEND_TRACE_REPORT)"
+	python3 tools/frontend_trace.py \
+		$(CORE_3P_ICX_L2_FRONTEND_TRACE_BZIP2) \
+		--output $(CORE_3P_ICX_L2_FRONTEND_TRACE_REPORT)
 
 sim-core-3p-icx-l2-vm: $(CORE_3P_VM_MEMH)
 	test -n "$(CORE_3P_VM_DONE_PC)"

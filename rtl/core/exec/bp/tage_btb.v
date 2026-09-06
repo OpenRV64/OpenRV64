@@ -118,6 +118,13 @@ module openrv64_exec_bp_tage_btb #(
     input  wire                         lookup_path_override_taken_i,
     input  wire                         lookup_path_override_target_valid_i,
     input  wire [`RV64_XLEN-1:0]        lookup_path_override_target_i,
+    input  wire                         early_lookup_valid_i,
+    input  wire                         early_lookup_cancel_i,
+    input  wire                         early_history_repair_i,
+    input  wire                         early_lookup_backward_i,
+    input  wire                         early_lookup_taken_i,
+    input  wire [`RV64_XLEN-1:0]        early_lookup_pc_i,
+    input  wire [31:0]                  early_lookup_context_token_i,
     input  wire                         ras_prediction_valid_i,
     input  wire [`RV64_XLEN-1:0]        ras_prediction_target_i,
 
@@ -142,6 +149,11 @@ module openrv64_exec_bp_tage_btb #(
     output wire [`RV64_XLEN-1:0]        direction_response_pc_o,
     output wire                         direction_response_taken_o,
     output wire                         direction_response_weak_o,
+    output wire                         early_lookup_accept_o,
+    output wire                         early_direction_response_valid_o,
+    output wire [`RV64_XLEN-1:0]        early_direction_response_pc_o,
+    output wire                         early_direction_response_taken_o,
+    output wire                         early_direction_response_weak_o,
     output wire                         lookup_context_hit_o,
     output wire                         target_mispredict_o,
     output wire                         allocation_stall_o,
@@ -166,7 +178,13 @@ module openrv64_exec_bp_tage_btb #(
     output wire                         diag_train_valid_o,
     output wire                         diag_train_mispredict_o,
     output wire [2:0]                   diag_train_allocation_o,
-    output wire                         diag_train_allocation_failed_o
+    output wire                         diag_train_allocation_failed_o,
+    output wire                         diag_decode_direction_read_o,
+    output wire                         diag_early_direction_read_o,
+    output wire                         diag_dual_direction_read_o,
+    output wire                         diag_coalesced_direction_read_o,
+    output wire                         diag_early_direction_blocked_o,
+    output wire                         diag_early_context_write_o
 );
     localparam [2:0] PROVIDER_BASE = 3'd0;
     localparam [2:0] PROVIDER_T0 = 3'd1;
@@ -493,6 +511,51 @@ module openrv64_exec_bp_tage_btb #(
     wire [TAG3_BITS-1:0] launch_table3_tag =
         launch_pc_tag[TAG3_BITS-1:0] ^ fold_tag3(speculative_history_q);
 
+    // The stream frontend has its own read pipeline and speculative direction
+    // history.  It follows the RLE-selected path, so each accepted request
+    // advances with the preliminary direction that generated the successor.
+    // A context restart discards this advisory history.  A future-FTQ
+    // direction correction instead restores the response's pre-branch
+    // history and appends the corrected result.
+    reg [HISTORY_BITS-1:0] early_history_q;
+    reg early_history_valid_q;
+    wire [HISTORY_BITS-1:0] early_launch_history =
+        early_history_valid_q ? early_history_q : speculative_history_q;
+
+    // The frontend request is intended to create the context later consumed
+    // by decode.  It therefore shares the payload RAM read pipeline rather
+    // than replicating every table.  A token-matched simultaneous request is
+    // coalesced, and unrelated early work remains queued behind decode.
+    wire [BASE_INDEX_WIDTH-1:0] early_launch_base_index =
+        early_lookup_pc_i[BASE_INDEX_WIDTH+1:2];
+    wire [TABLE_INDEX_WIDTH-1:0] early_launch_pc_index =
+        early_lookup_pc_i[TABLE_INDEX_WIDTH+1:2] ^
+        early_lookup_pc_i[2*TABLE_INDEX_WIDTH+1:TABLE_INDEX_WIDTH+2];
+    wire [TABLE_INDEX_WIDTH-1:0] early_launch_table0_index =
+        early_launch_pc_index ^ fold_index0(early_launch_history);
+    wire [TABLE_INDEX_WIDTH-1:0] early_launch_table1_index =
+        early_launch_pc_index ^ fold_index1(early_launch_history);
+    wire [TABLE_INDEX_WIDTH-1:0] early_launch_table2_index =
+        early_launch_pc_index ^ fold_index2(early_launch_history);
+    wire [TABLE_INDEX_WIDTH-1:0] early_launch_table3_index =
+        early_launch_pc_index ^ fold_index3(early_launch_history);
+    wire [MAX_TAG_BITS-1:0] early_launch_pc_tag =
+        early_lookup_pc_i[MAX_TAG_BITS+1:2] ^
+        early_lookup_pc_i[MAX_TAG_BITS+TABLE_INDEX_WIDTH+1:
+                          TABLE_INDEX_WIDTH+2];
+    wire [TAG0_BITS-1:0] early_launch_table0_tag =
+        early_launch_pc_tag[TAG0_BITS-1:0] ^
+        fold_tag0(early_launch_history);
+    wire [TAG1_BITS-1:0] early_launch_table1_tag =
+        early_launch_pc_tag[TAG1_BITS-1:0] ^
+        fold_tag1(early_launch_history);
+    wire [TAG2_BITS-1:0] early_launch_table2_tag =
+        early_launch_pc_tag[TAG2_BITS-1:0] ^
+        fold_tag2(early_launch_history);
+    wire [TAG3_BITS-1:0] early_launch_table3_tag =
+        early_launch_pc_tag[TAG3_BITS-1:0] ^
+        fold_tag3(early_launch_history);
+
     reg lookup_response_valid_q;
     reg lookup_response_observational_q;
     reg [`RV64_XLEN-1:0] lookup_response_pc_q;
@@ -518,6 +581,30 @@ module openrv64_exec_bp_tage_btb #(
     reg [USEFUL_BITS-1:0] lookup_table2_useful_q;
     reg [USEFUL_BITS-1:0] lookup_table3_useful_q;
     reg [31:0] lookup_response_context_token_q;
+
+    reg early_response_valid_q;
+    reg [`RV64_XLEN-1:0] early_response_pc_q;
+    reg early_response_backward_q;
+    reg [HISTORY_BITS-1:0] early_response_history_q;
+    reg [31:0] early_response_context_token_q;
+    reg [BASE_INDEX_WIDTH-1:0] early_base_index_q;
+    reg [TABLE_INDEX_WIDTH-1:0] early_table0_index_q;
+    reg [TABLE_INDEX_WIDTH-1:0] early_table1_index_q;
+    reg [TABLE_INDEX_WIDTH-1:0] early_table2_index_q;
+    reg [TABLE_INDEX_WIDTH-1:0] early_table3_index_q;
+    reg [TAG0_BITS-1:0] early_table0_tag_q;
+    reg [TAG1_BITS-1:0] early_table1_tag_q;
+    reg [TAG2_BITS-1:0] early_table2_tag_q;
+    reg [TAG3_BITS-1:0] early_table3_tag_q;
+    reg early_base_valid_q;
+    reg early_table0_valid_q;
+    reg early_table1_valid_q;
+    reg early_table2_valid_q;
+    reg early_table3_valid_q;
+    reg [USEFUL_BITS-1:0] early_table0_useful_q;
+    reg [USEFUL_BITS-1:0] early_table1_useful_q;
+    reg [USEFUL_BITS-1:0] early_table2_useful_q;
+    reg [USEFUL_BITS-1:0] early_table3_useful_q;
 
     // Direct-mapped cache of completed observational reads.  The stream token
     // is monotonically allocated, so its low bits select a slot while the full
@@ -594,6 +681,9 @@ module openrv64_exec_bp_tage_btb #(
     wire [PREPARED_CONTEXT_INDEX_WIDTH-1:0] prepared_response_index =
         lookup_response_context_token_q[
             PREPARED_CONTEXT_INDEX_WIDTH-1:0];
+    wire [PREPARED_CONTEXT_INDEX_WIDTH-1:0] early_response_index =
+        early_response_context_token_q[
+            PREPARED_CONTEXT_INDEX_WIDTH-1:0];
     wire prepared_context_match = (ENABLE_PREPARED_CONTEXT != 0) &&
         lookup_context_valid_i && lookup_valid_i && lookup_branch_i &&
         prepared_valid_q[lookup_context_index] &&
@@ -601,14 +691,57 @@ module openrv64_exec_bp_tage_btb #(
          lookup_context_token_i) &&
         (prepared_pc_q[lookup_context_index] == lookup_pc_i);
     wire lookup_response_match = lookup_response_valid_q &&
-        !lookup_response_observational_q &&
         lookup_valid_i && lookup_branch_i &&
-        (lookup_response_pc_q == lookup_pc_i);
+        (lookup_response_pc_q == lookup_pc_i) &&
+        (!lookup_response_observational_q ||
+         (lookup_context_valid_i &&
+          (lookup_response_context_token_q == lookup_context_token_i)));
     wire lookup_direction_match = prepared_context_match ||
                                   lookup_response_match;
-    wire lookup_read_fire = lookup_valid_i && lookup_branch_i &&
+    wire lookup_read_request = lookup_valid_i && lookup_branch_i &&
         !prepared_context_match &&
         !(lookup_allocate_i && lookup_response_match);
+    wire early_lookup_request = (ENABLE_PREPARED_CONTEXT != 0) &&
+                                early_lookup_valid_i &&
+                                !early_lookup_cancel_i &&
+                                !flush_i && !squash_i && !recovery_i;
+    wire coalesced_lookup_fire = lookup_read_request &&
+        early_lookup_request && lookup_context_valid_i &&
+        (lookup_pc_i == early_lookup_pc_i) &&
+        (lookup_context_token_i == early_lookup_context_token_i);
+    wire lookup_read_fire = lookup_read_request;
+    wire early_lookup_fire = early_lookup_request &&
+                             (!lookup_read_request ||
+                              coalesced_lookup_fire);
+    wire shared_read_fire = lookup_read_fire || early_lookup_fire;
+    wire shared_read_uses_early = early_lookup_fire;
+    wire [BASE_INDEX_WIDTH-1:0] shared_base_index =
+        shared_read_uses_early ? early_launch_base_index :
+                                 launch_base_index;
+    wire [TABLE_INDEX_WIDTH-1:0] shared_table0_index =
+        shared_read_uses_early ? early_launch_table0_index :
+                                 launch_table0_index;
+    wire [TABLE_INDEX_WIDTH-1:0] shared_table1_index =
+        shared_read_uses_early ? early_launch_table1_index :
+                                 launch_table1_index;
+    wire [TABLE_INDEX_WIDTH-1:0] shared_table2_index =
+        shared_read_uses_early ? early_launch_table2_index :
+                                 launch_table2_index;
+    wire [TABLE_INDEX_WIDTH-1:0] shared_table3_index =
+        shared_read_uses_early ? early_launch_table3_index :
+                                 launch_table3_index;
+    wire [TAG0_BITS-1:0] shared_table0_tag =
+        shared_read_uses_early ? early_launch_table0_tag :
+                                 launch_table0_tag;
+    wire [TAG1_BITS-1:0] shared_table1_tag =
+        shared_read_uses_early ? early_launch_table1_tag :
+                                 launch_table1_tag;
+    wire [TAG2_BITS-1:0] shared_table2_tag =
+        shared_read_uses_early ? early_launch_table2_tag :
+                                 launch_table2_tag;
+    wire [TAG3_BITS-1:0] shared_table3_tag =
+        shared_read_uses_early ? early_launch_table3_tag :
+                                 launch_table3_tag;
     reg base_write_enable;
     reg [BASE_INDEX_WIDTH-1:0] base_write_index;
     reg [BASE_COUNTER_BITS-1:0] base_write_data;
@@ -642,44 +775,49 @@ module openrv64_exec_bp_tage_btb #(
     wire [TABLE1_WIDTH-1:0] table1_read_data;
     wire [TABLE2_WIDTH-1:0] table2_read_data;
     wire [TABLE3_WIDTH-1:0] table3_read_data;
+    wire [BASE_COUNTER_BITS-1:0] early_base_read_data = base_read_data;
+    wire [TABLE0_WIDTH-1:0] early_table0_read_data = table0_read_data;
+    wire [TABLE1_WIDTH-1:0] early_table1_read_data = table1_read_data;
+    wire [TABLE2_WIDTH-1:0] early_table2_read_data = table2_read_data;
+    wire [TABLE3_WIDTH-1:0] early_table3_read_data = table3_read_data;
 
     openrv64_exec_bp_tage_ram #(
         .WIDTH(BASE_COUNTER_BITS), .ENTRIES(BASE_ENTRIES)
     ) u_base (
-        .clk(clk), .read_enable_i(lookup_read_fire),
-        .read_index_i(launch_base_index), .read_data_o(base_read_data),
+        .clk(clk), .read_enable_i(shared_read_fire),
+        .read_index_i(shared_base_index), .read_data_o(base_read_data),
         .write_enable_i(base_write_enable),
         .write_index_i(base_write_index), .write_data_i(base_write_data)
     );
     openrv64_exec_bp_tage_ram #(
         .WIDTH(TABLE0_WIDTH), .ENTRIES(TABLE_ENTRIES)
     ) u_table0 (
-        .clk(clk), .read_enable_i(lookup_read_fire),
-        .read_index_i(launch_table0_index), .read_data_o(table0_read_data),
+        .clk(clk), .read_enable_i(shared_read_fire),
+        .read_index_i(shared_table0_index), .read_data_o(table0_read_data),
         .write_enable_i(table0_write_enable),
         .write_index_i(table0_write_index), .write_data_i(table0_write_data)
     );
     openrv64_exec_bp_tage_ram #(
         .WIDTH(TABLE1_WIDTH), .ENTRIES(TABLE_ENTRIES)
     ) u_table1 (
-        .clk(clk), .read_enable_i(lookup_read_fire),
-        .read_index_i(launch_table1_index), .read_data_o(table1_read_data),
+        .clk(clk), .read_enable_i(shared_read_fire),
+        .read_index_i(shared_table1_index), .read_data_o(table1_read_data),
         .write_enable_i(table1_write_enable),
         .write_index_i(table1_write_index), .write_data_i(table1_write_data)
     );
     openrv64_exec_bp_tage_ram #(
         .WIDTH(TABLE2_WIDTH), .ENTRIES(TABLE_ENTRIES)
     ) u_table2 (
-        .clk(clk), .read_enable_i(lookup_read_fire),
-        .read_index_i(launch_table2_index), .read_data_o(table2_read_data),
+        .clk(clk), .read_enable_i(shared_read_fire),
+        .read_index_i(shared_table2_index), .read_data_o(table2_read_data),
         .write_enable_i(table2_write_enable),
         .write_index_i(table2_write_index), .write_data_i(table2_write_data)
     );
     openrv64_exec_bp_tage_ram #(
         .WIDTH(TABLE3_WIDTH), .ENTRIES(TABLE_ENTRIES)
     ) u_table3 (
-        .clk(clk), .read_enable_i(lookup_read_fire),
-        .read_index_i(launch_table3_index), .read_data_o(table3_read_data),
+        .clk(clk), .read_enable_i(shared_read_fire),
+        .read_index_i(shared_table3_index), .read_data_o(table3_read_data),
         .write_enable_i(table3_write_enable),
         .write_index_i(table3_write_index), .write_data_i(table3_write_data)
     );
@@ -818,6 +956,141 @@ module openrv64_exec_bp_tage_btb #(
         ((lookup_provider == PROVIDER_BASE) ? lookup_base_weak :
          (lookup_provider_weak || (lookup_provider_useful == 0) ||
           (lookup_provider_prediction != lookup_alternate_prediction)));
+
+    wire [BASE_COUNTER_BITS-1:0] early_base_data =
+        (base_write_enable &&
+         (base_write_index == early_base_index_q)) ?
+        base_write_data : early_base_read_data;
+    wire [TABLE0_WIDTH-1:0] early_table0_word =
+        (table0_write_enable &&
+         (table0_write_index == early_table0_index_q)) ?
+        table0_write_data : early_table0_read_data;
+    wire [TABLE1_WIDTH-1:0] early_table1_word =
+        (table1_write_enable &&
+         (table1_write_index == early_table1_index_q)) ?
+        table1_write_data : early_table1_read_data;
+    wire [TABLE2_WIDTH-1:0] early_table2_word =
+        (table2_write_enable &&
+         (table2_write_index == early_table2_index_q)) ?
+        table2_write_data : early_table2_read_data;
+    wire [TABLE3_WIDTH-1:0] early_table3_word =
+        (table3_write_enable &&
+         (table3_write_index == early_table3_index_q)) ?
+        table3_write_data : early_table3_read_data;
+    wire [USEFUL_BITS-1:0] early_table0_useful =
+        (table0_useful_write_enable &&
+         (table0_useful_write_index == early_table0_index_q)) ?
+        table0_useful_write_data : early_table0_useful_q;
+    wire [USEFUL_BITS-1:0] early_table1_useful =
+        (table1_useful_write_enable &&
+         (table1_useful_write_index == early_table1_index_q)) ?
+        table1_useful_write_data : early_table1_useful_q;
+    wire [USEFUL_BITS-1:0] early_table2_useful =
+        (table2_useful_write_enable &&
+         (table2_useful_write_index == early_table2_index_q)) ?
+        table2_useful_write_data : early_table2_useful_q;
+    wire [USEFUL_BITS-1:0] early_table3_useful =
+        (table3_useful_write_enable &&
+         (table3_useful_write_index == early_table3_index_q)) ?
+        table3_useful_write_data : early_table3_useful_q;
+    wire [BASE_COUNTER_BITS-1:0] early_base_counter =
+        early_base_valid_q ? early_base_data :
+        (early_response_backward_q ? BASE_WEAK_TAKEN :
+                                     BASE_WEAK_NOT_TAKEN);
+    wire early_base_prediction =
+        early_base_counter[BASE_COUNTER_BITS-1];
+    wire early_base_weak = !early_base_valid_q ||
+        (early_base_counter == BASE_WEAK_TAKEN) ||
+        (early_base_counter == BASE_WEAK_NOT_TAKEN);
+    wire [TABLE_COUNTER_BITS-1:0] early_table0_counter =
+        early_table0_word[TABLE_COUNTER_BITS-1:0];
+    wire [TABLE_COUNTER_BITS-1:0] early_table1_counter =
+        early_table1_word[TABLE_COUNTER_BITS-1:0];
+    wire [TABLE_COUNTER_BITS-1:0] early_table2_counter =
+        early_table2_word[TABLE_COUNTER_BITS-1:0];
+    wire [TABLE_COUNTER_BITS-1:0] early_table3_counter =
+        early_table3_word[TABLE_COUNTER_BITS-1:0];
+    wire early_table0_match = early_table0_valid_q &&
+        (early_table0_word[TABLE_COUNTER_BITS +: TAG0_BITS] ==
+         early_table0_tag_q);
+    wire early_table1_match = early_table1_valid_q &&
+        (early_table1_word[TABLE_COUNTER_BITS +: TAG1_BITS] ==
+         early_table1_tag_q);
+    wire early_table2_match = early_table2_valid_q &&
+        (early_table2_word[TABLE_COUNTER_BITS +: TAG2_BITS] ==
+         early_table2_tag_q);
+    wire early_table3_match = early_table3_valid_q &&
+        (early_table3_word[TABLE_COUNTER_BITS +: TAG3_BITS] ==
+         early_table3_tag_q);
+
+    reg [2:0] early_provider;
+    reg [2:0] early_alternate;
+    reg early_provider_prediction;
+    reg early_alternate_prediction;
+    reg early_provider_weak;
+    reg [USEFUL_BITS-1:0] early_provider_useful;
+    always @* begin
+        early_provider = PROVIDER_BASE;
+        early_alternate = PROVIDER_BASE;
+        early_provider_prediction = early_base_prediction;
+        early_alternate_prediction = early_base_prediction;
+        early_provider_weak = early_base_weak;
+        early_provider_useful = {USEFUL_BITS{1'b1}};
+        if (early_table0_match) begin
+            early_alternate = early_provider;
+            early_alternate_prediction = early_provider_prediction;
+            early_provider = PROVIDER_T0;
+            early_provider_prediction =
+                early_table0_counter[TABLE_COUNTER_BITS-1];
+            early_provider_weak =
+                (early_table0_counter == TABLE_WEAK_TAKEN) ||
+                (early_table0_counter == TABLE_WEAK_NOT_TAKEN);
+            early_provider_useful = early_table0_useful;
+        end
+        if (early_table1_match) begin
+            early_alternate = early_provider;
+            early_alternate_prediction = early_provider_prediction;
+            early_provider = PROVIDER_T1;
+            early_provider_prediction =
+                early_table1_counter[TABLE_COUNTER_BITS-1];
+            early_provider_weak =
+                (early_table1_counter == TABLE_WEAK_TAKEN) ||
+                (early_table1_counter == TABLE_WEAK_NOT_TAKEN);
+            early_provider_useful = early_table1_useful;
+        end
+        if (early_table2_match) begin
+            early_alternate = early_provider;
+            early_alternate_prediction = early_provider_prediction;
+            early_provider = PROVIDER_T2;
+            early_provider_prediction =
+                early_table2_counter[TABLE_COUNTER_BITS-1];
+            early_provider_weak =
+                (early_table2_counter == TABLE_WEAK_TAKEN) ||
+                (early_table2_counter == TABLE_WEAK_NOT_TAKEN);
+            early_provider_useful = early_table2_useful;
+        end
+        if (early_table3_match) begin
+            early_alternate = early_provider;
+            early_alternate_prediction = early_provider_prediction;
+            early_provider = PROVIDER_T3;
+            early_provider_prediction =
+                early_table3_counter[TABLE_COUNTER_BITS-1];
+            early_provider_weak =
+                (early_table3_counter == TABLE_WEAK_TAKEN) ||
+                (early_table3_counter == TABLE_WEAK_NOT_TAKEN);
+            early_provider_useful = early_table3_useful;
+        end
+    end
+
+    wire early_use_alt = (early_provider != PROVIDER_BASE) &&
+        early_provider_weak && (early_provider_useful == 0) &&
+        use_alt_q[USE_ALT_COUNTER_BITS-1];
+    wire early_prediction_response = early_use_alt ?
+        early_alternate_prediction : early_provider_prediction;
+    wire early_prediction_response_weak =
+        ((early_provider == PROVIDER_BASE) ? early_base_weak :
+         (early_provider_weak || (early_provider_useful == 0) ||
+          (early_provider_prediction != early_alternate_prediction)));
     wire conditional_prediction = prepared_context_match ?
         prepared_prediction_q[lookup_context_index] :
         lookup_response_match ? conditional_prediction_response :
@@ -976,6 +1249,10 @@ module openrv64_exec_bp_tage_btb #(
         (!lookup_branch_i || lookup_direction_match) &&
         (!lookup_indirect_i || lookup_return ||
          lookup_btb_response_match);
+    wire early_response_consumed = accepted_lookup &&
+        lookup_context_valid_i && lookup_branch_i &&
+        (early_response_pc_q == lookup_pc_i) &&
+        (early_response_context_token_q == lookup_context_token_i);
     wire accepted_prediction_taken = lookup_path_override_valid_i ?
         lookup_path_override_taken_i : prediction_taken_o;
     wire accepted_target_valid =
@@ -1422,7 +1699,14 @@ module openrv64_exec_bp_tage_btb #(
     assign direction_response_taken_o = conditional_prediction_response;
     assign direction_response_weak_o =
         conditional_prediction_response_weak;
-    assign lookup_context_hit_o = prepared_context_match;
+    assign early_lookup_accept_o = early_lookup_fire;
+    assign early_direction_response_valid_o = early_response_valid_q;
+    assign early_direction_response_pc_o = early_response_pc_q;
+    assign early_direction_response_taken_o = early_prediction_response;
+    assign early_direction_response_weak_o =
+        early_prediction_response_weak;
+    assign lookup_context_hit_o = prepared_context_match ||
+        (lookup_response_match && lookup_response_observational_q);
     assign target_mispredict_o = resolve_has_record &&
         inflight_target_valid_q[resolve_index] && resolve_taken_i &&
         (resolve_target_i != inflight_target_q[resolve_index]);
@@ -1443,6 +1727,15 @@ module openrv64_exec_bp_tage_btb #(
     assign diag_train_mispredict_o = train_mispredict;
     assign diag_train_allocation_o = train_allocation;
     assign diag_train_allocation_failed_o = train_allocation_failed;
+    assign diag_decode_direction_read_o = lookup_read_fire;
+    assign diag_early_direction_read_o = early_lookup_fire;
+    assign diag_dual_direction_read_o = lookup_read_request &&
+                                        early_lookup_request;
+    assign diag_coalesced_direction_read_o = coalesced_lookup_fire;
+    assign diag_early_direction_blocked_o = early_lookup_request &&
+        lookup_read_request && !coalesced_lookup_fire;
+    assign diag_early_context_write_o = early_response_valid_q &&
+        !flush_i && !squash_i && !recovery_i && !early_lookup_cancel_i;
 
     wire [USE_ALT_COUNTER_BITS-1:0] use_alt_max =
         {USE_ALT_COUNTER_BITS{1'b1}};
@@ -1459,6 +1752,8 @@ module openrv64_exec_bp_tage_btb #(
             btb_valid_q <= 0;
             speculative_history_q <= 0;
             committed_history_q <= 0;
+            early_history_q <= 0;
+            early_history_valid_q <= 1'b0;
             use_alt_q <= 0;
             inflight_head_q <= 0;
             inflight_tail_q <= 0;
@@ -1493,6 +1788,29 @@ module openrv64_exec_bp_tage_btb #(
             lookup_table2_useful_q <= 0;
             lookup_table3_useful_q <= 0;
             lookup_response_context_token_q <= 32'd0;
+            early_response_valid_q <= 1'b0;
+            early_response_pc_q <= 0;
+            early_response_backward_q <= 1'b0;
+            early_response_history_q <= 0;
+            early_response_context_token_q <= 32'd0;
+            early_base_index_q <= 0;
+            early_table0_index_q <= 0;
+            early_table1_index_q <= 0;
+            early_table2_index_q <= 0;
+            early_table3_index_q <= 0;
+            early_table0_tag_q <= 0;
+            early_table1_tag_q <= 0;
+            early_table2_tag_q <= 0;
+            early_table3_tag_q <= 0;
+            early_base_valid_q <= 1'b0;
+            early_table0_valid_q <= 1'b0;
+            early_table1_valid_q <= 1'b0;
+            early_table2_valid_q <= 1'b0;
+            early_table3_valid_q <= 1'b0;
+            early_table0_useful_q <= 0;
+            early_table1_useful_q <= 0;
+            early_table2_useful_q <= 0;
+            early_table3_useful_q <= 0;
             lookup_btb_response_valid_q <= 1'b0;
             lookup_btb_response_pc_q <= 0;
             lookup_btb_response_id_q <= 0;
@@ -1590,11 +1908,30 @@ module openrv64_exec_bp_tage_btb #(
                   !lookup_btb_response_match)))
                 update_overflow_q <= 1'b1;
 
-            if (flush_i || squash_i || !lookup_valid_i ||
-                (accepted_lookup && lookup_branch_i))
+            if (flush_i || squash_i || recovery_i)
                 lookup_response_valid_q <= 1'b0;
-            else if (lookup_read_fire)
+            else if (shared_read_fire)
                 lookup_response_valid_q <= 1'b1;
+            else if (!lookup_valid_i ||
+                     (accepted_lookup && lookup_branch_i))
+                lookup_response_valid_q <= 1'b0;
+
+            if (flush_i || squash_i || recovery_i ||
+                early_lookup_cancel_i) begin
+                early_response_valid_q <= 1'b0;
+                early_history_valid_q <= 1'b0;
+            end else if (early_history_repair_i) begin
+                // The response being accepted by the FTQ names the exact
+                // history before the corrected branch.  Roll back younger
+                // preliminary directions and append the TAGE result rather
+                // than reseeding from much older backend history.
+                early_response_valid_q <= 1'b0;
+                early_history_q <= {
+                    early_response_history_q[HISTORY_BITS-2:0],
+                    early_prediction_response};
+                early_history_valid_q <= 1'b1;
+            end else
+                early_response_valid_q <= early_lookup_fire;
 
             if (flush_i || squash_i || !lookup_valid_i ||
                 (accepted_lookup && lookup_indirect_i && !lookup_return))
@@ -1612,59 +1949,121 @@ module openrv64_exec_bp_tage_btb #(
                     btb_valid_q[lookup_btb_index];
             end
 
-            if (lookup_read_fire) begin
+            if (shared_read_fire) begin
                 lookup_response_observational_q <=
+                    shared_read_uses_early && !lookup_read_fire ? 1'b1 :
                     lookup_observational_i;
                 lookup_response_context_token_q <=
-                    lookup_context_token_i;
-                lookup_response_pc_q <= lookup_pc_i;
+                    shared_read_uses_early ?
+                        early_lookup_context_token_i :
+                        lookup_context_token_i;
+                lookup_response_pc_q <= shared_read_uses_early ?
+                    early_lookup_pc_i : lookup_pc_i;
                 lookup_response_id_q <= lookup_id_i;
-                lookup_response_backward_q <= lookup_backward_i;
-                lookup_response_history_q <= speculative_history_q;
-                lookup_base_index_q <= launch_base_index;
-                lookup_table0_index_q <= launch_table0_index;
-                lookup_table1_index_q <= launch_table1_index;
-                lookup_table2_index_q <= launch_table2_index;
-                lookup_table3_index_q <= launch_table3_index;
-                lookup_table0_tag_q <= launch_table0_tag;
-                lookup_table1_tag_q <= launch_table1_tag;
-                lookup_table2_tag_q <= launch_table2_tag;
-                lookup_table3_tag_q <= launch_table3_tag;
+                lookup_response_backward_q <= shared_read_uses_early ?
+                    early_lookup_backward_i : lookup_backward_i;
+                lookup_response_history_q <= shared_read_uses_early ?
+                    early_launch_history : speculative_history_q;
+                lookup_base_index_q <= shared_base_index;
+                lookup_table0_index_q <= shared_table0_index;
+                lookup_table1_index_q <= shared_table1_index;
+                lookup_table2_index_q <= shared_table2_index;
+                lookup_table3_index_q <= shared_table3_index;
+                lookup_table0_tag_q <= shared_table0_tag;
+                lookup_table1_tag_q <= shared_table1_tag;
+                lookup_table2_tag_q <= shared_table2_tag;
+                lookup_table3_tag_q <= shared_table3_tag;
                 lookup_base_valid_q <= base_write_enable &&
-                    (base_write_index == launch_base_index) ? 1'b1 :
-                    base_valid_q[launch_base_index];
+                    (base_write_index == shared_base_index) ? 1'b1 :
+                    base_valid_q[shared_base_index];
                 lookup_table0_valid_q <=
                     ((train_allocation == PROVIDER_T0) && train_valid &&
-                     (table0_write_index == launch_table0_index)) ? 1'b1 :
-                    table0_valid_q[launch_table0_index];
+                     (table0_write_index == shared_table0_index)) ? 1'b1 :
+                    table0_valid_q[shared_table0_index];
                 lookup_table1_valid_q <=
                     ((train_allocation == PROVIDER_T1) && train_valid &&
-                     (table1_write_index == launch_table1_index)) ? 1'b1 :
-                    table1_valid_q[launch_table1_index];
+                     (table1_write_index == shared_table1_index)) ? 1'b1 :
+                    table1_valid_q[shared_table1_index];
                 lookup_table2_valid_q <=
                     ((train_allocation == PROVIDER_T2) && train_valid &&
-                     (table2_write_index == launch_table2_index)) ? 1'b1 :
-                    table2_valid_q[launch_table2_index];
+                     (table2_write_index == shared_table2_index)) ? 1'b1 :
+                    table2_valid_q[shared_table2_index];
                 lookup_table3_valid_q <=
                     ((train_allocation == PROVIDER_T3) && train_valid &&
-                     (table3_write_index == launch_table3_index)) ? 1'b1 :
-                    table3_valid_q[launch_table3_index];
+                     (table3_write_index == shared_table3_index)) ? 1'b1 :
+                    table3_valid_q[shared_table3_index];
                 lookup_table0_useful_q <= table0_useful_write_enable &&
-                    (table0_useful_write_index == launch_table0_index) ?
+                    (table0_useful_write_index == shared_table0_index) ?
                     table0_useful_write_data :
-                    table0_useful_q[launch_table0_index];
+                    table0_useful_q[shared_table0_index];
                 lookup_table1_useful_q <= table1_useful_write_enable &&
-                    (table1_useful_write_index == launch_table1_index) ?
+                    (table1_useful_write_index == shared_table1_index) ?
                     table1_useful_write_data :
-                    table1_useful_q[launch_table1_index];
+                    table1_useful_q[shared_table1_index];
                 lookup_table2_useful_q <= table2_useful_write_enable &&
-                    (table2_useful_write_index == launch_table2_index) ?
+                    (table2_useful_write_index == shared_table2_index) ?
                     table2_useful_write_data :
-                    table2_useful_q[launch_table2_index];
+                    table2_useful_q[shared_table2_index];
                 lookup_table3_useful_q <= table3_useful_write_enable &&
-                    (table3_useful_write_index == launch_table3_index) ?
+                    (table3_useful_write_index == shared_table3_index) ?
                     table3_useful_write_data :
-                    table3_useful_q[launch_table3_index];
+                    table3_useful_q[shared_table3_index];
+            end
+
+            if (early_lookup_fire && !early_history_repair_i) begin
+                early_response_context_token_q <=
+                    early_lookup_context_token_i;
+                early_response_pc_q <= early_lookup_pc_i;
+                early_response_backward_q <= early_lookup_backward_i;
+                early_response_history_q <= early_launch_history;
+                early_history_q <= {
+                    early_launch_history[HISTORY_BITS-2:0],
+                    early_lookup_taken_i};
+                early_history_valid_q <= 1'b1;
+                early_base_index_q <= early_launch_base_index;
+                early_table0_index_q <= early_launch_table0_index;
+                early_table1_index_q <= early_launch_table1_index;
+                early_table2_index_q <= early_launch_table2_index;
+                early_table3_index_q <= early_launch_table3_index;
+                early_table0_tag_q <= early_launch_table0_tag;
+                early_table1_tag_q <= early_launch_table1_tag;
+                early_table2_tag_q <= early_launch_table2_tag;
+                early_table3_tag_q <= early_launch_table3_tag;
+                early_base_valid_q <= base_write_enable &&
+                    (base_write_index == early_launch_base_index) ? 1'b1 :
+                    base_valid_q[early_launch_base_index];
+                early_table0_valid_q <=
+                    ((train_allocation == PROVIDER_T0) && train_valid &&
+                     (table0_write_index == early_launch_table0_index)) ?
+                    1'b1 : table0_valid_q[early_launch_table0_index];
+                early_table1_valid_q <=
+                    ((train_allocation == PROVIDER_T1) && train_valid &&
+                     (table1_write_index == early_launch_table1_index)) ?
+                    1'b1 : table1_valid_q[early_launch_table1_index];
+                early_table2_valid_q <=
+                    ((train_allocation == PROVIDER_T2) && train_valid &&
+                     (table2_write_index == early_launch_table2_index)) ?
+                    1'b1 : table2_valid_q[early_launch_table2_index];
+                early_table3_valid_q <=
+                    ((train_allocation == PROVIDER_T3) && train_valid &&
+                     (table3_write_index == early_launch_table3_index)) ?
+                    1'b1 : table3_valid_q[early_launch_table3_index];
+                early_table0_useful_q <= table0_useful_write_enable &&
+                    (table0_useful_write_index == early_launch_table0_index) ?
+                    table0_useful_write_data :
+                    table0_useful_q[early_launch_table0_index];
+                early_table1_useful_q <= table1_useful_write_enable &&
+                    (table1_useful_write_index == early_launch_table1_index) ?
+                    table1_useful_write_data :
+                    table1_useful_q[early_launch_table1_index];
+                early_table2_useful_q <= table2_useful_write_enable &&
+                    (table2_useful_write_index == early_launch_table2_index) ?
+                    table2_useful_write_data :
+                    table2_useful_q[early_launch_table2_index];
+                early_table3_useful_q <= table3_useful_write_enable &&
+                    (table3_useful_write_index == early_launch_table3_index) ?
+                    table3_useful_write_data :
+                    table3_useful_q[early_launch_table3_index];
             end
 
             if (accepted_lookup && prepared_context_match)
@@ -1762,6 +2161,93 @@ module openrv64_exec_bp_tage_btb #(
                     (train_valid &&
                      (train_allocation == PROVIDER_T3) &&
                      (table3_write_index == lookup_table3_index_q));
+            end
+
+            // The independent stream port materializes the same predictor
+            // checkpoint as the legacy observational path, but it can do so
+            // while decode launches or consumes its own lookup.
+            if (early_response_valid_q &&
+                !flush_i && !squash_i && !recovery_i &&
+                !early_lookup_cancel_i && !early_response_consumed) begin
+                prepared_valid_q[early_response_index] <= 1'b1;
+                prepared_token_q[early_response_index] <=
+                    early_response_context_token_q;
+                prepared_pc_q[early_response_index] <=
+                    early_response_pc_q;
+                prepared_prediction_q[early_response_index] <=
+                    early_prediction_response;
+                prepared_weak_q[early_response_index] <=
+                    early_prediction_response_weak;
+                prepared_use_alt_q[early_response_index] <= early_use_alt;
+                prepared_provider_prediction_q[early_response_index] <=
+                    early_provider_prediction;
+                prepared_alternate_prediction_q[early_response_index] <=
+                    early_alternate_prediction;
+                prepared_provider_weak_q[early_response_index] <=
+                    early_provider_weak;
+                prepared_provider_useful_zero_q[early_response_index] <=
+                    early_provider_useful == 0;
+                prepared_provider_q[early_response_index] <= early_provider;
+                prepared_alternate_q[early_response_index] <=
+                    early_alternate;
+                prepared_history_before_q[early_response_index] <=
+                    early_response_history_q;
+                prepared_base_index_q[early_response_index] <=
+                    early_base_index_q;
+                prepared_base_counter_q[early_response_index] <=
+                    early_base_data;
+                prepared_base_valid_q[early_response_index] <=
+                    early_base_valid_q ||
+                    (base_write_enable &&
+                     (base_write_index == early_base_index_q));
+                prepared_table0_index_q[early_response_index] <=
+                    early_table0_index_q;
+                prepared_table1_index_q[early_response_index] <=
+                    early_table1_index_q;
+                prepared_table2_index_q[early_response_index] <=
+                    early_table2_index_q;
+                prepared_table3_index_q[early_response_index] <=
+                    early_table3_index_q;
+                prepared_table0_tag_q[early_response_index] <=
+                    early_table0_tag_q;
+                prepared_table1_tag_q[early_response_index] <=
+                    early_table1_tag_q;
+                prepared_table2_tag_q[early_response_index] <=
+                    early_table2_tag_q;
+                prepared_table3_tag_q[early_response_index] <=
+                    early_table3_tag_q;
+                prepared_table0_word_q[early_response_index] <=
+                    early_table0_word;
+                prepared_table1_word_q[early_response_index] <=
+                    early_table1_word;
+                prepared_table2_word_q[early_response_index] <=
+                    early_table2_word;
+                prepared_table3_word_q[early_response_index] <=
+                    early_table3_word;
+                prepared_table0_useful_q[early_response_index] <=
+                    early_table0_useful;
+                prepared_table1_useful_q[early_response_index] <=
+                    early_table1_useful;
+                prepared_table2_useful_q[early_response_index] <=
+                    early_table2_useful;
+                prepared_table3_useful_q[early_response_index] <=
+                    early_table3_useful;
+                prepared_table0_valid_q[early_response_index] <=
+                    early_table0_valid_q ||
+                    (train_valid && (train_allocation == PROVIDER_T0) &&
+                     (table0_write_index == early_table0_index_q));
+                prepared_table1_valid_q[early_response_index] <=
+                    early_table1_valid_q ||
+                    (train_valid && (train_allocation == PROVIDER_T1) &&
+                     (table1_write_index == early_table1_index_q));
+                prepared_table2_valid_q[early_response_index] <=
+                    early_table2_valid_q ||
+                    (train_valid && (train_allocation == PROVIDER_T2) &&
+                     (table2_write_index == early_table2_index_q));
+                prepared_table3_valid_q[early_response_index] <=
+                    early_table3_valid_q ||
+                    (train_valid && (train_allocation == PROVIDER_T3) &&
+                     (table3_write_index == early_table3_index_q));
             end
 
             if (base_write_enable)
@@ -1913,6 +2399,10 @@ module openrv64_exec_bp_tage_btb #(
                       lookup_response_valid_q &&
                       lookup_response_observational_q &&
                       (prepared_response_index ==
+                       prepared_forward_index[
+                           PREPARED_CONTEXT_INDEX_WIDTH-1:0])) &&
+                    !(early_response_valid_q &&
+                      (early_response_index ==
                        prepared_forward_index[
                            PREPARED_CONTEXT_INDEX_WIDTH-1:0]))) begin
                     if (base_write_enable &&

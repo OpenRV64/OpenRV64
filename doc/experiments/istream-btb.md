@@ -352,6 +352,44 @@ cycles repeatedly traverse hot loops, and one root can generate many hits.
 The 91,695 chained lookups are the direct evidence that work moved from
 per-sector requests to per-control path traversal.
 
+### Early TAGE context and read-port experiment
+
+The initial fully independent early path replicated the bimodal and four
+tagged direction payload memories. It established a two-read/one-write
+performance ceiling while keeping every physical array synchronous,
+reset-free, and one-read/one-write for BRAM inference. After correcting the
+frontend history chain, the warm measured CoreMark region completed in 33,295
+cycles at 1.5781 IPC, versus 33,321 cycles at 1.5769 IPC for the preceding
+single-port baseline. The 26-cycle delta is not enough to justify duplicating
+all five direction payloads.
+
+Trace inspection also showed that the two logical clients mostly duplicate
+work. In the measured region, 887 cycles requested both reads and 619 named
+the same control PC. The retained implementation therefore uses one physical
+direction-read pipeline. A matching PC plus stream token coalesces into one
+read; its registered snapshot can be consumed directly by decode or retained
+in the prepared-context table. Decode wins unrelated contention and the
+nonblocking early request remains queued. The Tomasulo integration increases
+the prepared-context table from eight to sixteen entries.
+
+With the shared read path, the same measured region remained 33,295 cycles at
+1.5781 IPC. Across reset through completion it recorded 33,432 decode reads,
+73,600 accepted early reads, 10,890 simultaneous demands, 3,077 coalesced
+requests, and 7,813 early deferrals. Prepared-context misses fell only from
+3,120 to 3,049. Capacity was therefore a minor contributor; request timing
+and token arrival dominate. The four warm-up iterations took 820 additional
+cycles, so the shared implementation is measurement-neutral but not strictly
+cycle-identical during training.
+
+Naive banking is not an automatic improvement. A counterfactual PC hash on
+the replicated experiment collided on 3,494 of 4,612 two-bank dual demands
+and 3,345 with four banks because the clients frequently name the same branch.
+After excluding identical PCs in the measured trace, the corresponding rates
+were 83 of 268 for two banks and 28 of 268 for four. Coalescing must precede
+any banking study. Four-way banking would also fragment each relatively small
+TAGE table across four separately addressed BRAMs and may use more FPGA
+primitives than replication despite storing fewer bits.
+
 ### Other workloads and confounds
 
 Current RLE results are not yet available for the earlier memory workload set.

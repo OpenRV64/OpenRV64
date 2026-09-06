@@ -712,23 +712,24 @@ module openrv64_fetch_istream #(
         end
     end
 
-    // Refinement may annotate a future segment only when it confirms the exact
-    // path already selected by the RLE predictor.  Being behind the active FTQ
-    // head is not sufficient proof that no bytes from that segment's old
-    // successor have crossed into decode: autonomous chaining and block-buffer
-    // lookahead can run ahead of FTQ presentation.  A changed-path response
-    // therefore remains a normal decode-side redirect until the frontend has
-    // an explicit emitted/decoded generation watermark.
-    assign refinement_accept_o = refinement_valid_i &&
+    wire refinement_future_match = refinement_valid_i &&
         refinement_match_r && (refinement_match_offset_r != 0) &&
+        !restart_i && !redirect_i && !invalidate_i && !flush_i &&
+        !predicted_reject_fire;
+    wire refinement_path_matches =
         (ftq_prediction_taken_q[refinement_match_slot_r] ==
          refinement_taken_i) &&
         (ftq_successor_pc_q[refinement_match_slot_r] ==
-         refinement_successor_pc_i) &&
-        !restart_i && !redirect_i && !invalidate_i && !flush_i;
-    // Kept as an interface diagnostic.  Unsafe path-changing refinement is
-    // deliberately not accepted, so this cannot assert in this implementation.
-    assign refinement_changed_o = 1'b0;
+         refinement_successor_pc_i);
+    // The active entry may already have supplied bytes through its predicted
+    // successor, but a strictly younger FTQ entry has not crossed its own
+    // control boundary into decode.  A changed refinement can therefore keep
+    // the matched boundary, replace its successor, discard the younger FTQ
+    // suffix, and restart autonomous chaining from the corrected path.  The
+    // address-tagged block buffer deliberately retains wrong-path prefills.
+    assign refinement_accept_o = refinement_future_match;
+    assign refinement_changed_o = refinement_future_match &&
+                                  !refinement_path_matches;
     assign refinement_late_o = refinement_valid_i &&
                                !refinement_accept_o;
 
@@ -790,7 +791,7 @@ module openrv64_fetch_istream #(
          (btb_response_match && btb_response_hit_i &&
           !btb_response_candidate_hit));
     assign btb_cancel_o = restart_i || redirect_i || invalidate_i || flush_i ||
-        predicted_reject_fire || btb_response_abort;
+        predicted_reject_fire || refinement_changed_o || btb_response_abort;
     wire btb_idle_lookup = btb_tail_open && !btb_outstanding_q &&
         (ftq_count_q < FTQ_DEPTH);
     assign btb_lookup_valid_o = btb_idle_lookup &&
@@ -1274,6 +1275,71 @@ module openrv64_fetch_istream #(
                 ftq_end_valid_q[reset_index] <= 1'b0;
                 ftq_lookup_done_q[reset_index] <= 1'b0;
             end
+        end else if (refinement_changed_o) begin
+            // Retain the prefix through the refined control, replace its old
+            // successor with one open root, and discard every entry derived
+            // from the stale direction.  Presentation may simultaneously pop
+            // the older active head; it cannot have crossed this future
+            // entry's control boundary.
+            ftq_successor_pc_q[refinement_match_slot_r] <=
+                refinement_successor_pc_i;
+            ftq_prediction_taken_q[refinement_match_slot_r] <=
+                refinement_taken_i;
+            ftq_prediction_refined_q[refinement_match_slot_r] <= 1'b1;
+
+            ftq_tail_q <= (refinement_match_slot_r + 1'b1) &
+                          (FTQ_DEPTH - 1);
+            ftq_valid_q[(refinement_match_slot_r + 1'b1) &
+                        (FTQ_DEPTH - 1)] <= 1'b1;
+            ftq_end_valid_q[(refinement_match_slot_r + 1'b1) &
+                            (FTQ_DEPTH - 1)] <= 1'b0;
+            ftq_lookup_done_q[(refinement_match_slot_r + 1'b1) &
+                              (FTQ_DEPTH - 1)] <= 1'b0;
+            ftq_start_pc_q[(refinement_match_slot_r + 1'b1) &
+                           (FTQ_DEPTH - 1)] <= refinement_successor_pc_i;
+            ftq_control_pc_q[(refinement_match_slot_r + 1'b1) &
+                             (FTQ_DEPTH - 1)] <= {`RV64_XLEN{1'b0}};
+            ftq_control_end_pc_q[(refinement_match_slot_r + 1'b1) &
+                                 (FTQ_DEPTH - 1)] <=
+                {`RV64_XLEN{1'b0}};
+            ftq_control_class_q[(refinement_match_slot_r + 1'b1) &
+                                (FTQ_DEPTH - 1)] <=
+                `OPENRV64_STREAM_CONTROL_CONDITIONAL;
+            ftq_successor_pc_q[(refinement_match_slot_r + 1'b1) &
+                               (FTQ_DEPTH - 1)] <=
+                {`RV64_XLEN{1'b0}};
+            ftq_prediction_taken_q[(refinement_match_slot_r + 1'b1) &
+                                   (FTQ_DEPTH - 1)] <= 1'b0;
+            ftq_prediction_refined_q[(refinement_match_slot_r + 1'b1) &
+                                     (FTQ_DEPTH - 1)] <= 1'b0;
+            ftq_prediction_token_q[(refinement_match_slot_r + 1'b1) &
+                                   (FTQ_DEPTH - 1)] <=
+                {PREDICTION_TOKEN_WIDTH{1'b0}};
+            ftq_generation_q[(refinement_match_slot_r + 1'b1) &
+                             (FTQ_DEPTH - 1)] <= generation_q;
+
+            for (reset_index = 0; reset_index < FTQ_DEPTH;
+                 reset_index = reset_index + 1) begin
+                if ((reset_index > (refinement_match_offset_r + 1'b1)) &&
+                    (reset_index < ftq_count_q)) begin
+                    ftq_valid_q[(ftq_head_q + reset_index) &
+                                (FTQ_DEPTH - 1)] <= 1'b0;
+                    ftq_end_valid_q[(ftq_head_q + reset_index) &
+                                    (FTQ_DEPTH - 1)] <= 1'b0;
+                    ftq_lookup_done_q[(ftq_head_q + reset_index) &
+                                      (FTQ_DEPTH - 1)] <= 1'b0;
+                end
+            end
+
+            if (predicted_transfer_fire) begin
+                ftq_valid_q[ftq_head_q] <= 1'b0;
+                ftq_lookup_done_q[ftq_head_q] <= 1'b0;
+                ftq_head_q <= (ftq_head_q + 1'b1) & (FTQ_DEPTH - 1);
+                ftq_count_q <= refinement_match_offset_r + 1'b1;
+            end else begin
+                ftq_count_q <= refinement_match_offset_r + 2'd2;
+            end
+            btb_outstanding_q <= 1'b0;
         end else begin
             if (refinement_accept_o)
                 ftq_prediction_taken_q[refinement_match_slot_r] <=

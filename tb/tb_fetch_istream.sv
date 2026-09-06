@@ -649,6 +649,7 @@ module tb_fetch_istream;
         btb_response_control_pc = 64'h0a;
         btb_response_control_end_pc = 64'h0e;
         btb_response_successor_pc = 64'h100;
+        btb_response_prediction_token = 32'h66;
         chained_lookup_request_id = btb_response_request_id;
         tick();
         btb_response_request_id = chained_lookup_request_id;
@@ -656,6 +657,7 @@ module tb_fetch_istream;
         btb_response_control_pc = 64'h10a;
         btb_response_control_end_pc = 64'h10e;
         btb_response_successor_pc = 64'h200;
+        btb_response_prediction_token = 32'h66;
         #1;
         if (btb_lookup_valid)
             $fatal(1, "autonomous RLE chain requested a second root");
@@ -664,10 +666,24 @@ module tb_fetch_istream;
         if (ftq_count != 3)
             $fatal(1, "registered second hit did not append normally");
 
+        // Add a deeper old-path suffix so a changed refinement must do more
+        // than rewrite the immediately following start PC.
+        btb_response_valid = 1'b1;
+        btb_response_stream_pc = 64'h200;
+        btb_response_control_pc = 64'h22a;
+        btb_response_control_end_pc = 64'h22e;
+        btb_response_successor_pc = 64'h300;
+        btb_response_prediction_token = 32'h67;
+        tick();
+        btb_response_valid = 1'b0;
+        if (ftq_count != 4)
+            $fatal(1, "old-path setup did not fill FTQ");
+        wait_request(64'h220, 1'b1);
+
         // A direction response for the active FTQ head is already too late.
-        // A path-changing response for a younger segment is also rejected:
-        // autonomous chaining may already have emitted bytes from its old
-        // successor.  Only an exact-path response may annotate it as refined.
+        // A path-changing response for a younger segment repairs that entry,
+        // replaces its successor with a new open root, and drops the deeper
+        // suffix without discarding address-tagged prefetched blocks.
         refinement_prediction_token = 32'h66;
         refinement_control_pc = 64'h0a;
         refinement_taken = 1'b0;
@@ -683,13 +699,24 @@ module tb_fetch_istream;
         refinement_successor_pc = 64'h10e;
         refinement_valid = 1'b1;
         #1;
-        if (refinement_accept || refinement_changed || !refinement_late)
-            $fatal(1, "changed-path future refinement was not rejected");
+        if (!refinement_accept || !refinement_changed || refinement_late ||
+            !btb_cancel)
+            $fatal(1, "changed-path future refinement was not accepted");
         tick();
         refinement_valid = 1'b0;
+        if ((ftq_count != 3) ||
+            (dut.ftq_start_pc_q[dut.ftq_tail_q] != 64'h10e) ||
+            dut.ftq_end_valid_q[dut.ftq_tail_q] ||
+            dut.btb_outstanding_q)
+            $fatal(1, "changed refinement did not replace FTQ suffix");
+        if (!btb_lookup_valid || (btb_lookup_pc != 64'h10e))
+            $fatal(1, "changed refinement did not relaunch corrected root");
+        chained_lookup_request_id = btb_lookup_request_id;
 
-        refinement_taken = 1'b1;
-        refinement_successor_pc = 64'h200;
+        // Repeating the corrected path is an annotation only.  The corrected
+        // root lookup may launch on the same edge.
+        refinement_taken = 1'b0;
+        refinement_successor_pc = 64'h10e;
         refinement_valid = 1'b1;
         #1;
         if (!refinement_accept || refinement_changed || refinement_late)
@@ -697,29 +724,30 @@ module tb_fetch_istream;
         tick();
         refinement_valid = 1'b0;
 
-        // Fill the FTQ, then close its open tail on the same edge the active
+        // The corrected root may chain again; the discarded old 0x300 suffix
+        // must not reappear unless this new path predicts it explicitly.
+        btb_response_request_id = chained_lookup_request_id;
+        btb_response_valid = 1'b1;
+        btb_response_stream_pc = 64'h10e;
+        btb_response_control_pc = 64'h22a;
+        btb_response_control_end_pc = 64'h22e;
+        btb_response_successor_pc = 64'h500;
+        btb_response_prediction_token = 32'h68;
+        tick();
+        if ((ftq_count != 4) ||
+            (dut.ftq_start_pc_q[dut.ftq_tail_q] != 64'h500))
+            $fatal(1, "corrected root did not rebuild FTQ suffix");
+        btb_response_valid = 1'b0;
+
+        // With the FTQ full, close its open tail on the same edge the active
         // head transfers.  The appended successor reuses the just-freed ring
         // slot; its valid bit and payload must survive the head pop.
         btb_response_valid = 1'b1;
-        btb_response_stream_pc = 64'h200;
-        // This future run spans a second 32-byte instruction block.  Its
-        // known interior block must be requested before the segment becomes
-        // active, rather than waiting for demand presentation to reach it.
-        btb_response_control_pc = 64'h22a;
-        btb_response_control_end_pc = 64'h22e;
-        btb_response_successor_pc = 64'h300;
-        btb_response_prediction_token = 32'h67;
-        tick();
-        if (ftq_count != 4)
-            $fatal(1, "third autonomous hit did not fill FTQ");
-        btb_response_valid = 1'b0;
-        wait_request(64'h220, 1'b1);
-        btb_response_valid = 1'b1;
-        btb_response_stream_pc = 64'h300;
-        btb_response_control_pc = 64'h30a;
-        btb_response_control_end_pc = 64'h30e;
+        btb_response_stream_pc = 64'h500;
+        btb_response_control_pc = 64'h50a;
+        btb_response_control_end_pc = 64'h50e;
         btb_response_successor_pc = 64'h400;
-        btb_response_prediction_token = 32'h68;
+        btb_response_prediction_token = 32'h69;
         #1;
         if (btb_response_ready)
             $fatal(1, "full FTQ admitted a hit before head transfer");
@@ -741,9 +769,33 @@ module tb_fetch_istream;
             $fatal(1, "simultaneous full-FTQ pop/append corrupted ring");
         wait_stream_pc(64'h100);
         if (!istream_prediction_refined ||
-            (istream_prediction_successor != 64'h200) ||
-            !istream_prediction_taken)
+            (istream_prediction_successor != 64'h10e) ||
+            istream_prediction_taken)
             $fatal(1, "accepted future refinement was not retained");
+
+        // A future correction may coincide with presentation crossing the
+        // older head.  Both operations must apply: the old head is popped,
+        // the corrected entry becomes active, and its stale suffix is cut.
+        istream_consume_halfwords = 4'd4;
+        tick();
+        istream_consume_halfwords = 4'd3;
+        refinement_prediction_token = 32'h68;
+        refinement_control_pc = 64'h22a;
+        refinement_taken = 1'b0;
+        refinement_successor_pc = 64'h22e;
+        refinement_valid = 1'b1;
+        #1;
+        if (!predicted_transfer_valid || !refinement_changed ||
+            !refinement_accept)
+            $fatal(1, "simultaneous head transfer/refinement did not fire");
+        tick();
+        istream_consume_halfwords = 4'd0;
+        refinement_valid = 1'b0;
+        if ((ftq_count != 2) ||
+            (dut.ftq_start_pc_q[dut.ftq_head_q] != 64'h10e) ||
+            (dut.ftq_start_pc_q[dut.ftq_tail_q] != 64'h22e) ||
+            dut.ftq_end_valid_q[dut.ftq_tail_q])
+            $fatal(1, "simultaneous head pop/FTQ suffix repair corrupted ring");
 
         // Fetch preserves raw data and supplies fault qualification; decode
         // decides how to represent the fault and must not depend on fake NOPs.

@@ -270,7 +270,9 @@ module tb_top_3p_soc #(
     parameter integer ENABLE_LOAD_CONFLICT_RECORD = 0,
     parameter integer ENABLE_DECODE_FUSION = 0,
     parameter integer ENABLE_PIPELINE_STATE_TRACE = 0,
+    parameter integer ENABLE_FRONTEND_TRACE = 0,
     parameter integer ENABLE_POSTED_STORES = 1,
+    parameter integer LOAD_QUEUE_DEPTH = 4,
     parameter integer STORE_QUEUE_DEPTH = 4,
     parameter integer ENABLE_FENCE_L2_ACK = 1,
     parameter integer M_MODE_PREFETCH_ENABLE = 0,
@@ -390,6 +392,10 @@ module tb_top_3p_soc #(
     localparam integer WINDOW_SPEC_CROSS_WIDTH = WINDOW_COUNT_WIDTH + 2;
     localparam integer WINDOW_OPERAND_COUNT_WIDTH =
         $clog2((2 * ISSUE_WINDOW_DEPTH) + 1);
+    localparam integer BACKEND_DISPATCH_CAPACITY =
+        ((ISSUE_WINDOW != 0) ||
+         (RENAME_MODE == `OPENRV64_RENAME_TOMASULO)) ?
+        ISSUE_WINDOW_DEPTH : 6;
 
     reg fence_check_enabled_q;
     reg fence_trace_enabled_q;
@@ -935,6 +941,14 @@ module tb_top_3p_soc #(
     integer bp_tage_use_alt;
     integer bp_tage_trains;
     integer bp_tage_train_mispredicts;
+    integer bp_tage_decode_reads;
+    integer bp_tage_early_reads;
+    integer bp_tage_dual_reads;
+    integer bp_tage_coalesced_reads;
+    integer bp_tage_early_read_blocked;
+    integer bp_tage_dual_bank2_conflicts;
+    integer bp_tage_dual_bank4_conflicts;
+    integer bp_tage_early_context_writes;
     integer bp_tage_alloc_t0;
     integer bp_tage_alloc_t1;
     integer bp_tage_alloc_t2;
@@ -3007,6 +3021,7 @@ module tb_top_3p_soc #(
             BANKED_GPR_READ_PORTS_PER_BANK),
         .BANKED_GPR_NUM_BANKS(BANKED_GPR_NUM_BANKS),
         .ENABLE_POSTED_STORES(ENABLE_POSTED_STORES),
+        .LOAD_QUEUE_DEPTH(LOAD_QUEUE_DEPTH),
         .STORE_QUEUE_DEPTH(STORE_QUEUE_DEPTH),
         .ENABLE_FENCE_L2_ACK(ENABLE_FENCE_L2_ACK),
         .ENABLE_RV64ZBB(ENABLE_RV64ZBB),
@@ -3153,6 +3168,7 @@ module tb_top_3p_soc #(
     );
 
 `include "tb/tb_top_3p_soc_tomasulo_trace.vh"
+`include "tb/tb_top_3p_soc_frontend_trace.vh"
 
     openrv64_core_complex_nh #(
         .NUM_HARTS(1),
@@ -5011,6 +5027,14 @@ module tb_top_3p_soc #(
         bp_tage_use_alt = 0;
         bp_tage_trains = 0;
         bp_tage_train_mispredicts = 0;
+        bp_tage_decode_reads = 0;
+        bp_tage_early_reads = 0;
+        bp_tage_dual_reads = 0;
+        bp_tage_coalesced_reads = 0;
+        bp_tage_early_read_blocked = 0;
+        bp_tage_dual_bank2_conflicts = 0;
+        bp_tage_dual_bank4_conflicts = 0;
+        bp_tage_early_context_writes = 0;
         bp_tage_alloc_t0 = 0;
         bp_tage_alloc_t1 = 0;
         bp_tage_alloc_t2 = 0;
@@ -5880,7 +5904,8 @@ module tb_top_3p_soc #(
                     dispatch_nonempty_no_issue =
                         dispatch_nonempty_no_issue + 1;
             end
-            if (dut.backend_dispatch_occupancy == 6)
+            if (dut.backend_dispatch_occupancy ==
+                BACKEND_DISPATCH_CAPACITY)
                 dispatch_full = dispatch_full + 1;
             if (RENAME_MODE == `OPENRV64_RENAME_TOMASULO) begin
                 tomasulo_window_unissued_entry_cycles =
@@ -7370,7 +7395,8 @@ module tb_top_3p_soc #(
                     frontend_empty_dispatch_nonempty =
                         frontend_empty_dispatch_nonempty + 1;
                 end
-                if (dut.backend_dispatch_occupancy == 6)
+                if (dut.backend_dispatch_occupancy ==
+                    BACKEND_DISPATCH_CAPACITY)
                     frontend_empty_dispatch_full =
                         frontend_empty_dispatch_full + 1;
                 if (dut.u_bus.g_icx.u_bus.u_l1i
@@ -8093,6 +8119,27 @@ module tb_top_3p_soc #(
                     bp_tage_allocation_failures =
                         bp_tage_allocation_failures + 1;
             end
+            if (dut.u_bp.diag_tage_decode_direction_read)
+                bp_tage_decode_reads = bp_tage_decode_reads + 1;
+            if (dut.u_bp.diag_tage_early_direction_read)
+                bp_tage_early_reads = bp_tage_early_reads + 1;
+            if (dut.u_bp.diag_tage_dual_direction_read)
+                bp_tage_dual_reads = bp_tage_dual_reads + 1;
+            if (dut.u_bp.diag_tage_coalesced_direction_read)
+                bp_tage_coalesced_reads =
+                    bp_tage_coalesced_reads + 1;
+            if (dut.u_bp.diag_tage_early_direction_blocked)
+                bp_tage_early_read_blocked =
+                    bp_tage_early_read_blocked + 1;
+            if (dut.u_bp.diag_tage_dual_bank2_conflict)
+                bp_tage_dual_bank2_conflicts =
+                    bp_tage_dual_bank2_conflicts + 1;
+            if (dut.u_bp.diag_tage_dual_bank4_conflict)
+                bp_tage_dual_bank4_conflicts =
+                    bp_tage_dual_bank4_conflicts + 1;
+            if (dut.u_bp.diag_tage_early_context_write)
+                bp_tage_early_context_writes =
+                    bp_tage_early_context_writes + 1;
             if (dut.bp_preliminary_redirect) begin
                 bp_preliminary_redirects = bp_preliminary_redirects + 1;
                 if (dut.bp_live_branch)
@@ -9197,6 +9244,14 @@ module tb_top_3p_soc #(
             bp_tage_alloc_t1, bp_tage_alloc_t2,
             bp_tage_alloc_t3, bp_tage_allocation_failures);
         $display(
+            "PERF_ICX_L2_BP_TAGE_PORTS decode_reads=%0d early_reads=%0d dual_demand=%0d coalesced=%0d early_blocked=%0d bank2_conflicts=%0d bank4_conflicts=%0d early_context_writes=%0d context_depth=16",
+            bp_tage_decode_reads, bp_tage_early_reads,
+            bp_tage_dual_reads, bp_tage_coalesced_reads,
+            bp_tage_early_read_blocked,
+            bp_tage_dual_bank2_conflicts,
+            bp_tage_dual_bank4_conflicts,
+            bp_tage_early_context_writes);
+        $display(
             "PERF_ICX_L2_BP_TAGE_EARLY preliminary_redirects=%0d btfnt_taken_redirects=%0d direct_jump_redirects=%0d resteers=%0d resteers_taken=%0d resteers_fallthrough=%0d conditional_resteers=%0d indirect_resteers=%0d squashed_decode_lanes=%0d",
             bp_preliminary_redirects, bp_btfnt_taken_redirects,
             bp_direct_jump_redirects, bp_tage_resteers,
@@ -10223,7 +10278,7 @@ module tb_top_3p_soc #(
                 .perf_lsq_load_over_committed_store_cycles_q,
             dut.u_backend.u_exec.g_3p.u_exec.u_lsu.u_lsq
                 .perf_lsq_store_pressure_priority_cycles_q,
-            4,
+            LOAD_QUEUE_DEPTH,
             STORE_QUEUE_DEPTH);
         $display(
             "PERF_ICX_L2_STORE_FORWARD committed_results=%0d committed_ready_entry_cycles=%0d committed_mask_block_entry_cycles=%0d",

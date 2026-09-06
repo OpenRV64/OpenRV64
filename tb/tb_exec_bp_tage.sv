@@ -23,6 +23,13 @@ module tb_exec_bp_tage;
     logic lookup_context_valid;
     logic [31:0] lookup_context_token;
     logic lookup_allocate;
+    logic early_lookup_valid;
+    logic early_lookup_cancel;
+    logic early_history_repair;
+    logic early_lookup_backward;
+    logic early_lookup_taken;
+    logic [63:0] early_lookup_pc;
+    logic [31:0] early_lookup_context_token;
     logic resolve_valid;
     logic resolve_branch;
     logic resolve_taken;
@@ -39,6 +46,10 @@ module tb_exec_bp_tage;
     wire fetch_stall;
     wire decode_stall;
     wire lookup_context_hit;
+    wire early_lookup_accept;
+    wire early_response_valid;
+    wire [63:0] early_response_pc;
+    wire early_response_taken;
 
     always #5 clk = ~clk;
 
@@ -80,6 +91,13 @@ module tb_exec_bp_tage;
         .lookup_context_valid_i(lookup_context_valid),
         .lookup_context_token_i(lookup_context_token),
         .lookup_allocate_i(lookup_allocate),
+        .early_lookup_valid_i(early_lookup_valid),
+        .early_lookup_cancel_i(early_lookup_cancel),
+        .early_history_repair_i(early_history_repair),
+        .early_lookup_backward_i(early_lookup_backward),
+        .early_lookup_taken_i(early_lookup_taken),
+        .early_lookup_pc_i(early_lookup_pc),
+        .early_lookup_context_token_i(early_lookup_context_token),
         .resolve_valid_i(resolve_valid),
         .resolve_branch_i(resolve_branch),
         .resolve_taken_i(resolve_taken),
@@ -91,6 +109,11 @@ module tb_exec_bp_tage;
         .prediction_weak_o(prediction_weak),
         .prediction_target_valid_o(prediction_target_valid),
         .prediction_target_o(prediction_target),
+        .early_lookup_accept_o(early_lookup_accept),
+        .early_direction_response_valid_o(early_response_valid),
+        .early_direction_response_pc_o(early_response_pc),
+        .early_direction_response_taken_o(early_response_taken),
+        .early_direction_response_weak_o(),
         .lookup_context_hit_o(lookup_context_hit),
         .target_mispredict_o(target_mispredict),
         .update_overflow_o(update_overflow),
@@ -120,6 +143,13 @@ module tb_exec_bp_tage;
             lookup_context_valid = 1'b0;
             lookup_context_token = 32'd0;
             lookup_allocate = 1'b0;
+            early_lookup_valid = 1'b0;
+            early_lookup_cancel = 1'b0;
+            early_history_repair = 1'b0;
+            early_lookup_backward = 1'b0;
+            early_lookup_taken = 1'b0;
+            early_lookup_pc = 64'd0;
+            early_lookup_context_token = 32'd0;
             resolve_valid = 1'b0;
             resolve_branch = 1'b0;
             resolve_taken = 1'b0;
@@ -264,6 +294,94 @@ module tb_exec_bp_tage;
     logic [4:0] tag1;
 
     initial begin
+        reset_dut();
+
+        // A token-matched decode/stream request is one logical lookup.  It
+        // must consume one shared RAM read and return on both interfaces.
+        present_branch(64'h080, 64'd58, 1'b1, 1'b0);
+        lookup_context_valid = 1'b1;
+        lookup_context_token = 32'hfeed_0001;
+        early_lookup_valid = 1'b1;
+        early_lookup_backward = 1'b1;
+        early_lookup_taken = 1'b1;
+        early_lookup_pc = 64'h080;
+        early_lookup_context_token = 32'hfeed_0001;
+        #1;
+        if (!decode_stall || !early_lookup_accept ||
+            !dut.diag_tage_decode_direction_read ||
+            !dut.diag_tage_early_direction_read ||
+            !dut.diag_tage_dual_direction_read ||
+            !dut.diag_tage_coalesced_direction_read ||
+            dut.diag_tage_early_direction_blocked)
+            $fatal(1, "TAGE matching requests did not coalesce");
+        tick();
+        if (!early_response_valid || (early_response_pc != 64'h080) ||
+            !early_response_taken || decode_stall || !prediction_taken)
+            $fatal(1, "TAGE coalesced direction response was not reusable");
+        if (!dut.g_tage.u_tage.early_history_valid_q ||
+            !dut.g_tage.u_tage.early_launch_history[0])
+            $fatal(1, "TAGE early path history did not advance");
+
+        // Decode consumes the coalesced response while the single read port
+        // immediately accepts the next early branch.
+        lookup_allocate = 1'b1;
+        early_lookup_pc = 64'h084;
+        early_lookup_backward = 1'b0;
+        early_lookup_taken = 1'b0;
+        early_lookup_context_token = 32'hfeed_0002;
+        #1;
+        if (!early_lookup_accept ||
+            !dut.diag_tage_early_direction_read ||
+            dut.diag_tage_decode_direction_read)
+            $fatal(1, "TAGE stash did not overlap decode consume");
+        tick();
+        if (!early_response_valid || (early_response_pc != 64'h084) ||
+            early_response_taken)
+            $fatal(1, "TAGE back-to-back early response was not aligned");
+        lookup_valid = 1'b0;
+        lookup_allocate = 1'b0;
+        early_lookup_valid = 1'b0;
+        early_history_repair = 1'b1;
+        tick();
+        if (!dut.g_tage.u_tage.early_history_valid_q ||
+            (dut.g_tage.u_tage.early_history_q !=
+             {dut.g_tage.u_tage.early_response_history_q[HISTORY_BITS-2:0],
+              1'b0}))
+            $fatal(1, "TAGE correction did not repair early path history");
+        clear_inputs();
+        present_branch(64'h084, 64'd59, 1'b0, 1'b0);
+        lookup_context_valid = 1'b1;
+        lookup_context_token = 32'hfeed_0002;
+        #1;
+        if (!lookup_context_hit || decode_stall || prediction_taken)
+            $fatal(1, "early read did not prepare decode context");
+        clear_inputs();
+        reset_dut();
+
+        // Different simultaneous branches cannot share a TAGE snapshot.
+        // Decode owns the read and the queued early request retries when the
+        // registered decode response is consumed.
+        present_branch(64'h040, 64'd59, 1'b0, 1'b0);
+        early_lookup_valid = 1'b1;
+        early_lookup_backward = 1'b1;
+        early_lookup_taken = 1'b1;
+        early_lookup_pc = 64'h080;
+        early_lookup_context_token = 32'hfeed_0003;
+        #1;
+        if (!decode_stall || early_lookup_accept ||
+            !dut.diag_tage_dual_direction_read ||
+            !dut.diag_tage_early_direction_blocked ||
+            dut.diag_tage_coalesced_direction_read)
+            $fatal(1, "TAGE shared-port arbitration was not decode-first");
+        tick();
+        lookup_allocate = 1'b1;
+        #1;
+        if (!early_lookup_accept || decode_stall)
+            $fatal(1, "queued early TAGE request did not retry");
+        tick();
+        if (!early_response_valid || (early_response_pc != 64'h080))
+            $fatal(1, "retried early TAGE response was not aligned");
+        clear_inputs();
         reset_dut();
 
         // An observational stream lookup is retained under its token.  The

@@ -43,11 +43,15 @@ module openrv64_rv64i_gpr_3p #(
     wire [NUM_REGS*`RV64_XLEN-1:0] prf_debug_regs;
     generate
         if (BANKED != 0) begin : g_banked
-            localparam integer BANKED_REG_COUNT = 64;
+            localparam integer BANKED_REG_COUNT =
+                (1 << REG_ADDR_WIDTH);
             localparam integer BANKED_BANK_SIZE =
                 BANKED_REG_COUNT / BANKED_NUM_BANKS;
+            // Physical tag zero is suppressed before storage.  The bank
+            // primitive requires power-of-two banks, so cover the complete
+            // physical-tag address space and leave any high entries unused.
             localparam integer BANKED_ADDR_WIDTH =
-                $clog2(BANKED_REG_COUNT);
+                REG_ADDR_WIDTH;
             wire [5:0] banked_read_ack;
             wire [5:0] banked_read_valid;
             wire [2:0] banked_write_ack;
@@ -113,8 +117,8 @@ module openrv64_rv64i_gpr_3p #(
 
             cmn_reg_file #(
                 .REG_WIDTH(`RV64_XLEN),
-                // The banked storage covers the complete p0-p63 Tomasulo tag
-                // space.  Identity mode still addresses only p0-p31.
+                // The banked storage covers p0 through pNUM_REGS, rounded up
+                // to complete banks.  Identity mode addresses only p0-p31.
                 .REG_COUNT(BANKED_REG_COUNT),
                 .READ_PORTS(6),
                 .WRITE_PORTS(3),
@@ -273,10 +277,9 @@ module openrv64_rv64i_gpr_3p #(
         if ((1 << REG_ADDR_WIDTH) <= NUM_REGS)
             $fatal(1, "3P physical tag width cannot address pNUM_REGS");
         if ((BANKED != 0) &&
-            !(((NUM_REGS == 31) && (REG_ADDR_WIDTH == 5)) ||
-              ((NUM_REGS == 63) && (REG_ADDR_WIDTH == 6))))
-            $fatal(1,
-                   "banked 3P GPR requires p0-p31 or p0-p63 tags");
+            ((BANKED_NUM_BANKS < 1) ||
+             ((BANKED_NUM_BANKS & (BANKED_NUM_BANKS - 1)) != 0)))
+            $fatal(1, "banked 3P GPR bank count must be a power of two");
         if ((BANKED != 0) &&
             ((BANKED_READ_PORTS_PER_BANK < 1) ||
              (BANKED_READ_PORTS_PER_BANK > 4)))
