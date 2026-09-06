@@ -52,6 +52,7 @@ module openrv64_exec_pipe_ex1 #(
     output wire                         branch_taken_o,
     output wire [`RV64_XLEN-1:0]        branch_pc_o,
     output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
+    output wire                         branch_fused_direct_o,
     output wire                         redirect_valid_o,
     output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] redirect_id_o,
     output wire [RETIRE_SLOT_WIDTH-1:0] redirect_slot_o,
@@ -445,6 +446,9 @@ module openrv64_exec_pipe_ex1 #(
     assign branch_taken_o = branch_resolved_o && control_transfer_taken;
     assign branch_pc_o = pc;
     assign branch_instr_o = instr;
+    assign branch_fused_direct_o = branch_resolved_o && jump &&
+        issue_payload_i[`OPENRV64_EXEC_ISSUE_PAYLOAD_FUSED_BIT] &&
+        (`RV64_OPCODE(instr) == `RV64_OPCODE_JALR);
     assign redirect_valid_o = branch_resolved_o &&
                               !instr_misaligned &&
                               !result_illegal &&

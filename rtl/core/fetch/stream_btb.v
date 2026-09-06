@@ -61,6 +61,7 @@ module openrv64_fetch_stream_btb #(
     input  wire                         train_conditional_i,
     input  wire                         train_taken_i,
     input  wire                         train_length_32_i,
+    input  wire                         train_fused_direct_i,
     input  wire [`RV64_INSTR_WIDTH-1:0] train_instr_i,
     input  wire [`RV64_XLEN-1:0]        train_pc_i,
     input  wire [`RV64_XLEN-1:0]        train_next_pc_i,
@@ -184,7 +185,8 @@ module openrv64_fetch_stream_btb #(
         (`RV64_IMM_I(train_instr_i) == 64'd0);
     wire [2:0] incoming_train_class = train_conditional_i ?
         `OPENRV64_STREAM_CONTROL_CONDITIONAL : incoming_is_return ?
-        `OPENRV64_STREAM_CONTROL_RETURN : incoming_is_jal ?
+        `OPENRV64_STREAM_CONTROL_RETURN :
+        (incoming_is_jal || train_fused_direct_i) ?
         (incoming_rd_link ? `OPENRV64_STREAM_CONTROL_DIRECT_CALL :
                             `OPENRV64_STREAM_CONTROL_DIRECT_JUMP) :
         (incoming_rd_link ? `OPENRV64_STREAM_CONTROL_INDIRECT_CALL :

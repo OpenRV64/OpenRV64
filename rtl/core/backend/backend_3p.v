@@ -161,6 +161,7 @@ module openrv64_backend_3p #(
     output wire                         branch_taken_o,
     output wire [`RV64_XLEN-1:0]        branch_pc_o,
     output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
+    output wire                         branch_fused_direct_o,
     output wire [`RV64_XLEN-1:0]        branch_target_o,
     output wire [`OPENRV64_INSTR_ID_WIDTH-1:0] branch_id_o,
     output wire [SLOT_WIDTH-1:0]        branch_slot_o,
@@ -381,6 +382,7 @@ module openrv64_backend_3p #(
     wire exec_branch_resolved;
     wire exec_branch_conditional;
     wire exec_branch_taken;
+    wire exec_branch_fused_direct;
     wire [`RV64_XLEN-1:0] exec_branch_pc;
     wire [`RV64_INSTR_WIDTH-1:0] exec_branch_instr;
     wire exec_load_access_valid;
@@ -1089,6 +1091,9 @@ module openrv64_backend_3p #(
             RETIRE_RESULT_WIDTH];
     wire [`RV64_XLEN-1:0] window_branch_pc = window_resolve_meta[
         `OPENRV64_RETIRE_ALLOC_PC_LSB +: `RV64_XLEN];
+    wire [`RV64_INSTR_WIDTH-1:0] window_branch_instr =
+        window_resolve_meta[`OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
+                            `RV64_INSTR_WIDTH];
     wire [`RV64_XLEN-1:0] window_branch_next_pc = window_resolve_result[
         WINDOW_RESULT_NEXT_PC +: `RV64_XLEN];
     wire window_branch_taken =
@@ -1733,9 +1738,15 @@ module openrv64_backend_3p #(
     assign branch_instr_o = free_branch_resolved ?
         free_branch_result[COMPLETE_RESULT_INSTR +: `RV64_INSTR_WIDTH] :
         speculative_window ? exec_branch_instr :
+        (ENABLE_ISSUE_WINDOW != 0) ? window_branch_instr :
+                                     exec_branch_instr;
+    assign branch_fused_direct_o = free_branch_resolved ? 1'b0 :
+        speculative_window ? exec_branch_fused_direct :
         (ENABLE_ISSUE_WINDOW != 0) ?
-            window_resolve_meta[`OPENRV64_RETIRE_ALLOC_INSTR_LSB +:
-                                  `RV64_INSTR_WIDTH] : exec_branch_instr;
+            (window_resolve_meta[`OPENRV64_RETIRE_ALLOC_FUSED_BIT] &&
+             window_resolve_meta[WINDOW_META_JUMP] &&
+             (`RV64_OPCODE(window_branch_instr) == `RV64_OPCODE_JALR)) :
+            exec_branch_fused_direct;
     assign branch_target_o = free_branch_resolved ? free_branch_next_pc :
         speculative_window ? exec_redirect_target :
         (ENABLE_ISSUE_WINDOW != 0) ? window_branch_next_pc :
@@ -5968,6 +5979,7 @@ module openrv64_backend_3p #(
         .branch_taken_o(exec_branch_taken),
         .branch_pc_o(exec_branch_pc),
         .branch_instr_o(exec_branch_instr),
+        .branch_fused_direct_o(exec_branch_fused_direct),
         .csr_addr_o(csr_addr_o), .csr_rdata_i(csr_rdata_i),
         .csr_valid_i(csr_valid_i), .csr_writable_i(csr_writable_i),
         .csr_busy_i(1'b0),

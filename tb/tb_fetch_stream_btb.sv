@@ -27,6 +27,7 @@ module tb_fetch_stream_btb;
     logic train_conditional;
     logic train_taken;
     logic train_length_32;
+    logic train_fused_direct;
     logic [31:0] train_instr;
     logic [63:0] train_pc;
     logic [63:0] train_next_pc;
@@ -86,6 +87,7 @@ module tb_fetch_stream_btb;
         .train_conditional_i(train_conditional),
         .train_taken_i(train_taken),
         .train_length_32_i(train_length_32),
+        .train_fused_direct_i(train_fused_direct),
         .train_instr_i(train_instr),
         .train_pc_i(train_pc),
         .train_next_pc_i(train_next_pc),
@@ -145,6 +147,7 @@ module tb_fetch_stream_btb;
         input [63:0] control_pc,
         input conditional,
         input taken,
+        input fused_direct,
         input [31:0] instr,
         input [63:0] next_pc
     );
@@ -154,6 +157,7 @@ module tb_fetch_stream_btb;
             train_conditional = conditional;
             train_taken = taken;
             train_length_32 = 1'b1;
+            train_fused_direct = fused_direct;
             train_instr = instr;
             train_next_pc = next_pc;
             train_valid = 1'b1;
@@ -209,6 +213,7 @@ module tb_fetch_stream_btb;
         train_conditional = 1'b0;
         train_taken = 1'b0;
         train_length_32 = 1'b1;
+        train_fused_direct = 1'b0;
         train_instr = 32'd0;
         train_pc = 64'd0;
         train_next_pc = 64'd0;
@@ -233,7 +238,7 @@ module tb_fetch_stream_btb;
 
         // The stream starts at 0x100 and runs four halfwords to the branch.
         // The first actual outcome initializes the local fast direction.
-        train_control(64'h100, 64'h108, 1'b1, 1'b1,
+        train_control(64'h100, 64'h108, 1'b1, 1'b1, 1'b0,
                       backward_branch, 64'h10c);
         query(64'h100, 32'h11);
         if (!response_hit || response_control_pc != 64'h108 ||
@@ -246,7 +251,7 @@ module tb_fetch_stream_btb;
 
         // A later control observed for the same cold open stream cannot
         // replace its first control.
-        train_control(64'h100, 64'h10c, 1'b0, 1'b1,
+        train_control(64'h100, 64'h10c, 1'b0, 1'b1, 1'b0,
                       32'h0000006f, 64'h300);
         query(64'h100, 32'h15);
         if (!response_hit || response_control_pc != 64'h108)
@@ -255,9 +260,9 @@ module tb_fetch_stream_btb;
 
         // Resolution may arrive out of order.  A newly observed earlier
         // control must shorten the stored run.
-        train_control(64'h120, 64'h12c, 1'b0, 1'b1,
+        train_control(64'h120, 64'h12c, 1'b0, 1'b1, 1'b0,
                       32'h0000006f, 64'h300);
-        train_control(64'h120, 64'h124, 1'b0, 1'b1,
+        train_control(64'h120, 64'h124, 1'b0, 1'b1, 1'b0,
                       32'h0000006f, 64'h280);
         query(64'h120, 32'h16);
         if (!response_hit || response_control_pc != 64'h124 ||
@@ -272,7 +277,7 @@ module tb_fetch_stream_btb;
         cancel_chain();
 
         // One contrary outcome moves weak-taken to weak-not-taken.
-        train_control(64'h100, 64'h108, 1'b1, 1'b0,
+        train_control(64'h100, 64'h108, 1'b1, 1'b0, 1'b0,
                       backward_branch, 64'h10c);
         query(64'h100, 32'h13);
         if (!response_hit || response_taken ||
@@ -282,7 +287,7 @@ module tb_fetch_stream_btb;
 
         // These keys map to the same set in this deliberately tiny table and
         // exercise replacement after the two ways are occupied.
-        train_control(64'h108, 64'h10c, 1'b0, 1'b1,
+        train_control(64'h108, 64'h10c, 1'b0, 1'b1, 1'b0,
                       32'h000000ef, 64'h200);
         query(64'h108, 32'h14);
         if (!response_hit || response_control_pc != 64'h10c ||
@@ -291,17 +296,29 @@ module tb_fetch_stream_btb;
             $fatal(1, "direct-call stream-run response mismatch");
         cancel_chain();
 
-        train_control(64'h110, 64'h114, 1'b0, 1'b1,
+        // AUIPC/JALR fusion makes the resolved JALR target static.  The raw
+        // instruction remains JALR for architectural trace and RAS handling,
+        // but the trained stream boundary may splice like a direct call.
+        train_control(64'h108, 64'h10c, 1'b0, 1'b1, 1'b1,
+                      32'h000300e7, 64'h200);
+        query(64'h108, 32'h17);
+        if (!response_hit || response_control_pc != 64'h10c ||
+            response_control_class != 3'd2 || response_conditional ||
+            response_successor_pc != 64'h200 || !response_taken)
+            $fatal(1, "fused JALR did not train as a direct call");
+        cancel_chain();
+
+        train_control(64'h110, 64'h114, 1'b0, 1'b1, 1'b0,
                       32'h0000006f, 64'h300);
 
         // Four-bit halfword length cannot encode this 32-halfword run.
-        train_control(64'h200, 64'h240, 1'b0, 1'b1,
+        train_control(64'h200, 64'h240, 1'b0, 1'b1, 1'b0,
                       32'h0000006f, 64'h300);
 
-        if (train_updates != 1 || train_inserts != 2 ||
+        if (train_updates != 2 || train_inserts != 2 ||
             train_replacements != 2 || train_shorter != 1 ||
             train_later_ignored != 1 || train_overflows != 1 ||
-            conditional_trains != 2 || taken_trains != 6)
+            conditional_trains != 2 || taken_trains != 7)
             $fatal(1,
                 "stream RLE diagnostics mismatch u=%0d i=%0d r=%0d s=%0d l=%0d o=%0d c=%0d t=%0d",
                 train_updates, train_inserts, train_replacements,

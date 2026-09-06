@@ -135,6 +135,7 @@ module openrv64_exec_top_3p #(
     output wire                         branch_taken_o,
     output wire [`RV64_XLEN-1:0]        branch_pc_o,
     output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
+    output wire                         branch_fused_direct_o,
 
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
     input  wire [`RV64_XLEN-1:0]        csr_rdata_i,
@@ -586,6 +587,7 @@ module openrv64_exec_top_3p #(
         .branch_taken_o(branch_taken_o),
         .branch_pc_o(branch_pc_o),
         .branch_instr_o(branch_instr_o),
+        .branch_fused_direct_o(branch_fused_direct_o),
         .redirect_valid_o(redirect_valid_o),
         .redirect_id_o(redirect_id_o),
         .redirect_slot_o(redirect_slot_o),

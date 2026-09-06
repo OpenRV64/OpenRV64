@@ -438,6 +438,7 @@ module openrv64_rv64_top_3p #(
     wire branch_taken;
     wire [63:0] branch_pc;
     wire [31:0] branch_instr;
+    wire branch_fused_direct;
     wire [63:0] branch_target;
     wire [`OPENRV64_INSTR_ID_WIDTH-1:0] branch_id;
     wire [$clog2(RETIRE_DEPTH)-1:0] branch_slot;
@@ -975,6 +976,7 @@ module openrv64_rv64_top_3p #(
                     .train_conditional_i(branch_conditional),
                     .train_taken_i(branch_taken),
                     .train_length_32_i(1'b1),
+                    .train_fused_direct_i(branch_fused_direct),
                     .train_instr_i(branch_instr),
                     .train_pc_i(branch_pc),
                     .train_next_pc_i(branch_target),
@@ -1852,6 +1854,9 @@ module openrv64_rv64_top_3p #(
     wire bp_live_stream_prediction_refined =
         bp_live_stream_prediction_match &&
         fetch3_istream_prediction_refined;
+    wire bp_live_preliminary_taken = bp_redirects_enabled &&
+        ((bp_live_branch && bp_live_imm[63]) ||
+         (bp_live_jump && !bp_live_indirect));
     wire [63:0] bp_live_preliminary_successor =
         bp_live_stream_prediction_match ?
             fetch3_istream_prediction_successor :
@@ -2341,9 +2346,6 @@ module openrv64_rv64_top_3p #(
     // follow BTFNT for conditionals or the known target for direct jumps.
     // An unadmitted branch must remain at the frontend boundary, so it cannot
     // redirect until its retained payload has been admitted.
-    wire bp_live_preliminary_taken = bp_redirects_enabled &&
-        ((bp_live_branch && bp_live_imm[63]) ||
-         (bp_live_jump && !bp_live_indirect));
     assign bp_preliminary_redirect = bp_sideband_lookup &&
         bp_live_control_fire && backend_decode_fire[bp_live_lane] &&
         bp_live_preliminary_taken &&
@@ -2969,6 +2971,7 @@ module openrv64_rv64_top_3p #(
         .branch_conditional_o(branch_conditional),
         .branch_id_o(branch_id), .branch_slot_o(branch_slot),
         .branch_pc_o(branch_pc), .branch_instr_o(branch_instr),
+        .branch_fused_direct_o(branch_fused_direct),
         .branch_target_o(branch_target),
         .branch_train_valid_o(branch_train_valid),
         .branch_train_conditional_o(branch_train_conditional),

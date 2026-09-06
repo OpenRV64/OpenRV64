@@ -99,6 +99,7 @@ module tb_exec_top_3p #(
     wire [`RV64_XLEN-1:0] redirect_target;
     wire branch_resolved;
     wire branch_taken;
+    wire branch_fused_direct;
     wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr;
     reg [`RV64_XLEN-1:0] csr_rdata;
     reg csr_valid;
@@ -216,6 +217,7 @@ module tb_exec_top_3p #(
         .redirect_target_o(redirect_target),
         .branch_resolved_o(branch_resolved),
         .branch_taken_o(branch_taken),
+        .branch_fused_direct_o(branch_fused_direct),
         .csr_addr_o(csr_addr),
         .csr_rdata_i(csr_rdata),
         .csr_valid_i(csr_valid),
@@ -860,6 +862,37 @@ module tb_exec_top_3p #(
             (complete_payload[1*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
              64'h2804))
             fail("EX1 direct JAL link completion mismatch");
+        complete_ready = 3'b010;
+        tick();
+        complete_ready = 3'b000;
+
+        // A fused AUIPC/JALR retains its architectural JALR encoding, but
+        // fusion has converted its execution target into a static PC-relative
+        // JAL target.  Publish that distinction with the resolution pulse.
+        packet = packet_base(64'd204, 64'h2a00, 32'h0003_00e7);
+        packet[ISSUE_IMM +: 64] = 64'd8;
+        packet[ISSUE_RD +: 5] = 5'd1;
+        packet[ISSUE_BR_OP +: 4] = `RV64_BR_OP_JAL;
+        packet[ISSUE_REG_WRITE] = 1'b1;
+        packet[ISSUE_JUMP] = 1'b1;
+        packet[ISSUE_PREDICTED] = 1'b1;
+        packet[ISSUE_FUSED] = 1'b1;
+        issue_payload[1*ISSUE_WIDTH +: ISSUE_WIDTH] = packet;
+        issue_id[1*ID_WIDTH +: ID_WIDTH] = ID_WIDTH'(44);
+        issue_slot[1*SLOT_WIDTH +: SLOT_WIDTH] = 3'd4;
+        issue_valid = 3'b010;
+        #1;
+        if (!issue_ready[1] || !branch_resolved || !branch_taken ||
+            !branch_fused_direct || redirect_valid ||
+            (redirect_target != 64'h2a08))
+            fail("fused JALR did not publish static-direct resolution");
+        tick();
+        issue_valid = 3'b000;
+        #1;
+        if (!complete_valid[1] ||
+            (complete_payload[1*COMPLETE_WIDTH + COMPLETE_DATA +: 64] !=
+             64'h2a04))
+            fail("fused JALR link completion mismatch");
         complete_ready = 3'b010;
         tick();
         complete_ready = 3'b000;

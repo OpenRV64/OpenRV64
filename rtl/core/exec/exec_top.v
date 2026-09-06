@@ -84,6 +84,7 @@ module openrv64_exec_top #(
     output wire                         branch_taken_o,
     output wire [`RV64_XLEN-1:0]        branch_pc_o,
     output wire [`RV64_INSTR_WIDTH-1:0] branch_instr_o,
+    output wire                         branch_fused_direct_o,
 
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
     input  wire [`RV64_XLEN-1:0]        csr_rdata_i,
@@ -324,6 +325,7 @@ module openrv64_exec_top #(
             assign branch_conditional_o = 1'b0;
             assign branch_pc_o = pc_i;
             assign branch_instr_o = instr_i;
+            assign branch_fused_direct_o = 1'b0;
             assign mem_tag_o = {`OPENRV64_LSU_TAG_WIDTH{1'b0}};
             assign mem_xlate_only_o = 1'b0;
             assign mem_physical_o = 1'b0;
@@ -507,6 +509,7 @@ module openrv64_exec_top #(
                 .branch_taken_o(branch_taken_o),
                 .branch_pc_o(branch_pc_o),
                 .branch_instr_o(branch_instr_o),
+                .branch_fused_direct_o(branch_fused_direct_o),
                 .csr_addr_o(csr_addr_o), .csr_rdata_i(csr_rdata_i),
                 .csr_valid_i(csr_valid_i), .csr_writable_i(csr_writable_i),
                 .mem_valid_o(mem_valid_o), .mem_ready_i(mem_ready_i),
@@ -625,6 +628,7 @@ module openrv64_exec_top #(
             assign branch_taken_o = 1'b0;
             assign branch_pc_o = {`RV64_XLEN{1'b0}};
             assign branch_instr_o = {`RV64_INSTR_WIDTH{1'b0}};
+            assign branch_fused_direct_o = 1'b0;
             assign csr_addr_o = {`RV64_FUNCT12_WIDTH{1'b0}};
             assign csr_write_o = 1'b0;
             assign csr_wdata_o = {`RV64_XLEN{1'b0}};
