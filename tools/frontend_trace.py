@@ -35,7 +35,8 @@ FLAG_FIELDS = tuple(
     "control_restart exception_redirect translation_barrier halted wfi "
     "frontend_enable backend_enable tage_decode_read tage_early_read "
     "tage_dual_read tage_early_context_write tage_read_coalesced "
-    "tage_early_read_blocked".split()
+    "tage_early_read_blocked bp_metadata_dequeue bp_metadata_turnover "
+    "bp_metadata_valid bp_metadata_allocated".split()
 )
 
 LANE_FIELDS = {
@@ -74,6 +75,7 @@ REASONS = {
     20: "REQUEST_BLOCKED",
     21: "NO_PRESENTATION",
     22: "DECODE_EMPTY",
+    23: "BP_METADATA_BUSY",
     255: "UNKNOWN",
 }
 
@@ -95,7 +97,7 @@ EVENT_FIELDS = (
     "refinement_late", "bp_preliminary_redirect", "bp_tage_resteer",
     "bp_deferred_redirect", "bp_predict_redirect", "backend_redirect",
     "backend_memory_replay", "target_mispredict", "control_flush",
-    "control_restart", "exception_redirect",
+    "control_restart", "exception_redirect", "bp_metadata_turnover",
 )
 
 OCCUPANCY_FIELDS = (

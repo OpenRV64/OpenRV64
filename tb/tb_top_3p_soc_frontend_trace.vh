@@ -31,6 +31,7 @@ generate
         localparam [7:0] FTRACE_REQUEST_BLOCKED       = 8'd20;
         localparam [7:0] FTRACE_NO_PRESENTATION       = 8'd21;
         localparam [7:0] FTRACE_DECODE_EMPTY          = 8'd22;
+        localparam [7:0] FTRACE_BP_METADATA_BUSY      = 8'd23;
         localparam [7:0] FTRACE_UNKNOWN               = 8'd255;
 
         integer ftrace_fd;
@@ -141,7 +142,11 @@ generate
                     else if (dut.bp_decode_stall || dut.bp_fetch_stall)
                         ftrace_reason = FTRACE_BP_LOOKUP;
                     else if (dut.fetch_decode_valid != 0) begin
-                        if (|(dut.backend_decode_valid &
+                        if (dut.bp_sideband_lookup &&
+                            (|dut.frontend_control_select) &&
+                            !dut.bp_sideband_control_allow)
+                            ftrace_reason = FTRACE_BP_METADATA_BUSY;
+                        else if (|(dut.backend_decode_valid &
                               ~dut.backend_decode_ready))
                             ftrace_reason = FTRACE_BACKEND_BACKPRESSURE;
                         else
@@ -232,6 +237,10 @@ generate
                         dut.u_bp.diag_tage_coalesced_direction_read;
                     ftrace_flags[59] =
                         dut.u_bp.diag_tage_early_direction_blocked;
+                    ftrace_flags[60] = dut.bp_sideband_turnover_ready;
+                    ftrace_flags[61] = dut.bp_sideband_turnover_capture;
+                    ftrace_flags[62] = dut.bp_dispatch_valid_q;
+                    ftrace_flags[63] = dut.bp_dispatch_allocated_q;
 
                     ftrace_lane_state = 64'd0;
                     ftrace_lane_state[2:0] = dut.fetch_decode_valid;

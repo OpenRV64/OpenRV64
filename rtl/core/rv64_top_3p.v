@@ -1696,6 +1696,10 @@ module openrv64_rv64_top_3p #(
     };
     wire frontend_splice_path_safe;
     wire bp_sideband_control_allow;
+    wire bp_sideband_frontend_redirect;
+    wire bp_sideband_turnover_ready;
+    wire bp_sideband_turnover_capture;
+    wire bp_sideband_path_wait;
     wire [2:0] frontend_control_prefix_allow = {
         (!frontend_control[0] && !frontend_control[1]) ||
             (fetch3_istream_prediction_accept &&
@@ -2183,8 +2187,17 @@ module openrv64_rv64_top_3p #(
          bp_dispatch_valid_q) ?
             {decode_uses_rs2[1:0], bp_dispatch_uses_rs2_q} :
             decode_uses_rs2;
+    // The one-entry predictor metadata stage is elastic.  A resident
+    // control's response may patch the backend while the next decoded control
+    // replaces it on the same edge.  The predictor port still services only
+    // the old record in that cycle; the new record is serviced next cycle.
+    // Do not turn over on a response that redirects, because the live decode
+    // bundle is then younger wrong-path state.
+    assign bp_sideband_turnover_ready = bp_sideband_lookup &&
+        bp_resident_prediction_accept && !bp_sideband_frontend_redirect;
     wire bp_sideband_port_available = bp_sideband_lookup &&
-        !bp_dispatch_valid_q && frontend_common_enable &&
+        (!bp_dispatch_valid_q || bp_sideband_turnover_ready) &&
+        frontend_common_enable &&
         !bp_fetch_stall_effective && !bp_capacity_stall;
     assign bp_branch_present = use_icx_bus &&
         (bp_delayed_lookup ?
@@ -2203,9 +2216,10 @@ module openrv64_rv64_top_3p #(
         (bp_live_instr == bp_dispatch_selected_instr_q);
     assign bp_sideband_control_allow = !bp_dispatch_valid_q ?
         bp_sideband_port_available :
-        (!bp_dispatch_allocated_q && bp_pending_live_match &&
-         !bp_decode_stall);
-    wire bp_sideband_frontend_redirect = bp_sideband_lookup &&
+        (bp_sideband_turnover_ready ||
+         (!bp_dispatch_allocated_q && bp_pending_live_match &&
+          !bp_decode_stall));
+    assign bp_sideband_frontend_redirect = bp_sideband_lookup &&
         (bp_tage_resteer || bp_deferred_predict_redirect_q);
     wire [2:0] bp_live_lane_allow = bp_sideband_lookup ?
         ((~frontend_control_select |
@@ -2214,7 +2228,8 @@ module openrv64_rv64_top_3p #(
         (bp_delayed_lookup ? ~frontend_control_select : 3'b111);
     wire [2:0] live_backend_decode_valid = fetch_decode_valid &
         frontend_prefix_allow & bp_live_lane_allow &
-        {3{frontend_decode_enable && backend_decode_enable}};
+        {3{frontend_decode_enable && backend_decode_enable &&
+            !bp_sideband_path_wait}};
     wire staged_branch_decode_valid = bp_delayed_lookup &&
         !bp_sideband_lookup &&
         bp_dispatch_valid_q && backend_decode_enable && !bp_decode_stall;
@@ -2354,7 +2369,8 @@ module openrv64_rv64_top_3p #(
         (bp_delayed_lookup && !bp_sideband_lookup &&
          bp_dispatch_valid_q) ? 2'd1 : 2'd0;
     wire bp_stage_capture_enable = bp_delayed_lookup &&
-        !bp_dispatch_valid_q && frontend_common_enable &&
+        (!bp_dispatch_valid_q || bp_sideband_turnover_ready) &&
+        !bp_sideband_frontend_redirect && frontend_common_enable &&
         !bp_fetch_stall_effective && !bp_capacity_stall;
     wire bp_capture_lane0 = bp_stage_capture_enable &&
         frontend_control_select[0] && fetch_decode_valid[0];
@@ -2368,6 +2384,8 @@ module openrv64_rv64_top_3p #(
     wire [2:0] bp_control_capture =
         {bp_capture_lane2, bp_capture_lane1, bp_capture_lane0};
     assign bp_live_control_fire = |bp_control_capture;
+    assign bp_sideband_turnover_capture = bp_sideband_turnover_ready &&
+                                          bp_live_control_fire;
     // Direct conditional targets are available in decode.  Launch BP9's BRAM
     // lookup and, when the branch is admitted on the same edge, immediately
     // follow BTFNT for conditionals or the known target for direct jumps.
@@ -2426,6 +2444,16 @@ module openrv64_rv64_top_3p #(
         bp_dispatch_allocated_q;
     assign bp_pending_prediction_accept = bp_sideband_response_ready &&
         !bp_dispatch_allocated_q && bp_pending_control_fire;
+    // A turnover-allocated control did not launch its predictor access on the
+    // capture edge: that port was still returning the previous control.  Do
+    // not admit its unlocked successor until the new response is usable.
+    // Otherwise a later taken refinement patches the branch to "predicted"
+    // after fallthrough instructions have already entered the backend, so
+    // execution has no reason to squash them.
+    assign bp_sideband_path_wait = bp_sideband_lookup &&
+        bp_dispatch_valid_q && bp_dispatch_allocated_q &&
+        !bp_dispatch_path_locked_q &&
+        !bp_resident_prediction_accept;
     assign bp_branch_allocate = bp_sideband_lookup ?
         (bp_resident_prediction_accept || bp_pending_prediction_accept) :
         bp_delayed_lookup ?
@@ -2447,6 +2475,12 @@ module openrv64_rv64_top_3p #(
         if (rst_n && bp_preliminary_redirect &&
             !backend_decode_fire[bp_live_lane])
             $error("BP9 preliminary redirect lost its control allocation");
+        if (rst_n && bp_sideband_turnover_capture &&
+            !bp_resident_prediction_accept)
+            $error("BP9 metadata turnover overwrote an unaccepted control");
+        if (rst_n && bp_sideband_path_wait &&
+            ((|fetch_decode_ready) || (|frontend_decode_fire)))
+            $error("BP9 qualification hold consumed younger decode state");
         if (rst_n &&
             |(frontend_decode_fire & frontend_control &
               ~frontend_control_select))
@@ -2701,7 +2735,8 @@ module openrv64_rv64_top_3p #(
     end
     assign fetch_decode_ready[0] = bp_sideband_lookup ?
         (frontend_prefix_allow[0] && frontend_decode_enable &&
-         backend_decode_enable && bp_live_lane_allow[0] &&
+         backend_decode_enable && !bp_sideband_path_wait &&
+         bp_live_lane_allow[0] &&
          backend_decode_ready[0]) : bp_delayed_lookup ?
         (bp_dispatch_valid_q ?
          (staged_branch_pack_enable && backend_decode_fire[0] &&
@@ -2714,7 +2749,8 @@ module openrv64_rv64_top_3p #(
          backend_decode_enable && backend_decode_ready[0]);
     assign fetch_decode_ready[1] = bp_sideband_lookup ?
         (frontend_prefix_allow[1] && frontend_decode_enable &&
-         backend_decode_enable && bp_live_lane_allow[1] &&
+         backend_decode_enable && !bp_sideband_path_wait &&
+         bp_live_lane_allow[1] &&
          backend_decode_ready[1]) : bp_delayed_lookup ?
         (bp_dispatch_valid_q ?
          (staged_branch_pack_enable && backend_decode_fire[0] &&
@@ -2730,7 +2766,8 @@ module openrv64_rv64_top_3p #(
          backend_decode_enable && backend_decode_ready[1]);
     assign fetch_decode_ready[2] = bp_sideband_lookup ?
         (frontend_prefix_allow[2] && frontend_decode_enable &&
-         backend_decode_enable && bp_live_lane_allow[2] &&
+         backend_decode_enable && !bp_sideband_path_wait &&
+         bp_live_lane_allow[2] &&
          backend_decode_ready[2]) : bp_delayed_lookup ?
         (bp_dispatch_valid_q ? 1'b0 :
          (frontend_prefix_allow[2] &&
@@ -2875,6 +2912,8 @@ module openrv64_rv64_top_3p #(
     wire [RETIRE_COUNT_WIDTH-1:0] backend_retire_occupancy;
     wire [DISPATCH_COUNT_WIDTH-1:0] backend_dispatch_occupancy;
     wire bp_prediction_update_valid = bp_resident_prediction_accept;
+    wire bp_prediction_pending_valid = bp_sideband_lookup &&
+        bp_dispatch_valid_q && bp_dispatch_allocated_q;
 
     openrv64_backend_3p #(
         .RETIRE_DEPTH(RETIRE_DEPTH),
@@ -2933,6 +2972,9 @@ module openrv64_rv64_top_3p #(
         .prediction_update_id_i(bp_dispatch_selected_id_q),
         .prediction_update_slot_i(bp_dispatch_selected_slot_q),
         .prediction_update_taken_i(bp_prediction_taken_effective),
+        .prediction_pending_valid_i(bp_prediction_pending_valid),
+        .prediction_pending_id_i(bp_dispatch_selected_id_q),
+        .prediction_pending_slot_i(bp_dispatch_selected_slot_q),
         .csr_addr_o(backend_csr_addr), .csr_rdata_i(csr_rdata),
         .csr_valid_i(csr_valid), .csr_writable_i(csr_writable),
         .csr_write_ready_i(csr_write_ready_to_backend),

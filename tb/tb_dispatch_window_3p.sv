@@ -50,6 +50,9 @@ module tb_dispatch_window_3p;
     reg [IDW-1:0] prediction_update_id;
     reg [SW-1:0] prediction_update_slot;
     reg prediction_update_taken;
+    reg prediction_pending_valid;
+    reg [IDW-1:0] prediction_pending_id;
+    reg [SW-1:0] prediction_pending_slot;
     wire [6*5-1:0] gpr_read_addr;
     reg [6*64-1:0] gpr_read_data;
     reg allocation_ready;
@@ -107,6 +110,9 @@ module tb_dispatch_window_3p;
         .prediction_update_id_i(prediction_update_id),
         .prediction_update_slot_i(prediction_update_slot),
         .prediction_update_taken_i(prediction_update_taken),
+        .prediction_pending_valid_i(prediction_pending_valid),
+        .prediction_pending_id_i(prediction_pending_id),
+        .prediction_pending_slot_i(prediction_pending_slot),
         .gpr_read_addr_o(gpr_read_addr), .gpr_read_data_i(gpr_read_data),
         .rename_source_producer_valid_i(6'b000000),
         .rename_source_producer_id_i(
@@ -208,6 +214,9 @@ module tb_dispatch_window_3p;
             prediction_update_id = {IDW{1'b0}};
             prediction_update_slot = {SW{1'b0}};
             prediction_update_taken = 1'b0;
+            prediction_pending_valid = 1'b0;
+            prediction_pending_id = {IDW{1'b0}};
+            prediction_pending_slot = {SW{1'b0}};
             load_conflict_train_valid = 1'b0;
             load_conflict_train_pc = 64'd0;
             completion_valid = 3'b000;
@@ -946,9 +955,10 @@ module tb_dispatch_window_3p;
             fail("Zbb instruction was not fixed to EX0");
 
         // BP9 dispatches the branch with a provisional not-taken bit.  Its
-        // synchronous response must inhibit that exact branch for one issue
-        // cycle, patch the resident payload, and leave it eligible on the
-        // following cycle with the final prediction.
+        // synchronous response may take more than one cycle after admission.
+        // The pending identity must inhibit that exact branch until the
+        // response patches the resident payload, then leave it eligible on
+        // the following cycle with the final prediction.
         flush = 1'b1;
         tick();
         flush = 1'b0;
@@ -967,6 +977,14 @@ module tb_dispatch_window_3p;
         tick();
         clear_inputs();
         pipe_ready = 4'b1111;
+        prediction_pending_valid = 1'b1;
+        prediction_pending_id = IDW'(90);
+        prediction_pending_slot = 4'd3;
+        #1;
+        if (|pipe_valid)
+            fail("branch issued while prediction remained pending");
+        tick();
+        clear_inputs();
         prediction_update_valid = 1'b1;
         prediction_update_id = IDW'(90);
         prediction_update_slot = 4'd3;

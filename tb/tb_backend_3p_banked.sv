@@ -149,6 +149,9 @@ module tb_backend_3p_banked #(
         .prediction_update_id_i(0),
         .prediction_update_slot_i(0),
         .prediction_update_taken_i(1'b0),
+        .prediction_pending_valid_i(1'b0),
+        .prediction_pending_id_i(0),
+        .prediction_pending_slot_i(0),
         .csr_addr_o(),
         .csr_rdata_i(64'd0),
         .csr_valid_i(1'b1),
@@ -1223,6 +1226,7 @@ module tb_backend_3p_banked #(
     reg [63:0] replay_check_count_before;
     reg [63:0] replay_violation_count_before;
     reg [63:0] replay_count_before;
+    reg [63:0] replay_ordered_count_before;
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
@@ -2308,6 +2312,8 @@ module tb_backend_3p_banked #(
             replay_violation_count_before =
                 dut.perf_memory_store_violations_q;
             replay_count_before = dut.perf_memory_replays_q;
+            replay_ordered_count_before =
+                dut.perf_memory_ordered_issue_replays_q;
 
             decode_payload = {3*IW{1'b0}};
             decode_payload[0 +: IW] =
@@ -2544,6 +2550,8 @@ module tb_backend_3p_banked #(
             replay_violation_count_before =
                 dut.perf_memory_store_violations_q;
             replay_count_before = dut.perf_memory_replays_q;
+            replay_ordered_count_before =
+                dut.perf_memory_ordered_issue_replays_q;
 
             decode_payload = {3*IW{1'b0}};
             decode_payload[0 +: IW] =
@@ -2651,15 +2659,20 @@ module tb_backend_3p_banked #(
                 replay_check_count_before + 4) ||
                 (dut.perf_memory_store_violations_q !=
                  replay_violation_count_before + 1) ||
-                (dut.perf_memory_replays_q != replay_count_before + 1)) begin
+                (dut.perf_memory_replays_q != replay_count_before + 1 +
+                 (dut.perf_memory_ordered_issue_replays_q -
+                  replay_ordered_count_before))) begin
                 $display({"misaligned replay counters checks=%0d->%0d ",
-                          "violations=%0d->%0d replays=%0d->%0d"},
+                          "violations=%0d->%0d replays=%0d->%0d ",
+                          "ordered=%0d->%0d"},
                          replay_check_count_before,
                          dut.perf_memory_store_address_checks_q,
                          replay_violation_count_before,
                          dut.perf_memory_store_violations_q,
                          replay_count_before,
-                         dut.perf_memory_replays_q);
+                         dut.perf_memory_replays_q,
+                         replay_ordered_count_before,
+                         dut.perf_memory_ordered_issue_replays_q);
                 fail("misaligned replay counters classified components wrong");
             end
 

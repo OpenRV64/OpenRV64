@@ -1294,6 +1294,10 @@ module openrv64_rv64_top #(
             {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
         .prediction_update_slot_3p_i(3'd0),
         .prediction_update_taken_3p_i(1'b0),
+        .prediction_pending_valid_3p_i(1'b0),
+        .prediction_pending_id_3p_i(
+            {`OPENRV64_INSTR_ID_WIDTH{1'b0}}),
+        .prediction_pending_slot_3p_i(3'd0),
         .gpr_read_data_3p_i({6*`RV64_XLEN{1'b0}}),
         .allocation_ready_3p_i(1'b0),
         .rename_free_valid_3p_i(3'b000),

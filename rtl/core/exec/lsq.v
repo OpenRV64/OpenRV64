@@ -913,12 +913,6 @@ module openrv64_lsq #(
         store_id_q[posted_store_complete_index];
     assign posted_store_complete_slot_o =
         store_retire_q[posted_store_complete_index];
-    assign load_access_valid_o = req_fire && !request_store_r;
-    assign load_access_id_o = load_id_q[request_load_array_index];
-    assign load_access_slot_o = load_retire_q[request_load_array_index];
-    assign load_access_meta_o = load_meta_q[request_load_array_index];
-    assign load_access_paddr_o = load_paddr_q[request_load_array_index];
-
     // Local results are immediate and fault completions.  Accepted ordinary
     // cacheable stores use the identity-only completion port above.  Forwarded
     // loads use the registered holding slot and share this result port.
@@ -1012,6 +1006,24 @@ module openrv64_lsq #(
     wire xlate_resp_fire = xlate_resp_valid_i && xlate_resp_is_expected;
     wire store_address_from_allocation = xlate_resp_matches_allocation &&
                                          xlate_alloc_select_store;
+    wire load_address_from_allocation = xlate_resp_matches_allocation &&
+                                        xlate_alloc_select_load;
+    // Memory-dependence tracking must observe every successfully translated
+    // load, not only loads that issue a cache request.  A load may complete
+    // by forwarding from an older committed SQ entry while a newer, still
+    // older store has not reached the LSQ.  That forwarded value is still
+    // speculative and must remain replayable when the missing store later
+    // reveals an alias.
+    assign load_access_valid_o = xlate_resp_fire &&
+        xlate_resp_load_tag_valid && !xlate_resp_access_fault_i &&
+        !xlate_resp_page_fault_i;
+    assign load_access_id_o = load_address_from_allocation ?
+        load_alloc_id_i : load_id_q[xlate_resp_load_index];
+    assign load_access_slot_o = load_address_from_allocation ?
+        load_alloc_slot_i : load_retire_q[xlate_resp_load_index];
+    assign load_access_meta_o = load_address_from_allocation ?
+        load_alloc_meta_i : load_meta_q[xlate_resp_load_index];
+    assign load_access_paddr_o = xlate_resp_paddr_i;
     assign store_address_valid_o = xlate_resp_fire &&
         xlate_resp_store_tag_valid && !xlate_resp_access_fault_i &&
         !xlate_resp_page_fault_i;

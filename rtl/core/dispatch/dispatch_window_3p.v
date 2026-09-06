@@ -74,6 +74,11 @@ module openrv64_dispatch_window_3p #(
     input  wire [RETIRE_SLOT_WIDTH-1:0]
                                         prediction_update_slot_i,
     input  wire                         prediction_update_taken_i,
+    input  wire                         prediction_pending_valid_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        prediction_pending_id_i,
+    input  wire [RETIRE_SLOT_WIDTH-1:0]
+                                        prediction_pending_slot_i,
 
     output wire [6*`RV64_REG_ADDR_WIDTH-1:0] gpr_read_addr_o,
     input  wire [6*`RV64_XLEN-1:0]      gpr_read_data_i,
@@ -289,6 +294,7 @@ module openrv64_dispatch_window_3p #(
     reg [COUNT_WIDTH-1:0]               count_q;
 
     wire [DEPTH-1:0] prediction_update_match;
+    wire [DEPTH-1:0] prediction_pending_match;
     genvar prediction_match_entry;
     generate
         for (prediction_match_entry = 0;
@@ -301,6 +307,12 @@ module openrv64_dispatch_window_3p #(
                 (id_q[prediction_match_entry] == prediction_update_id_i) &&
                 (rob_slot_q[prediction_match_entry] ==
                  prediction_update_slot_i);
+            assign prediction_pending_match[prediction_match_entry] =
+                prediction_pending_valid_i &&
+                valid_q[prediction_match_entry] &&
+                (id_q[prediction_match_entry] == prediction_pending_id_i) &&
+                (rob_slot_q[prediction_match_entry] ==
+                 prediction_pending_slot_i);
         end
     endgenerate
 
@@ -1651,6 +1663,7 @@ module openrv64_dispatch_window_3p #(
                 !issued_q[eligible_idx] && src1_ready_now[eligible_idx] &&
                 src2_ready_now[eligible_idx] && !older_unissued_hard &&
                 !older_persistent_hard &&
+                !prediction_pending_match[eligible_idx] &&
                 !prediction_update_match[eligible_idx];
 
             // Same-lane chaining is a scheduler promise, not a speculative

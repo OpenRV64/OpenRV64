@@ -83,6 +83,10 @@ module openrv64_backend_3p #(
                                         prediction_update_id_i,
     input  wire [SLOT_WIDTH-1:0]        prediction_update_slot_i,
     input  wire                         prediction_update_taken_i,
+    input  wire                         prediction_pending_valid_i,
+    input  wire [`OPENRV64_INSTR_ID_WIDTH-1:0]
+                                        prediction_pending_id_i,
+    input  wire [SLOT_WIDTH-1:0]        prediction_pending_slot_i,
 
     output wire [`RV64_FUNCT12_WIDTH-1:0] csr_addr_o,
     input  wire [`RV64_XLEN-1:0]        csr_rdata_i,
@@ -1372,7 +1376,6 @@ module openrv64_backend_3p #(
     wire load_conflict_record_train_valid =
         memory_disambiguation_enabled && exec_store_address_valid &&
         memory_store_survives_squash_r && memory_store_collision_r;
-
     // Do not qualify a registered replay with the live branch-resolution
     // network: redirect feeds recovery, recovery feeds execution readiness,
     // and execution readiness feeds branch resolution.  The registered
@@ -1566,7 +1569,11 @@ module openrv64_backend_3p #(
                 if (memory_store_violation_r) begin
                     perf_memory_store_violations_q <=
                         perf_memory_store_violations_q + 1'b1;
-                    if (!memory_replay_pending_q || memory_replay_valid ||
+                    // The outgoing inclusive cut already removes an equal
+                    // or younger live violation.  Retain only a newly found
+                    // older cut; otherwise a store that remains visible on
+                    // the redirect cycle re-arms the identical replay.
+                    if (!memory_replay_pending_q ||
                         memory_id_is_younger(memory_replay_id_q,
                                              memory_violation_load_id_r)) begin
                         memory_replay_pending_q <= 1'b1;
@@ -5687,6 +5694,9 @@ module openrv64_backend_3p #(
         .prediction_update_id_3p_i(prediction_update_id_i),
         .prediction_update_slot_3p_i(prediction_update_slot_i),
         .prediction_update_taken_3p_i(prediction_update_taken_i),
+        .prediction_pending_valid_3p_i(prediction_pending_valid_i),
+        .prediction_pending_id_3p_i(prediction_pending_id_i),
+        .prediction_pending_slot_3p_i(prediction_pending_slot_i),
         .gpr_read_addr_3p_o(dispatch_gpr_read_addr),
         .gpr_read_ready_3p_o(dispatch_gpr_read_ready),
         .gpr_read_data_3p_i(dispatch_gpr_read_data),
