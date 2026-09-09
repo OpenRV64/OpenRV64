@@ -45,14 +45,34 @@ _MIN_PARALLEL_BYTES = 8 << 20
 # machine scale (e.g. 256) needs worker-side tree reduction first.
 _DEFAULT_MAX_JOBS = 8
 
+# Coarse opcode -> scheduler-occupancy class index, in the order of
+# model.SCHED_CLS_NAMES.  MULDIV needs a funct7 test on top of the
+# table; UNKNOWN instruction words (0) land in OTHER.
+(_CLS_ALU, _CLS_LOAD, _CLS_STORE, _CLS_BRANCH, _CLS_JUMP, _CLS_MULDIV,
+ _CLS_OTHER) = range(7)
+_OPCLS = [_CLS_OTHER] * 128
+for _op in (0x13, 0x1B, 0x37, 0x17, 0x33, 0x3B):
+    _OPCLS[_op] = _CLS_ALU
+for _op in (0x03, 0x07):
+    _OPCLS[_op] = _CLS_LOAD
+for _op in (0x23, 0x27):
+    _OPCLS[_op] = _CLS_STORE
+_OPCLS[0x63] = _CLS_BRANCH
+_OPCLS[0x6F] = _OPCLS[0x67] = _CLS_JUMP
+del _op
+
 
 def _parse_range(args):
     """Worker: parse lines starting in [start, end) into a partial Trace.
 
-    Returns a partial Trace; use _parse_range_packed for the
-    cross-process form.
+    Rows outside [cyc_lo, cyc_hi] are skipped before the full field
+    split, so windowed parses of long traces stay cheap.  Returns a
+    partial Trace; use _parse_range_packed for the cross-process form.
     """
-    path, start, end = args
+    path, start, end, cyc_lo, cyc_hi = args
+    windowed = cyc_lo > 0 or cyc_hi is not None
+    if cyc_hi is None:
+        cyc_hi = 1 << 62
     trace = Trace()
     insns = trace.insns
     issue_counts = trace.issue_counts
@@ -60,6 +80,8 @@ def _parse_range(args):
     sched_cycles = trace.sched_cycles
     rob_head_cycles = trace.rob_head_cycles
     decode_cand = trace.decode_cand
+    sched_cls_occ = trace.sched_cls_occ
+    lsq_occ = trace.lsq_occ
     rob_occ = trace.rob_occ
     rob_completed_occ = trace.rob_completed_occ
     sched_occ = trace.sched_occ
@@ -85,6 +107,17 @@ def _parse_range(args):
             if pos >= end:
                 break
             pos += len(bline)
+            if windowed:
+                i = bline.find(b",")
+                j = bline.find(b",", i + 1)
+                if j > i >= 0:
+                    try:
+                        c = int(bline[i + 1:j])
+                    except ValueError:
+                        pass  # header; the full path skips it
+                    else:
+                        if c < cyc_lo or c > cyc_hi:
+                            continue
             p = bline.decode("ascii", "replace").split(",")
             if len(p) < _NFIELDS:
                 if bline.strip():
@@ -136,6 +169,15 @@ def _parse_range(args):
                     rec.sched_slot = int(p[_SLOT])
                 n = sched_occ.get(cycle)
                 sched_occ[cycle] = 1 if n is None else n + 1
+                op = rec.instr & 0x7F
+                cls = _OPCLS[op]
+                if cls == _CLS_ALU and (op == 0x33 or op == 0x3B) \
+                        and (rec.instr >> 25) & 1:
+                    cls = _CLS_MULDIV
+                lst = sched_cls_occ.get(cycle)
+                if lst is None:
+                    lst = sched_cls_occ[cycle] = [0, 0, 0, 0, 0, 0, 0]
+                lst[cls] += 1
                 e = sched_cycles.get(cycle)
                 if e is None:
                     e = sched_cycles[cycle] = [NO_UID, 0, False]
@@ -194,6 +236,10 @@ def _parse_range(args):
                     rec.complete_wait_cycles += 1
             elif stage == 7:  # LSQ residency (state LOAD=8 / STORE=9)
                 rec.lsq_cycles += 1
+                lst = lsq_occ.get(cycle)
+                if lst is None:
+                    lst = lsq_occ[cycle] = [0, 0]
+                lst[1 if state == 9 else 0] += 1
                 if state == 9:
                     rec.lsq_is_store = True
                 r = rec.lsq_wait_reasons
@@ -235,7 +281,8 @@ def _parse_range_packed(args):
     return (t.schema, t.rows, t.skipped_rows, t.min_cycle, t.max_cycle,
             packed, t.ssr_counts, t.issue_counts, t.retire_counts,
             t.sched_cycles, t.rob_head_cycles, t.retire_backpressure_cycles,
-            t.rob_occ, t.rob_completed_occ, t.sched_occ, t.decode_cand)
+            t.rob_occ, t.rob_completed_occ, t.sched_occ, t.decode_cand,
+            t.sched_cls_occ, t.lsq_occ)
 
 
 def _merge_dict(a, b):
@@ -300,13 +347,71 @@ def _merge_insn(a, b):
     a.retire_wait_cycles += b.retire_wait_cycles
 
 
-def parse_file(path, progress=None, jobs=None):
-    """Parse a trace CSV into a Trace.
+def _decompress_bz2(path):
+    """Decompress path to a sibling temp file and return its name.
+
+    pbzip2/lbzcat use every core on multi-stream archives and fall back
+    to serial on single-stream ones; the caller removes the file."""
+    import subprocess
+    import tempfile
+    from shutil import which
+    fd, tmp = tempfile.mkstemp(prefix=".pipeviz-", suffix=".csv",
+                               dir=os.path.dirname(path) or ".")
+    tool = which("pbzip2") or which("lbzcat") or which("bzcat")
+    sys.stderr.write("pipeviz: decompressing %s...\n" % path)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            if tool and tool.endswith("pbzip2"):
+                subprocess.check_call([tool, "-dc", path], stdout=out)
+            elif tool:
+                subprocess.check_call([tool, path], stdout=out)
+            else:
+                import bz2
+                with bz2.open(path, "rb") as src:
+                    while True:
+                        chunk = src.read(1 << 24)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return tmp
+
+
+def parse_file(path, progress=None, jobs=None,
+               start_cycle=None, end_cycle=None):
+    """Parse a trace CSV (plain or .bz2) into a Trace.
 
     jobs=None picks a worker count from the file size and CPU count;
     jobs=1 forces serial.  progress, if given, is called with the row
-    count as parsing advances.
+    count as parsing advances.  A .bz2 input is decompressed to a
+    sibling temp file for the byte-range workers and removed after the
+    parse; trace.path keeps the original name.  start_cycle/end_cycle
+    keep only rows in that inclusive window (instructions in flight at
+    the boundaries appear with partial lifetimes).
     """
+    if path.endswith(".bz2"):
+        tmp = _decompress_bz2(path)
+        try:
+            trace = _parse_plain(tmp, progress, jobs,
+                                 start_cycle, end_cycle)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        trace.path = path
+        return trace
+    return _parse_plain(path, progress, jobs, start_cycle, end_cycle)
+
+
+def _parse_plain(path, progress=None, jobs=None,
+                 start_cycle=None, end_cycle=None):
+    cyc_lo = 0 if start_cycle is None else start_cycle
     size = os.path.getsize(path)
     if jobs is None or jobs < 1:
         if size < _MIN_PARALLEL_BYTES:
@@ -316,10 +421,11 @@ def parse_file(path, progress=None, jobs=None):
     jobs = min(jobs, max(1, size // (1 << 20)))  # >=1MB per worker
 
     if jobs == 1:
-        trace = _parse_range((path, 0, size))
+        trace = _parse_range((path, 0, size, cyc_lo, end_cycle))
     else:
         import multiprocessing
-        bounds = [(path, size * i // jobs, size * (i + 1) // jobs)
+        bounds = [(path, size * i // jobs, size * (i + 1) // jobs,
+                   cyc_lo, end_cycle)
                   for i in range(jobs)]
         ctx = multiprocessing.get_context("fork")
         trace = Trace()
@@ -331,7 +437,7 @@ def parse_file(path, progress=None, jobs=None):
             for payload in pool.imap(_parse_range_packed, bounds):
                 (schema, rows, skipped, mn, mx,
                  packed, ssr, ic, rc, sc, rhc, rwc,
-                 ro, rco, so, dcand) = payload
+                 ro, rco, so, dcand, scls, lsq) = payload
                 trace.rows += rows
                 trace.skipped_rows += skipped
                 if trace.schema is None:
@@ -364,6 +470,22 @@ def parse_file(path, progress=None, jobs=None):
                 _merge_dict(trace.rob_completed_occ, rco)
                 _merge_dict(trace.sched_occ, so)
                 _merge_dict(trace.decode_cand, dcand)
+                tscls = trace.sched_cls_occ
+                for cyc, lst in scls.items():
+                    ea = tscls.get(cyc)
+                    if ea is None:
+                        tscls[cyc] = lst
+                    else:
+                        for i in range(7):
+                            ea[i] += lst[i]
+                tlsq = trace.lsq_occ
+                for cyc, lst in lsq.items():
+                    ea = tlsq.get(cyc)
+                    if ea is None:
+                        tlsq[cyc] = lst
+                    else:
+                        ea[0] += lst[0]
+                        ea[1] += lst[1]
                 for t in packed:
                     uid = t[0]
                     ra = insns.get(uid)

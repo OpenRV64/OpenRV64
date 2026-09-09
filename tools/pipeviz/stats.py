@@ -1,6 +1,7 @@
 """Basic statistics over a parsed Trace."""
 
-from .model import stage_name, state_name, reason_name
+from .model import (stage_name, state_name, reason_name,
+                    SCHED_CLS_NAMES)
 
 
 def _pct(n, total):
@@ -636,6 +637,64 @@ def wakeup_report(trace, top=12):
     a("  (slack==1 on a lat=1 producer doubles that hop; on a lat=3")
     a("   load it adds 33%%.  Serial chains pay per hop; parallel")
     a("   edges are free.  Price the fix by re-execution, not here.)")
+    return "\n".join(out)
+
+
+def timeline_report(trace, bucket=128, csv_path=None):
+    """Phase/time-series view: fixed-size cycle buckets with admission,
+    issue, retire and in-flight per bucket.  Emits a CSV for graphing
+    (--timeline-csv) and prints an ASCII admission-rate strip for a
+    quick phase read.  Admission counts retired insns only (correct
+    path), so rates read as sustained useful supply."""
+    lo, hi = trace.min_cycle, trace.max_cycle
+    adm = {}
+    ret_c = {}
+    infl = {}
+    for r in trace.insns.values():
+        if not r.retired:
+            continue
+        if r.sched_enter_cycle is not None:
+            adm[r.sched_enter_cycle] = adm.get(r.sched_enter_cycle, 0) + 1
+        if r.retire_cycle is not None:
+            ret_c[r.retire_cycle] = ret_c.get(r.retire_cycle, 0) + 1
+    rows = []
+    c = lo
+    while c <= hi:
+        end = min(c + bucket - 1, hi)
+        n = end - c + 1
+        a = sum(adm.get(x, 0) for x in range(c, end + 1))
+        i = sum(trace.issue_counts.get(x, 0) for x in range(c, end + 1))
+        rr = sum(ret_c.get(x, 0) for x in range(c, end + 1))
+        z = sum(1 for x in range(c, end + 1) if adm.get(x, 0) == 0)
+        rows.append((c, n, a, i, rr, z))
+        c = end + 1
+    out = []
+    a_ = out.append
+    a_("timeline (%d-cycle buckets, %d buckets):" % (bucket, len(rows)))
+    if csv_path:
+        with open(csv_path, "w") as f:
+            f.write("cycle,admitted,admit_rate,issued,issue_rate,"
+                    "retired,retire_rate,zero_admission_cycles\n")
+            for c0, n, a, i, rr, z in rows:
+                f.write("%d,%d,%.3f,%d,%.3f,%d,%.3f,%d\n" % (
+                    c0, a, a / float(n), i, i / float(n),
+                    rr, rr / float(n), z))
+        a_("  csv written: %s" % csv_path)
+    glyphs = " .:-=+*#%@"
+    strip = []
+    for c0, n, a, i, rr, z in rows:
+        rate = a / float(n)
+        strip.append(glyphs[min(int(rate / 3.0 * (len(glyphs) - 1)),
+                                len(glyphs) - 1)])
+    a_("  admission rate strip (' '=0 .. '@'=3/cyc), %d cyc/char:"
+       % bucket)
+    st = "".join(strip)
+    for k in range(0, len(st), 100):
+        a_("  " + st[k:k + 100])
+    rates = sorted(x[2] / float(x[1]) for x in rows)
+    n = len(rates)
+    a_("  bucket admit-rate p10/p50/p90: %.2f / %.2f / %.2f" % (
+        rates[n // 10], rates[n // 2], rates[n * 9 // 10]))
     return "\n".join(out)
 
 
@@ -1444,4 +1503,169 @@ def health_report(trace, phases=10, width=3):
     a("IS%% = issued / min(%d, scheduler waiting); RT%% = retired / "
       "min(%d, ROB waiting)" % (width, width))
     a("*mt%% = cycles that structure was empty (excluded from its ratio)")
+    return "\n".join(out)
+
+
+def pipe_util_report(trace):
+    """Per-pipe utilization: busy fraction, class mix of what fired,
+    busy/idle run-length shape, and pipes-busy-per-cycle.  Fires
+    include wrong-path issues (they occupied the pipe), so the mix
+    reads as offered load, not retired work."""
+    from .model import PIPE_NAMES
+    lo, hi = trace.min_cycle, trace.max_cycle
+    span = hi - lo + 1
+    pipes = {}  # pipe code -> {cycle: class}, one fire per pipe-cycle
+    for r in trace.insns.values():
+        if r.issue_cycle is None or r.issue_pipe < 0:
+            continue
+        pipes.setdefault(r.issue_pipe, {})[r.issue_cycle] = \
+            _insn_class(r.instr)
+
+    def run_buckets(busy_cycles, want_busy):
+        # Bucketed run lengths; the shape (steady vs bursty) matters
+        # more than the mean, so keep the tails distinct.
+        buckets = [(1, "1"), (2, "2"), (3, "3"), (5, "4-5"),
+                   (9, "6-9"), (19, "10-19"), (1 << 30, "20+")]
+        counts = dict((label, 0) for _, label in buckets)
+        total = 0
+        longest = 0
+        n = 0
+        for c in range(lo, hi + 2):
+            hit = (c <= hi) and ((c in busy_cycles) == want_busy)
+            if hit:
+                n += 1
+                continue
+            if n:
+                total += 1
+                if n > longest:
+                    longest = n
+                for limit, label in buckets:
+                    if n <= limit:
+                        counts[label] += 1
+                        break
+                n = 0
+        return counts, total, longest
+
+    out = []
+    a_ = out.append
+    a_("pipe utilization (span %s cycles):" % "{:,}".format(span))
+    for code in sorted(pipes):
+        d = pipes[code]
+        busy = len(d)
+        mix = {}
+        for cls in d.values():
+            mix[cls] = mix.get(cls, 0) + 1
+        mix_s = ", ".join(
+            "%s %s (%.1f%%)" % (k, "{:,}".format(v), 100.0 * v / busy)
+            for k, v in sorted(mix.items(), key=lambda kv: -kv[1]))
+        a_("  %-5s busy %s (%.1f%%)   idle %s (%.1f%%)" % (
+            PIPE_NAMES.get(code, "pipe%d" % code),
+            "{:,}".format(busy), 100.0 * busy / span,
+            "{:,}".format(span - busy), 100.0 * (span - busy) / span))
+        a_("        fired: %s" % mix_s)
+        for want, label in ((True, "busy"), (False, "idle")):
+            counts, total, longest = run_buckets(d, want)
+            a_("        %s runs (n=%s, longest %d): %s" % (
+                label, "{:,}".format(total), longest,
+                "  ".join("%s:%d" % (lbl, counts[lbl])
+                          for _, lbl in ((0, "1"), (0, "2"), (0, "3"),
+                                         (0, "4-5"), (0, "6-9"),
+                                         (0, "10-19"), (0, "20+")))))
+    width = {}
+    for c in range(lo, hi + 1):
+        n = sum(1 for d in pipes.values() if c in d)
+        width[n] = width.get(n, 0) + 1
+    a_("  pipes busy per cycle: " + "   ".join(
+        "%d: %s (%.1f%%)" % (n, "{:,}".format(width[n]),
+                             100.0 * width[n] / span)
+        for n in sorted(width)))
+    return "\n".join(out)
+
+
+def _occ_stats(vals, span):
+    """(mean, p50, p90, p99, max, cycles_at_max) of a per-cycle
+    occupancy series; cycles absent from vals count as zero."""
+    vs = sorted(v for v in vals if v > 0)
+    if not vs or span <= 0:
+        return (0.0, 0, 0, 0, 0, 0)
+    pad = span - len(vs)
+
+    def pct(p):
+        i = min(span - 1, (span * p) // 100) - pad
+        return vs[i] if i >= 0 else 0
+
+    mx = vs[-1]
+    at = 0
+    for v in reversed(vs):
+        if v != mx:
+            break
+        at += 1
+    return (sum(vs) / float(span), pct(50), pct(90), pct(99), mx, at)
+
+
+def summary_report(trace):
+    """One-screen machine state: throughput and width mix, occupancy
+    percentiles for the big structures (scheduler split by class), and
+    per-class issue->complete latency."""
+    span = trace.n_cycles
+    insns = trace.insns.values()
+    fetched = len(trace.insns)
+    issued = sum(1 for r in insns if r.issue_cycle is not None)
+    retired = sum(1 for r in insns if r.retire_cycle is not None)
+    squashed = fetched - retired
+
+    out = []
+    a = out.append
+    a("summary: %s" % (trace.path or "<stream>"))
+    a("cycles: {:,} .. {:,}  (span {:,})".format(
+        trace.min_cycle, trace.max_cycle, span))
+    a("insns:  fetched {:,}   retired {:,}   squashed {:,} "
+      "({:.1f}% of fetched)".format(
+          fetched, retired, squashed, _pct(squashed, fetched)))
+    a("IPC:    %.4f retired/cycle   %.4f issued/cycle" % (
+        (retired / float(span)) if span else 0.0,
+        (issued / float(span)) if span else 0.0))
+    ihist = trace.issue_width_histogram()
+    rhist = trace.retire_width_histogram()
+    a("width:  issue 0/1/2/3+ %s%%   retire 0/1/2/3+ %s%%" % (
+        "/".join("%.1f" % _pct(n, span) for n in ihist),
+        "/".join("%.1f" % _pct(n, span) for n in rhist)))
+    a("")
+    a("occupancy per cycle (absent cycles count as zero; @max = cycles"
+      " sitting at the observed max):")
+    hdr = "  %-18s %8s %5s %5s %5s %5s %16s"
+    a(hdr % ("structure", "mean", "p50", "p90", "p99", "max", "@max"))
+
+    def occ_row(label, vals):
+        mean, p50, p90, p99, mx, at = _occ_stats(vals, span)
+        a("  %-18s %8.2f %5d %5d %5d %5d %8d (%5.2f%%)" % (
+            label, mean, p50, p90, p99, mx, at, _pct(at, span)))
+
+    occ_row("ROB", trace.rob_occ.values())
+    occ_row("scheduler", trace.sched_occ.values())
+    if trace.lsq_occ:
+        occ_row("LSQ loads", [v[0] for v in trace.lsq_occ.values()])
+        occ_row("LSQ stores", [v[1] for v in trace.lsq_occ.values()])
+    occ_row("retire backlog", trace.rob_completed_occ.values())
+    if trace.sched_cls_occ:
+        a("")
+        a("scheduler occupancy by class:")
+        a(hdr % ("class", "mean", "p50", "p90", "p99", "max", "@max"))
+        for i, name in enumerate(SCHED_CLS_NAMES):
+            vals = [lst[i] for lst in trace.sched_cls_occ.values()]
+            if not any(vals):
+                continue
+            occ_row(name, vals)
+    a("")
+    a("issue->complete latency by class:")
+    lat = {}
+    for r in insns:
+        if r.issue_cycle is None or r.complete_cycle is None:
+            continue
+        lat.setdefault(_insn_class(r.instr), []).append(
+            r.complete_cycle - r.issue_cycle)
+    for name in ("alu", "load", "store", "branch", "jump", "muldiv",
+                 "amo", "other"):
+        if name in lat:
+            a(_lat_line(name, lat[name]))
     return "\n".join(out)

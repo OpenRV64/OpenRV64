@@ -54,8 +54,14 @@ REASON_NAMES = {
 }
 
 # Physical pipes for EXEC lane values; 255 (PIPE_NONE) = unassigned.
-PIPE_NAMES = {0: "EX0", 1: "EX1", 2: "MEM0", 3: "MEM1", 255: "-"}
+PIPE_NAMES = {0: "EX0", 1: "EX1", 2: "MEM0", 3: "MEM1", 4: "ALU2",
+              255: "-"}
 PIPE_NONE = 255
+
+# Scheduler-occupancy class bins; the parser fills Trace.sched_cls_occ
+# lists in this order.
+SCHED_CLS_NAMES = ("alu", "load", "store", "branch", "jump", "muldiv",
+                   "other")
 
 # ROB detail0 layout: registers plus control/class bits.
 ROB_D0_RS1_SHIFT, ROB_D0_RS2_SHIFT, ROB_D0_RD_SHIFT = 0, 8, 16
@@ -241,6 +247,11 @@ class Trace(object):
         self.sched_occ = {}
         # cycle -> decode-gate candidates present (frontend delivery)
         self.decode_cand = {}
+        # cycle -> per-class scheduler-resident counts, listed in
+        # SCHED_CLS_NAMES order
+        self.sched_cls_occ = {}
+        # cycle -> [load, store] LSQ-resident counts
+        self.lsq_occ = {}
         # (stage, state, reason) row counts, key packed as
         # stage << 14 | state << 9 | reason  (reason <= 255, state < 16)
         self.ssr_counts = {}

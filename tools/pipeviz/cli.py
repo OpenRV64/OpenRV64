@@ -27,7 +27,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="pipeviz",
         description="Parse and analyze openrv64-pipeline-state-v1 traces.")
-    ap.add_argument("csv", help="trace CSV file")
+    ap.add_argument("csv", help="trace CSV file (.bz2 accepted)")
+    ap.add_argument("--summary", action="store_true",
+                    help="one-screen machine summary: IPC and width "
+                         "mix, occupancy percentiles (ROB, scheduler "
+                         "with per-class split, LSQ, retire backlog), "
+                         "per-class issue->complete latency")
     ap.add_argument("--stats", action="store_true",
                     help="print basic statistics (cycles, insn counts, "
                          "loads, issue/retire width histograms)")
@@ -58,6 +63,17 @@ def main(argv=None):
                          "edges whose consumer issued exactly one cycle "
                          "after the producer's completion, by producer "
                          "class/latency and consumer PC")
+    ap.add_argument("--timeline", type=int, nargs="?", const=128,
+                    default=None, metavar="BUCKET",
+                    help="phase timeline: per-bucket admission/issue/"
+                         "retire rates + ASCII strip (default bucket "
+                         "128 cycles)")
+    ap.add_argument("--timeline-csv", metavar="FILE", default=None,
+                    help="write the timeline as CSV for graphing")
+    ap.add_argument("--pipe-util", action="store_true",
+                    help="per-pipe utilization: busy fraction, class "
+                         "mix, busy/idle run lengths, pipes-busy-per-"
+                         "cycle histogram")
     ap.add_argument("--horizon", action="store_true",
                     help="admission horizon: in-flight admitted-not-"
                          "retired per cycle, and per-insn cycles "
@@ -102,6 +118,12 @@ def main(argv=None):
                          "head's state that cycle")
     ap.add_argument("--ssr", action="store_true",
                     help="print row counts by (stage, state, reason)")
+    ap.add_argument("--start-cycle", type=int, default=None, metavar="C",
+                    help="ignore rows before cycle C (skip the init "
+                         "phase of a long trace; in-flight insns at C "
+                         "appear with partial lifetimes)")
+    ap.add_argument("--end-cycle", type=int, default=None, metavar="C",
+                    help="ignore rows after cycle C")
     ap.add_argument("--jobs", "-j", type=int, default=0, metavar="N",
                     help="parser worker processes (default: auto from "
                          "file size and CPU count; 1 = serial)")
@@ -110,12 +132,14 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     from .parser import parse_file
-    from .stats import (basic_stats, ssr_report, characterize,
+    from .stats import (summary_report,
+                        basic_stats, ssr_report, characterize,
                         issue_blocked_report, retire_blocked_report,
                         control_report, src1_report, chains_report,
                         health_report, bubbles_report, head_report,
                         wakeup_report, pairs_report,
-                        overlap_report, horizon_report)
+                        overlap_report, horizon_report,
+                        timeline_report, pipe_util_report)
 
     t0 = time.time()
     progress = None
@@ -124,7 +148,9 @@ def main(argv=None):
             sys.stderr.write("\rpipeviz: %d rows..." % rows)
             sys.stderr.flush()
     trace = parse_file(args.csv, progress=progress,
-                       jobs=args.jobs if args.jobs > 0 else None)
+                       jobs=args.jobs if args.jobs > 0 else None,
+                       start_cycle=args.start_cycle,
+                       end_cycle=args.end_cycle)
     dt = time.time() - t0
     if not args.quiet:
         if progress is not None:
@@ -135,7 +161,12 @@ def main(argv=None):
                 "s" if trace.parse_jobs != 1 else ""))
 
     did_something = False
+    if args.summary:
+        print(summary_report(trace))
+        did_something = True
     if args.stats:
+        if did_something:
+            print()
         print(basic_stats(trace))
         did_something = True
     for cls in ("loads", "stores", "alu", "muldiv", "branches", "jumps"):
@@ -173,6 +204,17 @@ def main(argv=None):
         if did_something:
             print()
         print(head_report(trace, hist=args.hist))
+        did_something = True
+    if args.timeline is not None:
+        if did_something:
+            print()
+        print(timeline_report(trace, bucket=args.timeline,
+                              csv_path=args.timeline_csv))
+        did_something = True
+    if args.pipe_util:
+        if did_something:
+            print()
+        print(pipe_util_report(trace))
         did_something = True
     if args.horizon:
         if did_something:
